@@ -44,19 +44,19 @@ extern "C" __declspec(dllexport) void forward();
 extern "C" __declspec(dllexport) void left();
 extern "C" __declspec(dllexport) void right();
 extern "C" __declspec(dllexport) void back();
-extern "C" __declspec(dllexport) void movetoFloat(float xMove, float yMove);
-extern "C" __declspec(dllexport) void movetoInteger(int xMove, int yMove);
+extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove);
+extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove);
 extern "C" __declspec(dllexport) void rotate(float angle);
 extern "C" __declspec(dllexport) void wakeup();
 extern "C" __declspec(dllexport) void cancelMoveAction();
 extern "C" __declspec(dllexport) int getMoveActionStatus();
 extern "C" __declspec(dllexport) const char* getMoveActionError();
-extern "C" __declspec(dllexport) void waitUntilMoveActionDone();
+extern "C" __declspec(dllexport) int waitUntilMoveActionDone();
 
 extern "C" __declspec(dllexport) int battery();
 extern "C" __declspec(dllexport) float odometry();
-extern "C" __declspec(dllexport) const char* SlamtecLocation();
-extern "C" __declspec(dllexport) float pose();
+extern "C" __declspec(dllexport) const char* slamtecLocation();
+extern "C" __declspec(dllexport) struct Pose pose();
 extern "C" __declspec(dllexport) void home();
 extern "C" __declspec(dllexport) int getSpeed();
 extern "C" __declspec(dllexport) int setSpeed(int speed);
@@ -64,18 +64,6 @@ extern "C" __declspec(dllexport) int getLaserScan();
 extern "C" __declspec(dllexport) int clearSlamtecMap();
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
-
-	//  the following is for laser scan, make cout goto a file
-	std::ofstream file;
-	std::streambuf* sbuf = std::cout.rdbuf();
-
-	//............. MAP .........................
-	const char *opt_file_name;
-	const float map_resolution = 0.05;
-	bool opt_show_help = false;
-	bool opt_get_stcm = false;
-	bool opt_set_stcm = false;
-	bool opt_modify_stcm = false;
 
 BEGIN_MESSAGE_MAP(CSlamtecDllApp, CWinApp)
 END_MESSAGE_MAP()
@@ -183,7 +171,7 @@ extern "C" __declspec(dllexport) void back()
 // move to x,y using float
 //	Input: float x and y
 //	Output:	none
-extern "C" __declspec(dllexport) void movetoFloat(float xMove, float yMove)
+extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove)
 {
 	rpos::core::Location loc(xMove, yMove);		//get loacation
 	rpos::actions::MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
@@ -193,7 +181,7 @@ extern "C" __declspec(dllexport) void movetoFloat(float xMove, float yMove)
 // move to x,y using float using integer
 //	Input: string x and y in integer where value = floating pt * 1000
 //	Output:	none
-extern "C" __declspec(dllexport) void movetoInteger(int xMove, int yMove)
+extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove)
 {
 	rpos::core::Location loc(xMove / 1000.0, yMove / 1000.0);		//get loacation
 	rpos::actions::MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
@@ -201,7 +189,7 @@ extern "C" __declspec(dllexport) void movetoInteger(int xMove, int yMove)
 
 //----------------------------------------------------------------------
 // rotate
-//	Input: float angle, positive valus goes left, negative value goes right
+//	Input: float angle in radians, positive valus goes left, negative value goes right
 //	Output:	none
 extern "C" __declspec(dllexport) void rotate(float angle)
 {
@@ -251,10 +239,10 @@ extern "C" __declspec(dllexport) const char* getMoveActionError()
 // waitUntilMoveActionDone
 //	Input: none
 //	Output:	none
-extern "C" __declspec(dllexport) void waitUntilMoveActionDone()
+extern "C" __declspec(dllexport) int waitUntilMoveActionDone()
 {
 	rpos::actions::MoveAction moveAction = sdp.getCurrentAction();
-	moveAction.waitUntilDone();
+	return moveAction.waitUntilDone();
 }
 
 //----------------------------------------------------------
@@ -279,7 +267,7 @@ extern "C" __declspec(dllexport) float odometry()
 // get location
 //	Input: none
 //	Output:	float => x
-extern "C" __declspec(dllexport) const char* SlamtecLocation()
+extern "C" __declspec(dllexport) const char* slamtecLocation()
 {
 	rpos::core::Location location = sdp.getLocation();
 	CString str_temp;
@@ -291,12 +279,16 @@ extern "C" __declspec(dllexport) const char* SlamtecLocation()
 // get pose
 //	Input: none
 //	Output:	float => heading
-extern "C" __declspec(dllexport) float pose()
+extern "C" __declspec(dllexport) struct Pose pose()
 {
+	Pose retPose;
 	rpos::core::Pose pose = sdp.getPose();
+	retPose.x = pose.x();
+	retPose.y = pose.y();
+	retPose.yaw = pose.yaw() * 180.0f / M_PI;
+
 	//str_temp.Format("Pose: x=%f, y=%f, yaw=%f, heading=%f\r\n", pose.x(), pose.y(), pose.yaw(), pose.yaw()*180.0f/M_PI);
-	float heading = pose.yaw()*180.0f/M_PI;
-	return heading;
+	return retPose;
 }
 
 //----------------------------------------------------------
@@ -384,15 +376,10 @@ extern "C" __declspec(dllexport) int clearSlamtecMap()
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 {
 	//get map file
-	opt_file_name = str_mapName;
-
-	opt_set_stcm = true;
-	opt_get_stcm = false;
-	opt_modify_stcm = false;
 	rpos::core::Pose pose = sdp.getPose();
 	CompositeMapReader composite_map_reader;
 	std::string error_message;
-	boost::shared_ptr<CompositeMap> composite_map(composite_map_reader.loadFile(error_message, opt_file_name));
+	boost::shared_ptr<CompositeMap> composite_map(composite_map_reader.loadFile(error_message, str_mapName));
 	if (composite_map)
 	{
 		sdp.setCompositeMap((*composite_map), pose);	
@@ -407,15 +394,11 @@ extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 //	Output:	int => 0 = success, 1 = err
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName)
 {
-	opt_file_name = str_mapName;
-	opt_get_stcm = true;
-	opt_set_stcm = false;
-	opt_modify_stcm = false;
 	// Saving CompositeMap to Local File...
 	CompositeMap composite_map = sdp.getCompositeMap();
 	CompositeMapWriter composite_map_writer;
 	std::string error_message;
-	bool result = composite_map_writer.saveFile(error_message, opt_file_name, composite_map);	
+	bool result = composite_map_writer.saveFile(error_message, str_mapName, composite_map);	
     return 0;
 }
 

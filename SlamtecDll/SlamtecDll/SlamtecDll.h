@@ -48,3 +48,10 @@ public:
 
 	DECLARE_MESSAGE_MAP()
 };
+
+struct Pose
+{
+	float x;
+	float y;
+	float yaw;
+};
