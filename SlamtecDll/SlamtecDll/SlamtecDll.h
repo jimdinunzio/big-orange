@@ -49,9 +49,9 @@ public:
 	DECLARE_MESSAGE_MAP()
 };
 
-struct Pose
+typedef struct ExportPose
 {
 	float x;
 	float y;
 	float yaw;
-};
+} ExportPose;

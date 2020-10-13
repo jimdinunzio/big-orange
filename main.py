@@ -5,8 +5,8 @@ Created on Sun Jun  7 17:39:44 2020
 @author: LattePanda
 """
 
-# Globals
 # Constants
+_WAKEUP_WORD = "orange"
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
 _execute = True# False for debugging, must be True to run as: >python Hoot.py
@@ -17,11 +17,16 @@ _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
 _mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
-_place = "office"
 _places = ["kitchen", "living room", "dining area", "office", "front door"]
 _locations = { "kitchen" : (9.157, -3.269), "living room" : (0.061, -3.775), 
-              "dining area" : (3.329, -2.849),  "office" : (0,0), "front door": (0,0),
+              "dining area" : (3.329, -2.849),  "office" : (0,0), "front door": (9.32, -0.533),
               "test" : (-1, 0)}
+_OFFICE_RECT = {"left":-2.83,"bottom":-0.865, "width":4.5, "height":2.84}
+_HOUSE_RECT = {"left":-2.979,"bottom":-5.347, "width":11.371, "height":7.6}
+_INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
+_STARTUP_ROOM = _OFFICE_RECT
+
+# Globals
 _goal = ""
 _time = "morning"
 _times = ["morning", "noon", "afternoon", "evening", "night"]
@@ -92,23 +97,24 @@ class ActionStatus(Enum):
 def getMoveActionStatus():
     global _sdp
     status = _sdp.getMoveActionStatus()
-    if status == ActionStatus.Finished.value:
+    if status == ActionStatus.Finished:
         print("move action finished: ", _sdp.getMoveActionError())
-    elif status == ActionStatus.Error.value:
+    elif status == ActionStatus.Error:
         print("move action error: ", _sdp.getMoveActionError())
-    elif status == ActionStatus.Stopped.value:
+    elif status == ActionStatus.Stopped:
         print("action completed successfully")
     return status
 
 ################################################################
 def turn(degrees):
     global _sdp, _action_flag, _action, _robot_is_moving
+    if degrees == 0:
+        return
     _action_flag = True # The robot is being commanded to move
     _sdp.rotate(math.radians(degrees))
 
     result = _sdp.waitUntilMoveActionDone()
-    if result == ActionStatus.Error.value or result == ActionStatus.Finished.value:
-        print(slamtec.getMoveActionError())
+    if result == ActionStatus.Error:
         speak("Something is wrong. I could not turn.")
         
     _action_flag = False # the robot's done turning
@@ -146,14 +152,16 @@ def where_am_i():
     
     pose = _sdp.pose()
     location, distance = nearest_location(pose.x, pose.y)
-    if (distance <= 500):
+    if (distance <= 100):
         closeEnough = True
     else:
         closeEnough = False
     return location, distance, closeEnough
-    
+
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
+
+
 def cancelAction():
     global _sdp, _action_flag, _action
     try:
@@ -162,65 +170,74 @@ def cancelAction():
         _action = ""
     except:
         _action_flag = False
-        _action = "" # may want to keep this to see what action got cancelled?
+        _action = ""  # may want to keep this to see what action got cancelled?
         print("An error occurred canceling the action.")
         return
+
 
 def startrun():
     global _run_flag
     _run_flag = True
 
+
 def stoprun():
     global _run_flag
-    _run_flag = False    
-    
+    _run_flag = False
+
+
 def testgoto(str):
     global _goal
     _goal = str
-    
+
+
 ################################################################
 # This is where goto actions are initiated and get carried out.
 # If the robot is in the process of going to a  location, but
 # another goto action request is receved, the second request will
 # replace the earlier request
+
+
 def handleGotoLocation():
-    global _place, _run_flag, _goal, _place, _action_flag, _sdp
+    global _run_flag, _goal, _action_flag, _sdp
     while _run_flag:
-        if _goal == "" or _action_flag: # no goal or some action is currently in progress, so sleep.
+        if _goal == "" or _action_flag:
+            # no goal or some action is currently in progress, so sleep.
             time.sleep(0.5)
             continue
-            
+
         print("I'm free and A new goal arrived: ", _goal)
-        coords = _locations.get(_goal);
-        if coords == None:
+        coords = _locations.get(_goal)
+        if coords is None:
             speak("Sorry, I don't know how to get there.")
             print("unknown location")
             _goal = ""
             continue
-        if _goal == _place:
+        location, distance, closeEnough = where_am_i()
+        if _goal == location and distance < 50:
             speak("I'm already at the " + _goal)
             _goal = ""
             continue
         _action_flag = True
         speak("I'm going to the " + _goal)
         _sdp.moveToFloat(coords[0], coords[1])
-    
+
         while(1):
             maStatus = getMoveActionStatus()
-            if maStatus == ActionStatus.Stopped.value or maStatus == ActionStatus.Error.value or maStatus == ActionStatus.Finished.value:
-                break;
-            
+            if maStatus == ActionStatus.Stopped or \
+                maStatus == ActionStatus.Error or \
+                maStatus == ActionStatus.Finished:
+                break
+            time.sleep(1)
+
         # reaching this point, the robot first moved, then stopped - so check where it is now
         location, distance, closeEnough = where_am_i()
-                                          
+
         # and now check to see if it reached the goal
         if (location == _goal and closeEnough):
             speak("I've arrived!")
-            _place = location
             _goal = "" # reset _goal
         else:
-            speak("I didn't make it to my goal. I blame my programming.")
-            _place = lost
+            speak("I didn't make it to my goal.")
             _goal = "" # reset _goal ????
         
         # finally clear the _action and _action_flag
@@ -281,31 +298,31 @@ def speak(phrase):
 # Miscellaneous
 
 def statusReport():
-    global _place, _person, _main_battery_voltage, _mood, _sdp
+    global _person, _main_battery_voltage, _mood, _sdp
     
     speak("This is my current status.")
-    if _place == "lost":
-        answer = "Unfortunately I'm currently lost."
+    location, distance, closeEnough = where_am_i()
+    if not closeEnough:
+        answer = "I'm currently closest to the " + location
         speak(answer)
     else:
-        answer = "I'm at the " + _place + " location."
+        answer = "I'm at the " + location + " location."
         speak(answer)
         answer = "I'm with " + _person
         speak(answer)
     answer = "Battery is at "
     answer = answer + str(_sdp.battery()) + " percent"
     speak(answer)
-    if _place != "lost":
-        answer = "And I'm feeling " + _mood
-        speak(answer)
+    answer = "And I'm feeling " + _mood
+    speak(answer)
     time.sleep(5)
 
 ###############################################################
 # Speech recognition using Google over internet connection
 def listen():
     import speech_recognition as sr
-    global _run_flag, _listen_flag, _phrase, _last_phrase, _motion_flag
-    global _thought, _person, _new_person_flag, _place, _mood, _time
+    global _run_flag, _goal, _listen_flag, _phrase, _last_phrase, _motion_flag
+    global _thought, _person, _new_person_flag, _mood, _time
     global _request, _action, _internet, _action_flag, _main_battery_voltage
     global _eyes_flag
     
@@ -421,7 +438,7 @@ def listen():
     # create a recognizer object
     r = sr.Recognizer()
     
-    speak("Okay, I'm ready!")
+    speak("Hello, My name is Orange, pleased to be at your service.")
     
     while _run_flag:
         # obtain audio from the microphone
@@ -453,17 +470,32 @@ def listen():
             _phrase = ""
             _internet = False
             print("I lost my internet connection.")
-            #if _place == "office":
-            #    continue
-            #_thought = "go to the office"
-            #time.sleep(1.0)
             continue
         except:
             print("Unknown speech recognition error.")
             continue
-        
-        # some verbal commands are handled inside the listen thread
 
+        if "stop" in _phrase:
+            cancelAction()
+            speak("Okay.")
+            location, distance, closeEnough = where_am_i() 
+            if not closeEnough:
+                speak("I'm closest to the " + location)
+            else:
+                ans = "I am now near the " + location + " location."
+                speak(ans)
+            continue
+        
+        # check if the first word is the wake up word, otherwise ignore speech
+        try:
+            (firstWord, _phrase) = _phrase.split(maxsplit=1)
+        except:
+            continue
+        if (firstWord != _WAKEUP_WORD):
+            continue
+            
+        # some verbal commands are handled inside the listen thread
+        
         if (_phrase == "resume listening" or
             _phrase == "start listening" or
             _phrase == "start listening again"):
@@ -493,10 +525,10 @@ def listen():
             speak("My name is Big Orange. Easy to remember, right?")
             continue
         
-        if _phrase == "this is Evi":
-            if _person != "Evi":
+        if _phrase == "this is Evelyn":
+            if _person != "Evelyn":
                 _new_person_flag = True
-            _person = "Evi"
+            _person = "Evelyn"
             continue
         
         if _phrase == "this is Jim":
@@ -525,11 +557,12 @@ def listen():
             continue
         
         if _phrase == "where are you":
-            if _place == "lost":
-                answer = "I'm afraid that I'm lost."
+            location, distance, closeEnough = where_am_i()
+            if not closeEnough:
+                answer = "I'm closest to the " + location
                 speak(answer)
                 continue
-            answer = "I'm at the " + _place + " location."
+            answer = "I'm at the " + location + " location."
             speak(answer)
             continue
                     
@@ -550,44 +583,26 @@ def listen():
             speak(answer)
             continue
         
-        if "stop" in _phrase:
-            cancelAction()
-            speak("Okay.")
-            location, distance = where_am_i() # sets _place to either:
-                                              # the closest landmark if < 500mm away
-                                              # or "lost"
-            if location == "lost":
-                speak("I'm lost. What should I do now? ")
-            else:
-                ans = "I am now near the " + location + " location."
-                speak(ans)
-                speak("What should I do now?")
-            continue
-        
         if "status" in _phrase:
             statusReport()
             continue
                             
-        if _phrase == "go to the kitchen": # this is an example of a request
-            _goal = "kitchen"
-            continue
-        
-        if _phrase == "go to the office":
-            _goal = "office"
-            continue
-                        
-        if _phrase == "go to the front door": 
-            _goal = "front door"
-            continue
-
-        if _phrase == "go to the living room": 
-            _goal = "living room"
-            continue
-        
-        if _phrase == "go to the dining area": 
-            _goal = "dining area"
+        if "go to" in _phrase:
+            words = _phrase.split()
+            try:
+                words.remove("the")
+            except:
+                None
+            if len(words) > 2:
+                _goal = " ".join(words[2:]).lower()
             continue
                 
+        if _phrase == "recover localization":
+            speak("I will search the whole map to locate myself.")
+            result = recoverLocalization(_HOUSE_RECT)
+            if result == False:
+                speak("I could not confirm my location.")
+
         if _phrase == "list your threads":
             print()
             pretty_print_threads()
@@ -632,25 +647,42 @@ def listen():
                 speak("I'm not detecting any motion.")
             continue
         
+        deg = 0
         temp = _phrase # special case requiring parsing
         temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
         phrase_split = temp.split() # split string into individual words
-        if (phrase_split != [] and phrase_split[0] == "turn"):
+        if (phrase_split != [] and phrase_split[0] == "turn" and 
+            phrase_split[1] == "yourself"):
             try:
-                deg = int(w2n.word_to_num(phrase_split[1]))
+                deg = int(w2n.word_to_num(phrase_split[2]))
+                if phrase_split[3] == "clockwise":
+                    deg = -deg
             except:
                 None
-            if phrase_split[2] == "clockwise":
-                deg = -deg
             turn(deg)
             continue
-        
+        print("Don't know about that, sending question to google assistant")
         with TextAssistant(lang, device_model_id, device_id, display,
-                     grpc_channel, grpc_deadline) as assistant:
+                 grpc_channel, grpc_deadline) as assistant:
             response_text, response_html = assistant.assist(text_query = _phrase)
             if response_text:
                 speak(response_text)
-            continue    
+                continue
+
+def recoverLocalization(rect):
+    result = _sdp.recoverLocalization(rect["left"], 
+                                      rect["bottom"],
+                                      rect["width"],
+                                      rect["height"])
+    print("Recovering localization result = ", result)
+    if result == ActionStatus.Finished:
+        location, distance, closeEnough = where_am_i()
+        if closeEnough:
+            speak("I appear to be at the " + location + " location.")
+        else:
+            speak("I appear to be near the "+ location + " location.")
+        return True
+    return False
 
 ################################################################   
 # This is where data gets initialized from information stored on disk
@@ -738,14 +770,14 @@ def robot():
     
     shutdown_robot()
 
-def con2sdp():
+def connectToSdp():
     errStr = create_string_buffer(255)
     res = _sdp.connectSlamtec(_sdp_ip_address, _sdp_port, errStr, 255);
     if res == 1 :
         print("Could not connect to SlamTec, time out: ", errStr.value)
     elif res == 2:
         print("Could not connect to SlamTec, connection fail: ", errStr.value)
-
+    return res
         
 if __name__ == '__main__':
     global _sdp
@@ -763,36 +795,43 @@ if __name__ == '__main__':
     
     _sdp.loadSlamtecMap.argtypes = c_char_p,
     _sdp.loadSlamtecMap.restype = c_int
-    
+
+    _sdp.waitUntilMoveActionDone.restype = ActionStatus
     _sdp.moveToFloat.argtypes = c_float, c_float
     _sdp.moveToFloat.restype = None
     _sdp.home.restype = None
     _sdp.disconnect.restype = None
-    _sdp.getMoveActionStatus.restype = c_int
+    _sdp.getMoveActionStatus.restype = ActionStatus
     _sdp.rotate.argtypes = c_float,
-    
+    _sdp.recoverLocalization.restype = ActionStatus
+    _sdp.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
+    _sdp.getMoveActionError.restype = c_char_p
+
     class POSE(Structure):
         _fields_ = [("x", c_float),
                     ("y", c_float),
                     ("yaw", c_float)]
-    
+
     _sdp.pose.restype = POSE
-    
+
     if _execute:
-        speak("Initializing robot.")
-    
-        res = connectToSlamtec()
-        
-        if (res == 0) :
-            speak("I'm now connected to Slamtec.")
+        speak("I'm starting up.")
+
+        res = connectToSdp()
+
+        if (res == 0):
+            speak("I'm now connected to Slamtec. Now loading the map.")
             print("Loading map")
             res = _sdp.loadSlamtecMap(b'HCR-MyHouse.stcm')
             print("Done loading map")
-            if (res == 0) :
-                speak("I've loaded the map.");
+            if (res == 0):
+                _sdp.wakeup()
+                # speak("Now let me get my bearings.")
+                # result = recoverLocalization(_INIT_RECT)
+                # if result == False:
+                #    speak("I don't appear to be at the map starting location.")
             else:
                 speak("Something is wrong. I could not load the map.")
-            
         else:
             speak("Something is wrong. I could not connect to Slamtec.")
         robot()
