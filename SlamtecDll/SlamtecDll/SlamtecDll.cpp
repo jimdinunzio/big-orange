@@ -7,6 +7,9 @@
 #include <iostream>				//for cout
 #include <fstream>				//for cout to a file
 
+using namespace rpos::core;
+using namespace rpos::actions;
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
@@ -56,7 +59,7 @@ extern "C" __declspec(dllexport) int waitUntilMoveActionDone();
 extern "C" __declspec(dllexport) int battery();
 extern "C" __declspec(dllexport) float odometry();
 extern "C" __declspec(dllexport) const char* slamtecLocation();
-extern "C" __declspec(dllexport) struct Pose pose();
+extern "C" __declspec(dllexport) ExportPose pose();
 extern "C" __declspec(dllexport) void home();
 extern "C" __declspec(dllexport) int getSpeed();
 extern "C" __declspec(dllexport) int setSpeed(int speed);
@@ -64,6 +67,7 @@ extern "C" __declspec(dllexport) int getLaserScan();
 extern "C" __declspec(dllexport) int clearSlamtecMap();
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
+extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height);
 
 BEGIN_MESSAGE_MAP(CSlamtecDllApp, CWinApp)
 END_MESSAGE_MAP()
@@ -128,9 +132,9 @@ extern "C" __declspec(dllexport) void disconnect()
 //	Output:	none
 extern "C" __declspec(dllexport) void forward()
 {
-	rpos::core::ACTION_DIRECTION actionDirection = rpos::core::ACTION_DIRECTION::FORWARD;
-	rpos::core::Direction direction(actionDirection);
-	rpos::actions::MoveAction moveBy = sdp.moveBy(direction);
+	ACTION_DIRECTION actionDirection = FORWARD;
+	Direction direction(actionDirection);
+	MoveAction moveBy = sdp.moveBy(direction);
 }
 
 //-----------------------------------------------------
@@ -139,9 +143,9 @@ extern "C" __declspec(dllexport) void forward()
 //	Output:	none
 extern "C" __declspec(dllexport) void left()
 {
-	rpos::core::ACTION_DIRECTION actionDirection = rpos::core::ACTION_DIRECTION::TURNLEFT;
-	rpos::core::Direction direction(actionDirection);
-	rpos::actions::MoveAction moveBy = sdp.moveBy(direction);
+	ACTION_DIRECTION actionDirection = TURNLEFT;
+	Direction direction(actionDirection);
+	MoveAction moveBy = sdp.moveBy(direction);
 }
 
 //-----------------------------------------------------
@@ -150,9 +154,9 @@ extern "C" __declspec(dllexport) void left()
 //	Output:	none
 extern "C" __declspec(dllexport) void right()
 {
-	rpos::core::ACTION_DIRECTION actionDirection = rpos::core::ACTION_DIRECTION::TURNRIGHT;
-	rpos::core::Direction direction(actionDirection);
-	rpos::actions::MoveAction moveBy = sdp.moveBy(direction);
+	ACTION_DIRECTION actionDirection = TURNRIGHT;
+	Direction direction(actionDirection);
+	MoveAction moveBy = sdp.moveBy(direction);
 }
 
 //-----------------------------------------------------
@@ -161,9 +165,9 @@ extern "C" __declspec(dllexport) void right()
 //	Output:	none
 extern "C" __declspec(dllexport) void back()
 {
-	rpos::core::ACTION_DIRECTION actionDirection = rpos::core::ACTION_DIRECTION::BACKWARD;
-	rpos::core::Direction direction(actionDirection);
-	rpos::actions::MoveAction moveBy = sdp.moveBy(direction);
+	ACTION_DIRECTION actionDirection = BACKWARD;
+	Direction direction(actionDirection);
+	MoveAction moveBy = sdp.moveBy(direction);
 }
 
 
@@ -173,8 +177,8 @@ extern "C" __declspec(dllexport) void back()
 //	Output:	none
 extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove)
 {
-	rpos::core::Location loc(xMove, yMove);		//get loacation
-	rpos::actions::MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
+	Location loc(xMove, yMove);		//get loacation
+	MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
 }
 
 //-----------------------------------------------------
@@ -183,8 +187,8 @@ extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove)
 //	Output:	none
 extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove)
 {
-	rpos::core::Location loc(xMove / 1000.0, yMove / 1000.0);		//get loacation
-	rpos::actions::MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
+	Location loc(xMove / 1000.0, yMove / 1000.0);		//get loacation
+	MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
 }
 
 //----------------------------------------------------------------------
@@ -211,7 +215,7 @@ extern "C" __declspec(dllexport) void wakeup()
 //	Output:	none
 extern "C" __declspec(dllexport) void cancelMoveAction()
 {
-	 rpos::actions::MoveAction moveAction = sdp.getCurrentAction();
+	 MoveAction moveAction = sdp.getCurrentAction();
 	 moveAction.cancel();
 }
 
@@ -221,7 +225,7 @@ extern "C" __declspec(dllexport) void cancelMoveAction()
 //	Output:	none
 extern "C" __declspec(dllexport) int getMoveActionStatus()
 {
-	rpos::actions::MoveAction moveAction = sdp.getCurrentAction();
+	MoveAction moveAction = sdp.getCurrentAction();
 	return moveAction.getStatus();
 }
 
@@ -231,8 +235,8 @@ extern "C" __declspec(dllexport) int getMoveActionStatus()
 //	Output:	const char* - error string
 extern "C" __declspec(dllexport) const char* getMoveActionError()
 {
-	rpos::actions::MoveAction moveAction = sdp.getCurrentAction();
-	return strdup(moveAction.getReason().c_str());
+	MoveAction moveAction = sdp.getCurrentAction();
+	return _strdup(moveAction.getReason().c_str());
 }
 
 //----------------------------------------------------------------------
@@ -241,7 +245,7 @@ extern "C" __declspec(dllexport) const char* getMoveActionError()
 //	Output:	none
 extern "C" __declspec(dllexport) int waitUntilMoveActionDone()
 {
-	rpos::actions::MoveAction moveAction = sdp.getCurrentAction();
+	MoveAction moveAction = sdp.getCurrentAction();
 	return moveAction.waitUntilDone();
 }
 
@@ -260,7 +264,7 @@ extern "C" __declspec(dllexport) int battery()
 //	Output:	float => odometry
 extern "C" __declspec(dllexport) float odometry()
 {
-	return sdp.getOdometry();
+	return static_cast<float>(sdp.getOdometry());
 }
 
 //----------------------------------------------------------
@@ -269,7 +273,7 @@ extern "C" __declspec(dllexport) float odometry()
 //	Output:	float => x
 extern "C" __declspec(dllexport) const char* slamtecLocation()
 {
-	rpos::core::Location location = sdp.getLocation();
+	Location location = sdp.getLocation();
 	CString str_temp;
 	str_temp.Format("%f,%f", location.x(), location.y());
 	return _strdup((LPCTSTR)str_temp);
@@ -279,13 +283,13 @@ extern "C" __declspec(dllexport) const char* slamtecLocation()
 // get pose
 //	Input: none
 //	Output:	float => heading
-extern "C" __declspec(dllexport) struct Pose pose()
+extern "C" __declspec(dllexport) ExportPose pose()
 {
-	Pose retPose;
-	rpos::core::Pose pose = sdp.getPose();
-	retPose.x = pose.x();
-	retPose.y = pose.y();
-	retPose.yaw = pose.yaw() * 180.0f / M_PI;
+	ExportPose retPose;
+	Pose pose = sdp.getPose();
+	retPose.x = static_cast<float>(pose.x());
+	retPose.y = static_cast<float>(pose.y());
+	retPose.yaw = static_cast<float>(pose.yaw() * 180.0f / M_PI);
 
 	//str_temp.Format("Pose: x=%f, y=%f, yaw=%f, heading=%f\r\n", pose.x(), pose.y(), pose.yaw(), pose.yaw()*180.0f/M_PI);
 	return retPose;
@@ -348,8 +352,8 @@ extern "C" __declspec(dllexport) int setSpeed(int speed)
 extern "C" __declspec(dllexport) int getLaserScan()
 {
 	rpos::features::system_resource::LaserScan laser_scan = sdp.getLaserScan();
-	std::vector<rpos::core::LaserPoint> laser_points = laser_scan.getLaserPoints();
-	for(std::vector<rpos::core::LaserPoint>::iterator it = laser_points.begin(); it != laser_points.end(); ++it)
+	std::vector<LaserPoint> laser_points = laser_scan.getLaserPoints();
+	for(std::vector<LaserPoint>::iterator it = laser_points.begin(); it != laser_points.end(); ++it)
 	{
 		std::cout << "Angle: " << it->angle() << "; Distance: " << it->distance() << "; is Valid: " << it->valid() << std::endl;
 	}
@@ -376,7 +380,7 @@ extern "C" __declspec(dllexport) int clearSlamtecMap()
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 {
 	//get map file
-	rpos::core::Pose pose = sdp.getPose();
+	Pose pose = sdp.getPose();
 	CompositeMapReader composite_map_reader;
 	std::string error_message;
 	boost::shared_ptr<CompositeMap> composite_map(composite_map_reader.loadFile(error_message, str_mapName));
@@ -402,3 +406,13 @@ extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName)
     return 0;
 }
 
+//-----------------------------------------------------------
+// Recover localization of the robot given a hint rectangle of the area it is thought to be in
+//  Input: float left (x origin), float bottom (y origin), float width of rectangle, float height of rectangle
+//         if empty rectangle is passed in then robot will relocate in 20x20 area which takes a minute or more.
+extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height)
+{
+	RectangleF area(left, bottom, width, height);
+	MoveAction action = sdp.recoverLocalization(area);
+	return action.waitUntilDone();
+}
