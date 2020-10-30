@@ -387,6 +387,8 @@ extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 	if (composite_map)
 	{
 		sdp.setCompositeMap((*composite_map), pose);	
+		if (!sdp.setMapUpdate(true))
+			std::cerr << "setMapUpdate(true) failed." << endl;
 	}
     return 0;
 }

@@ -13,3 +13,8 @@ SlamtecDll/ipch/slamtecdll-55d093a1/slamtecdll-49d4498b.ipch
 SlamtecDll/SlamtecDll.suo
 SlamtecDll/SlamtecDll.sdf
 SlamtecDll/SlamtecDll.opensdf
+slamware_sdk_windows/
+Original STM32 firmware/
+ManualController/Debug/
+ManualController/Release/ManualController.vcxprojResolveAssemblyReference.cache
+ManualController/Release/
