@@ -146,56 +146,99 @@ int main(int argc, const char *argv[]) {
 		SlamwareCorePlatform sdp = SlamwareCorePlatform::connect(ip_address, 1445);
 		std::cout <<"SDK Version: " << sdp.getSDKVersion() << std::endl;
 		std::cout <<"SDP Version: " << sdp.getSDPVersion() << std::endl;
-//		rpos::actions::MoveAction action = sdp.getCurrentAction();
+		
+		// if any action running, cancel it.
+		rpos::actions::MoveAction action = sdp.getCurrentAction();
+		if (action)
+			action.cancel();
 
+		// main control loop
 		while(1)
 		{
 			connected = getContrState(0, contr_state);
 			if(connected)
 			{
-				if(contr_state.dwPacketNumber != last_contr_state.dwPacketNumber)
+				float rightTrigger = getNormTrigger(contr_state.Gamepad.bRightTrigger, XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+				float leftThumbMag;
+				float leftThumbNormX;
+				float leftThumbNormY;
+				getNormThumb(contr_state.Gamepad.sThumbLX, 
+								contr_state.Gamepad.sThumbLY,
+								XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+								leftThumbNormX, 
+								leftThumbNormY, 
+								leftThumbMag);
+
+				// compute theta and rotate 90 degrees counter clockwise so 0 degrees is North (or forward)
+				float theta = atan2f(leftThumbNormY, leftThumbNormX) - (float)M_PI / 2.f;
+				if(leftThumbMag == 0.0f)
+					theta = 0.0f;
+				
+				// normalize angle
+				theta = atan2(sin(theta), cos(theta));
+				// scale to use 0-100 range for trigger	
+				rightTrigger *= 100.f;
+
+				rpos::actions::MoveAction curAction = sdp.getCurrentAction();
+
+				if(rightTrigger == 0.f)
 				{
-					// something has changed
-					float rightTrigger = getNormTrigger(contr_state.Gamepad.bRightTrigger, XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
-					float leftThumbMag;
-					float leftThumbNormX;
-					float leftThumbNormY;
-					getNormThumb(contr_state.Gamepad.sThumbLX, 
-								 contr_state.Gamepad.sThumbLY,
-								 XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-								 leftThumbNormX, 
-								 leftThumbNormY, 
-								 leftThumbMag);
-
-					float theta = atan2(leftThumbNormY, leftThumbNormX) - M_PI / 2.0f;
-
-					std::cout << "Throttle: " << rightTrigger * 100.0 << "%" << std::endl;
-					std::cout << "Theta: " << theta * 180.0f / M_PI << " degrees." << std::endl;
-
-					MoveOptions moveOptions;
-					moveOptions.speed_ratio = rightTrigger;
-					rpos::actions::MoveAction action = sdp.moveBy(theta, moveOptions);
-					if (action.getStatus() == rpos::core::ActionStatusError)
-					std::cout << "Action Failed: " << action.getReason() << std::endl;
-					//		bool bRet2 =sdp.setSystemParameter(SYSPARAM_ROBOT_SPEED, SYSVAL_ROBOT_SPEED_HIGH);
-					action.waitUntilDone();
-
-					//std::cout << "Left Trigger: " << (int)contr_state.Gamepad.bLeftTrigger << std::endl;
-					//std::cout << "Right Trigger: " << (int)contr_state.Gamepad.bRightTrigger << std::endl;
-					//std::cout << "Left Thumbstick: ( " << contr_state.Gamepad.sThumbLX << ", " << contr_state.Gamepad.sThumbLY << " )" << std::endl;
-					//std::cout << "Right Thumbstick: ( " << contr_state.Gamepad.sThumbRX << ", " << contr_state.Gamepad.sThumbRY << " )" << std::endl;
+					curAction.cancel();
+					continue;
 				}
-				else
-				{
-					// nothing has changed
-				}
+
+				if(rightTrigger <= 44.f)
+					sdp.setSystemParameter(SYSPARAM_ROBOT_SPEED, SYSVAL_ROBOT_SPEED_LOW);
+				else if(rightTrigger > 44.f && rightTrigger <= 88)
+					sdp.setSystemParameter(SYSPARAM_ROBOT_SPEED, SYSVAL_ROBOT_SPEED_MEDIUM);
+				else // rightTrigger > 88
+					sdp.setSystemParameter(SYSPARAM_ROBOT_SPEED, SYSVAL_ROBOT_SPEED_HIGH);
+
+				MoveOptions moveOptions;
+				moveOptions.flag = MoveOptionFlagAppending;
+				moveOptions.speed_ratio = rightTrigger * 100;
+
+#if USE_4_DIRECTION_MODE
+				theta = theta * 180. / M_PI;
+				rpos::core::Direction direction;
+				
+				if (theta >= -45. && theta < 0. || theta >= 0. && theta < 45.)
+					direction = rpos::core::FORWARD;
+				else if (theta >= 45. && theta < 135.)
+					direction = rpos::core::TURNLEFT;
+				else if (theta >= 135. && theta < 180. || theta >= -180 && theta < -135.)
+					direction = rpos::core::BACKWARD;
+				else // if (theta < -45 && theta > -135)
+					direction = rpos::core::TURNRIGHT;
+				rpos::actions::MoveAction action = sdp.moveBy(direction);
+#else
+				// Move robot in theta angle direction. e.g. 0 is forward, 180 is backward, 90 is rotate left, 45 is forward while turning
+				// This works well for controlling by analog thumb stick.
+				rpos::features::motion_planner::MoveOptions options;
+				rpos::actions::MoveAction action = sdp.moveBy(theta, options);
+#endif
+
+#ifdef DEBUG
+				std::cout << "MoveBy theta = " << (float)(theta * 180.f / M_PI) << " degrees. Throttle = " << rightTrigger << std::endl;
+				std::cout << "Moving " << direction.direction() << std::endl;
+#endif
+
+				if (action.getStatus() == rpos::core::ActionStatusError)
+				std::cout << "Action Failed: " << action.getReason() << std::endl;
+				//		bool bRet2 =sdp.setSystemParameter(SYSPARAM_ROBOT_SPEED, SYSVAL_ROBOT_SPEED_HIGH);
+				//action.waitUntilDone();
+
+				//std::cout << "Left Trigger: " << (int)contr_state.Gamepad.bLeftTrigger << std::endl;
+				//std::cout << "Right Trigger: " << (int)contr_state.Gamepad.bRightTrigger << std::endl;
+				//std::cout << "Left Thumbstick: ( " << contr_state.Gamepad.sThumbLX << ", " << contr_state.Gamepad.sThumbLY << " )" << std::endl;
+				//std::cout << "Right Thumbstick: ( " << contr_state.Gamepad.sThumbRX << ", " << contr_state.Gamepad.sThumbRY << " )" << std::endl;
 			}
 			else // !connected
 			{
 				std::cout << "Lost connection to controller 0. Will try to reconnect in 2s." << std::endl;
 				Sleep(2000);
 			}
-			Sleep(15);
+			Sleep(20);
 			last_contr_state = contr_state;
 		}
 
