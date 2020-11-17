@@ -152,12 +152,20 @@ int main(int argc, const char *argv[]) {
 		if (action)
 			action.cancel();
 
+		float lastRightTrigger = 0.0f;
 		// main control loop
 		while(1)
 		{
+			Sleep(50);
 			connected = getContrState(0, contr_state);
 			if(connected)
 			{
+				// Red B button is the kill switch to robot
+				if((contr_state.Gamepad.wButtons & XINPUT_GAMEPAD_B) != 0)
+				{
+					sdp.getCurrentAction().cancel();
+					continue;
+				}
 				float rightTrigger = getNormTrigger(contr_state.Gamepad.bRightTrigger, XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
 				float leftThumbMag;
 				float leftThumbNormX;
@@ -181,9 +189,14 @@ int main(int argc, const char *argv[]) {
 
 				rpos::actions::MoveAction curAction = sdp.getCurrentAction();
 
-				if(rightTrigger == 0.f)
+				if(lastRightTrigger > 0.f && rightTrigger == 0.f)
 				{
 					curAction.cancel();
+					lastRightTrigger = rightTrigger;
+					continue;
+				}
+				else if(rightTrigger == 0.f)
+				{
 					continue;
 				}
 
@@ -220,7 +233,7 @@ int main(int argc, const char *argv[]) {
 
 #ifdef DEBUG
 				std::cout << "MoveBy theta = " << (float)(theta * 180.f / M_PI) << " degrees. Throttle = " << rightTrigger << std::endl;
-				std::cout << "Moving " << direction.direction() << std::endl;
+				//std::cout << "Moving " << direction.direction() << std::endl;
 #endif
 
 				if (action.getStatus() == rpos::core::ActionStatusError)
@@ -232,14 +245,14 @@ int main(int argc, const char *argv[]) {
 				//std::cout << "Right Trigger: " << (int)contr_state.Gamepad.bRightTrigger << std::endl;
 				//std::cout << "Left Thumbstick: ( " << contr_state.Gamepad.sThumbLX << ", " << contr_state.Gamepad.sThumbLY << " )" << std::endl;
 				//std::cout << "Right Thumbstick: ( " << contr_state.Gamepad.sThumbRX << ", " << contr_state.Gamepad.sThumbRY << " )" << std::endl;
+				lastRightTrigger = rightTrigger;
 			}
 			else // !connected
 			{
 				std::cout << "Lost connection to controller 0. Will try to reconnect in 2s." << std::endl;
 				Sleep(2000);
 			}
-			Sleep(20);
-			last_contr_state = contr_state;
+//			last_contr_state = contr_state;
 		}
 
 	}
