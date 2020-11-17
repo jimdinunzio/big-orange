@@ -18,3 +18,7 @@ Original STM32 firmware/
 ManualController/Debug/
 ManualController/Release/ManualController.vcxprojResolveAssemblyReference.cache
 ManualController/Release/
+*.user
+*.suo
+*.sdf
+Slamware Core Firmware/
