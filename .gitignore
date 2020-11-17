@@ -18,7 +18,14 @@ Original STM32 firmware/
 ManualController/Debug/
 ManualController/Release/ManualController.vcxprojResolveAssemblyReference.cache
 ManualController/Release/
+depthcam_publish_demo/depthcam_publish_demo/Release/
+depthcam_publish_demo/depthcam_publish_demo/Debug/
+depthcam_publish_demo/Debug
 *.user
 *.suo
 *.sdf
+*.exe
+*.pdb
+*.dll
+*.ipch
 Slamware Core Firmware/
