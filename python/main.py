@@ -211,20 +211,24 @@ def handleGotoLocation():
             continue
 
         print("I'm free and A new goal arrived: ", _goal)
-        coords = _locations.get(_goal)
-        if coords is None:
-            speak("Sorry, I don't know how to get there.")
-            print("unknown location")
-            _goal = ""
-            continue
-        location, distance, closeEnough = where_am_i()
-        if _goal == location and distance < 50:
-            speak("I'm already at the " + _goal)
-            _goal = ""
-            continue
-        _action_flag = True
-        speak("I'm going to the " + _goal)
-        _sdp.moveToFloat(coords[0], coords[1])
+        if _goal == "home":
+            speak("I'm going home")
+            _sdp.home()
+        else:
+            coords = _locations.get(_goal)
+            if coords is None:
+                speak("Sorry, I don't know how to get there.")
+                print("unknown location")
+                _goal = ""
+                continue
+            location, distance, closeEnough = where_am_i()
+            if _goal == location and distance < 50:
+                speak("I'm already at the " + _goal)
+                _goal = ""
+                continue
+            _action_flag = True
+            speak("I'm going to the " + _goal)
+            _sdp.moveToFloat(coords[0], coords[1])
 
         while(1):
             maStatus = getMoveActionStatus()
@@ -232,7 +236,7 @@ def handleGotoLocation():
                 maStatus == ActionStatus.Error or \
                 maStatus == ActionStatus.Finished:
                 break
-            time.sleep(1)
+            time.sleep(0.5)
 
         # reaching this point, the robot first moved, then stopped - so check where it is now
         location, distance, closeEnough = where_am_i()
@@ -242,7 +246,7 @@ def handleGotoLocation():
             speak("I've arrived!")
             _goal = "" # reset _goal
         else:
-            speak("I didn't make it to my goal.")
+            speak("I didn't make it to the " + _goal)
             _goal = "" # reset _goal ????
         
         # finally clear the _action and _action_flag
@@ -614,6 +618,10 @@ def listen():
             statusReport()
             continue
                             
+        if _phrase == "go home" or _phrase == "go recharge" or _phrase == "go to dock":
+            _goal = "home"
+            continue
+            
         if "go to" in _phrase:
             words = _phrase.split()
             try:
@@ -679,7 +687,9 @@ def listen():
         temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
         phrase_split = temp.split() # split string into individual words
         split_len = len(phrase_split)
-        if split_len >= 3 and (phrase_split[0] == "turn" or phrase_split[0] == "rotate"):
+        if split_len >= 3 and ((phrase_split[0] == "turn" and 
+                               phrase_split[1] != "on" and 
+                               phrase_split[1] != "off") or phrase_split[0] == "rotate"):
             try:
                 deg = int(w2n.word_to_num(phrase_split[1]))
                 if split_len >= 4 and phrase_split[3] == "clockwise":
