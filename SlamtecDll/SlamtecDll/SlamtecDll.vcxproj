@@ -49,8 +49,8 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(ProjectDir)\..\..\slamware_sdk_windows.2.6.0_rtm.20180820\\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)\..\..\slamware_sdk_windows.2.6.0_rtm.20180820\\lib;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(ProjectDir)\..\..\slamware_sdk_windows\\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)\..\..\slamware_sdk_windows\\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>

@@ -68,6 +68,7 @@ extern "C" __declspec(dllexport) int clearSlamtecMap();
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height);
+extern "C" __declspec(dllexport) int setUpdate(int enable);
 
 BEGIN_MESSAGE_MAP(CSlamtecDllApp, CWinApp)
 END_MESSAGE_MAP()
@@ -387,8 +388,6 @@ extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 	if (composite_map)
 	{
 		sdp.setCompositeMap((*composite_map), pose);	
-		if (!sdp.setMapUpdate(true))
-			std::cerr << "setMapUpdate(true) failed." << endl;
 	}
     return 0;
 }
@@ -417,4 +416,20 @@ extern "C" __declspec(dllexport) int recoverLocalization(float left, float botto
 	RectangleF area(left, bottom, width, height);
 	MoveAction action = sdp.recoverLocalization(area);
 	return action.waitUntilDone();
+}
+
+//-----------------------------------------------------------
+// Set whether SLAMWARE system will perform map update to the default map kind (EXPLORER).
+// SLAMWARE system enters localization enhanced mode once map update is disabled.
+
+extern "C" __declspec(dllexport) int setUpdate(int enable)
+{
+	int result = 0;
+	result = static_cast<int>(sdp.setMapUpdate(enable));
+	if(!result)
+	{
+		std::cerr << "setMapUpdate(true) failed." << endl;
+	}
+	
+	return result;
 }
