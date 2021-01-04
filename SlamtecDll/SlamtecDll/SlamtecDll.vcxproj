@@ -111,9 +111,9 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <CustomBuildStep>
-      <Command>copy "$(TargetPath)" E:\ProgramData\Anaconda3\envs\robot\DLLs</Command>
-      <Message>Deploying Target to Runtime location</Message>
-      <Outputs>E:\ProgramData\Anaconda3\envs\robot\DLLs\SlamtecDll.dll</Outputs>
+      <Command>copy "$(TargetPath)" E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs</Command>
+      <Message>Deploying Target to Runtime location E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs</Message>
+      <Outputs>E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs\SlamtecDll.dll</Outputs>
       <Inputs>$(TargetPath)</Inputs>
     </CustomBuildStep>
   </ItemDefinitionGroup>

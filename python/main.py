@@ -56,10 +56,15 @@ from threading import Thread
 #from playsound import playsound
 from word2number import w2n
 import math
-from enum import Enum
 import io
 #import pygame
 #from gtts import gTTS
+from my_sdp_client import MyClient
+from my_sdp_server import *
+
+# clib free() on windows
+libc = cdll.msvcrt
+libc.free.argtypes = (c_void_p,)
 
 
 ###############################################################
@@ -81,32 +86,18 @@ from google.assistant.embedded.v1alpha2 import (
 ###############################################################
 # Movement releated
     
-class ActionStatus(Enum):
-    def __init__(self, number):
-        self._as_parameter__ = number
-        
-    # The action is created but not started
-    WaitingForStart = 0
-    # The action is running
-    Running = 1
-    # The action is finished successfully
-    Finished = 2
-    # The action is paused
-    Paused = 3
-    # The action is stopped
-    Stopped = 4
-    # The action is under error
-    Error = 5        
-        
 def getMoveActionStatus():
     global _sdp
     status = _sdp.getMoveActionStatus()
     if status == ActionStatus.Finished:
-        print("move action finished: ", _sdp.getMoveActionError())
+        print("move action finished.")
     elif status == ActionStatus.Error:
-        print("move action error: ", _sdp.getMoveActionError())
+        errStr = _sdp.getMoveActionError()
+        print("move action error: ", errStr)
+        if errStr != None:
+            libc.free(errStr)        
     elif status == ActionStatus.Stopped:
-        print("action completed successfully")
+        print("action has been cancelled.")
     return status
 
 ################################################################
@@ -328,6 +319,28 @@ def speak(phrase):
 ###############################################################
 # Miscellaneous
 
+def loadMap():
+    print("Loading map")
+    res = _sdp.loadSlamtecMap(b'HCR-MyHouse.stcm')
+    print("Done loading map")
+    if (res == 0):
+        None
+        #_sdp.wakeup()
+        # speak("Now let me get my bearings.")
+        # result = recoverLocalization(_INIT_RECT)
+        # if result == False:
+        #    speak("I don't appear to be at the map starting location.")
+    else:
+        speak("Something is wrong. I could not load the map.")
+    return res
+
+def saveMap():
+    print("saving map")
+    res = _sdp.saveSlamtecMap(b'HCR-MyHouse.stcm')
+    if res != 0:
+        speak("Something is wrong. I could not save the map.")
+    return res
+        
 def statusReport():
     global _person, _main_battery_voltage, _mood, _sdp
     
@@ -505,7 +518,9 @@ def listen():
         except:
             print("Unknown speech recognition error.")
             continue
-
+            
+        # convert phrase to lower case for comparison
+        _phrase = _phrase.lower()
         if "stop" in _phrase:
             cancelAction()
             speak("Okay.")
@@ -681,6 +696,47 @@ def listen():
             else:
                 speak("I'm not detecting any motion.")
             continue
+ 
+        if "load map" in _phrase:
+            speak("Ok. I will load my map.")
+            loadMap()
+            continue
+        
+        if "save map" in _phrase:
+            speak("Ok. I will save my map.")
+            saveMap()
+            continue
+        
+        if "clear map" in _phrase:
+            speak("Ok. I will clear my map.")
+            _sdp.clearSlamtecMap()
+            continue
+        
+        if "map updating" in _phrase:
+            if "enable" in _phrase:
+                enable = True
+                speak("Ok. I will enable map updating.")
+            elif "disable" in _phrase:
+                enable = False
+                speak("Ok. I will disable map updating.")
+            else:
+                continue                
+            _sdp.setUpdate(enable)
+            continue
+        
+        if "set speed" in _phrase:
+            if "low" in _phrase:
+                speed = 1
+            elif "medium" in _phrase:
+                speed = 2
+            elif "high" in _phrase:
+                speed = 3
+            else:
+                continue
+            speak("Ok. I'm setting the speed.")
+            if speed != _sdp.setSpeed(speed):
+                speak("Sorry, I could not change my speed this time.")
+            continue
         
         deg = 0
         temp = _phrase # special case requiring parsing
@@ -798,7 +854,6 @@ def shutdown_robot():
     _sdp.disconnect()
     del _sdp
     print("\nDone!")
-
    
 ################################################################
 # This initializes and runs the robot
@@ -814,47 +869,17 @@ def robot():
 
 def connectToSdp():
     errStr = create_string_buffer(255)
-    res = _sdp.connectSlamtec(_sdp_ip_address, _sdp_port, errStr, 255);
+    res = _sdp.connectSlamtec(_sdp_ip_address, _sdp_port, errStr.raw, 255)
     if res == 1 :
-        print("Could not connect to SlamTec, time out: ", errStr.value)
+        print("Could not connect to SlamTec, time out.")#, errStr.value)
     elif res == 2:
-        print("Could not connect to SlamTec, connection fail: ", errStr.value)
+        print("Could not connect to SlamTec, connection fail.")#, errStr.value)
     return res
         
 if __name__ == '__main__':
     global _sdp
-    # Load SlamtecDLL
-    DllsPath = os.getcwd() + r"\..\DLLs\\"
-    
-    cdll.LoadLibrary(DllsPath + "libeay32.dll")
-    cdll.LoadLibrary(DllsPath + "ssleay32.dll")
-    
-    _sdp = cdll.LoadLibrary(DllsPath + "SlamtecDll.dll")
-    
-    # Set up C function input and output types
-    _sdp.connectSlamtec.argtypes = c_char_p, c_int, c_char_p
-    _sdp.slamtecLocation.restype = c_char_p
-    
-    _sdp.loadSlamtecMap.argtypes = c_char_p,
-    _sdp.loadSlamtecMap.restype = c_int
-
-    _sdp.waitUntilMoveActionDone.restype = ActionStatus
-    _sdp.moveToFloat.argtypes = c_float, c_float
-    _sdp.moveToFloat.restype = None
-    _sdp.home.restype = None
-    _sdp.disconnect.restype = None
-    _sdp.getMoveActionStatus.restype = ActionStatus
-    _sdp.rotate.argtypes = c_float,
-    _sdp.recoverLocalization.restype = ActionStatus
-    _sdp.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
-    _sdp.getMoveActionError.restype = c_char_p
-
-    class POSE(Structure):
-        _fields_ = [("x", c_float),
-                    ("y", c_float),
-                    ("yaw", c_float)]
-
-    _sdp.pose.restype = POSE
+    # Start 32 bit bridge server
+    _sdp = MyClient()
 
     if _execute:
         initialize_speech()
@@ -864,17 +889,7 @@ if __name__ == '__main__':
 
         if (res == 0):
             speak("I'm now connected to Slamtec. Now loading the map.")
-            print("Loading map")
-            res = _sdp.loadSlamtecMap(b'HCR-MyHouse.stcm')
-            print("Done loading map")
-            if (res == 0):
-                _sdp.wakeup()
-                # speak("Now let me get my bearings.")
-                # result = recoverLocalization(_INIT_RECT)
-                # if result == False:
-                #    speak("I don't appear to be at the map starting location.")
-            else:
-                speak("Something is wrong. I could not load the map.")
+            loadMap()
         else:
             speak("Something is wrong. I could not connect to Slamtec.")
         robot()

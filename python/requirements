@@ -1,0 +1,10 @@
+conda install google-auth
+conda install google-auth-oauthlib
+#conda install oauthlib
+pip install git+https://github.com/DeepHorizons/tts
+conda install -c conda-forge word2number
+yconda install click
+pip install google-assistant-grpc
+pip install msl.loadlib
+pip install speechrecognition
+conda install pyaudio

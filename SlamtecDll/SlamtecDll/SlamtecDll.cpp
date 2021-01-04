@@ -312,11 +312,11 @@ extern "C" __declspec(dllexport) void home()
 extern "C" __declspec(dllexport) int getSpeed()
 {
 	string std_s = sdp.getSystemParameter(SYSPARAM_ROBOT_SPEED);
-	if(std_s == "low")
+	if(std_s == SYSVAL_ROBOT_SPEED_LOW)
 		return 1;
-	if(std_s == "medium")
+	if(std_s == SYSVAL_ROBOT_SPEED_MEDIUM)
 		return 2;
-	if(std_s == "high")
+	if(std_s == SYSVAL_ROBOT_SPEED_HIGH)
 		return 3;
 	return 0;
 }
@@ -369,8 +369,7 @@ extern "C" __declspec(dllexport) int getLaserScan()
 //	Output:	none
 extern "C" __declspec(dllexport) int clearSlamtecMap()
 {
-	sdp.clearMap();
-	return 0;
+	return !sdp.clearMap();
 }
 
 //----------------------------------------------------------
@@ -389,7 +388,7 @@ extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName)
 	{
 		sdp.setCompositeMap((*composite_map), pose);	
 	}
-    return 0;
+    return !composite_map;
 }
 
 //----------------------------------------------------------
@@ -404,7 +403,7 @@ extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName)
 	CompositeMapWriter composite_map_writer;
 	std::string error_message;
 	bool result = composite_map_writer.saveFile(error_message, str_mapName, composite_map);	
-    return 0;
+    return !result;
 }
 
 //-----------------------------------------------------------
