@@ -9,7 +9,7 @@ Created on Sun Jun  7 17:39:44 2020
 _WAKEUP_WORD = "orange"
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
-_execute = True# False for debugging, must be True to run as: >python Hoot.py
+_execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = False # should eyes be displayed or not
 _person = "Jim"
@@ -20,7 +20,7 @@ _moods = {"happy":50, "bored":20, "hungry":10}
 _places = ["kitchen", "living room", "dining area", "office", "front door", "end of hall"]
 _locations = { "kitchen" : (9.157, -3.269), "living room" : (0.061, -3.775), 
               "dining area" : (3.329, -2.849),  "office" : (0,0), "front door": (9.32, -0.533),
-              "test" : (-1, 0), "end of hall" : (4.385, 0.146)}
+              "test" : (-1, 0), "end of hall" : (4.385, 0.146), "custom" : (0.0, 0.0)}
 _OFFICE_RECT = {"left":-2.83,"bottom":-0.865, "width":4.5, "height":2.84}
 _HOUSE_RECT = {"left":-2.979,"bottom":-5.347, "width":11.371, "height":7.6}
 _INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
@@ -45,7 +45,7 @@ _last_motion_time = 0 # the time.time() motion was last detected
 _ser6 = ""
 _internet = False # True when connected to the internet
 
-
+import parse
 import tts.sapi
 import time
 from ctypes import *
@@ -192,7 +192,6 @@ def testgoto(str):
 # another goto action request is receved, the second request will
 # replace the earlier request
 
-
 def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _sdp
     while _run_flag:
@@ -212,13 +211,14 @@ def handleGotoLocation():
                 print("unknown location")
                 _goal = ""
                 continue
-            location, distance, closeEnough = where_am_i()
-            if _goal == location and distance < 50:
-                speak("I'm already at the " + _goal)
-                _goal = ""
-                continue
+            if _goal != "custom":
+                location, distance, closeEnough = where_am_i()
+                if _goal == location and distance < 50:
+                    speak("I'm already at the " + _goal)
+                    _goal = ""
+                    continue
+                speak("I'm going to the " + _goal)
             _action_flag = True
-            speak("I'm going to the " + _goal)
             _sdp.moveToFloat(coords[0], coords[1])
 
         while(1):
@@ -229,20 +229,20 @@ def handleGotoLocation():
                 break
             time.sleep(0.5)
 
-        # reaching this point, the robot first moved, then stopped - so check where it is now
-        location, distance, closeEnough = where_am_i()
+        if _goal != "custom":
+            # reaching this point, the robot first moved, then stopped - so check where it is now
+            location, distance, closeEnough = where_am_i()
 
-        # and now check to see if it reached the goal
-        if (location == _goal and closeEnough):
-            speak("I've arrived!")
-            _goal = "" # reset _goal
-        else:
-            speak("I didn't make it to the " + _goal)
-            _goal = "" # reset _goal ????
+            # and now check to see if it reached the goal
+            if (location == _goal and closeEnough):
+                speak("I've arrived!")
+            else:
+                speak("I didn't make it to the " + _goal)
         
         # finally clear the _action and _action_flag
         _action_flag = False # you've arrived somewhere, so no further action
         _action = ""            
+        _goal = ""
         time.sleep(0.5)
         
 ################################################################
@@ -320,12 +320,12 @@ def speak(phrase):
 # Miscellaneous
 
 def loadMap():
+    _sdp.wakeup()
     print("Loading map")
     res = _sdp.loadSlamtecMap(b'HCR-MyHouse.stcm')
     print("Done loading map")
     if (res == 0):
         None
-        #_sdp.wakeup()
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
         # if result == False:
@@ -448,16 +448,19 @@ def listen():
             text_response = None
             html_response = None
             
-            for resp in self.assistant.Assist(iter_assist_requests(),
-                                              self.deadline):
-                #assistant_helpers.log_assist_response_without_audio(resp)
-                if resp.screen_out.data:
-                    html_response = resp.screen_out.data
-                if resp.dialog_state_out.conversation_state:
-                    conversation_state = resp.dialog_state_out.conversation_state
-                    self.conversation_state = conversation_state
-                if resp.dialog_state_out.supplemental_display_text:
-                    text_response = resp.dialog_state_out.supplemental_display_text
+            try:
+                for resp in self.assistant.Assist(iter_assist_requests(),
+                                                  self.deadline):
+                    #assistant_helpers.log_assist_response_without_audio(resp)
+                    if resp.screen_out.data:
+                        html_response = resp.screen_out.data
+                    if resp.dialog_state_out.conversation_state:
+                        conversation_state = resp.dialog_state_out.conversation_state
+                        self.conversation_state = conversation_state
+                    if resp.dialog_state_out.supplemental_display_text:
+                        text_response = resp.dialog_state_out.supplemental_display_text
+            except Exception as e:
+                print("got error from assistant: "+ str(e))
             return text_response, html_response
     
     
@@ -636,7 +639,89 @@ def listen():
         if _phrase == "go home" or _phrase == "go recharge" or _phrase == "go to dock":
             _goal = "home"
             continue
+    
+        class GoDir:
+            Forward = 0
+            Backward = -180
+            Right = -90
+            Left = 90
             
+        phi = None
+        # replace dash if present after gto with space => go <direction> 
+        if _phrase.startswith("go-"):
+            _phrase = _phrase[:3].replace('-',' ') + _phrase[3:]
+        if _phrase.startswith("go forward"):
+            phi = GoDir.Forward
+        elif _phrase.startswith("go backward"):
+            phi = GoDir.Backward
+        elif _phrase.startswith("go right"):
+            phi = GoDir.Right
+        elif _phrase.startswith("go left"):
+            phi = GoDir.Left
+
+        if phi != None:
+            unit = None
+            dist = None
+            phrase_split = _phrase.split() # split string into individual words
+            split_len = len(phrase_split)
+            if split_len < 3:
+                continue
+            n = 2
+            # parse optional "at n degrees"
+            if split_len >= 7 and (phi == GoDir.Forward or phi == GoDir.Backward) and \
+                phrase_split[n] == "at" and phrase_split[n+2] == "degrees":
+                try:
+                    phi += float(w2n.word_to_num(phrase_split[n+1]))
+                except:
+                    try:
+                        phi += float(phrase_split[n+1])
+                    except:
+                        continue
+                n += 3
+            # parse distance
+            try:
+                dist = float(w2n.word_to_num(phrase_split[n]))
+            except:
+                try:
+                    dist = float(phrase_split[n])
+                except:
+                    if phrase_split[n] == "to":
+                        dist = 2
+                    elif phrase_split[n] == "for":
+                        dist = 4
+                    else:
+                        # this handles when distance is combined with unit. e.g. 3M, 3cm
+                        fs = "{:n}{0}"
+                        parsed = parse.parse(fs, phrase_split[n])
+                        if parsed != None:
+                            dist = parsed[0]
+                            unit = parsed[1]
+            # parse unit of distance
+            if split_len > n+1:
+                unit = phrase_split[n+1]
+
+            if unit == None or unit.startswith("m"):
+                None
+            elif unit == "cm" or unit == "centimeters":
+                dist /= 100
+            elif unit == "in" or unit == "inches":
+                dist *= 0.0254
+            elif unit == "yard" or unit == "yards":
+                dist /= 1.094
+            else:
+                print("unknown unit")
+                continue
+            
+            if dist == None:
+                continue
+            #if unit not mentioned assume meters
+            pose = _sdp.pose()
+            xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
+            yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
+            _locations["custom"] = (xt, yt)
+            _goal = "custom"
+            continue
+                
         if "go to" in _phrase:
             words = _phrase.split()
             try:
@@ -743,7 +828,7 @@ def listen():
         temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
         phrase_split = temp.split() # split string into individual words
         split_len = len(phrase_split)
-        if split_len >= 3 and ((phrase_split[0] == "turn" and 
+        if split_len >= 2 and ((phrase_split[0] == "turn" and 
                                phrase_split[1] != "on" and 
                                phrase_split[1] != "off") or phrase_split[0] == "rotate"):
             try:
@@ -751,7 +836,10 @@ def listen():
                 if split_len >= 4 and phrase_split[3] == "clockwise":
                     deg = -deg
             except:
-                None
+                if phrase_split[1] == "around":
+                    deg = 180
+                else:
+                    None
             turn(deg)
             continue
         print("Don't know about that, sending question to google assistant")
@@ -876,7 +964,7 @@ def connectToSdp():
         print("Could not connect to SlamTec, connection fail.")#, errStr.value)
     return res
         
-if __name__ == '__main__':
+def initialize():
     global _sdp
     # Start 32 bit bridge server
     _sdp = MyClient()
@@ -895,3 +983,6 @@ if __name__ == '__main__':
         robot()
     else:
         print("Program is in DEBUG mode.")
+    
+if __name__ == '__main__':
+    initialize()
