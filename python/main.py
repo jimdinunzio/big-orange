@@ -7,6 +7,7 @@ Created on Sun Jun  7 17:39:44 2020
 
 # Constants
 _WAKEUP_WORD = "orange"
+_map_filename_str = b'MyHouse.stcm'
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
 _execute = True # False for debugging, must be True to run as: >python main.py
@@ -17,12 +18,15 @@ _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
 _mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
-_places = ["kitchen", "living room", "dining area", "office", "front door", "end of hall"]
-_locations = { "kitchen" : (9.157, -3.269), "living room" : (0.061, -3.775), 
-              "dining area" : (3.329, -2.849),  "office" : (0,0), "front door": (9.32, -0.533),
-              "test" : (-1, 0), "end of hall" : (4.385, 0.146), "custom" : (0.0, 0.0)}
-_OFFICE_RECT = {"left":-2.83,"bottom":-0.865, "width":4.5, "height":2.84}
-_HOUSE_RECT = {"left":-2.979,"bottom":-5.347, "width":11.371, "height":7.6}
+_places = ["kitchen", "kitchen nook", "living room", "dining area", "office",
+           "front door", "end of hall"]
+_locations = { "kitchen" : (11.357, -4.094), "kitchen nook": (8.764, -4.696), 
+              "living room" : (0.875, -2.435), "dining area" : (6.3, -3.457),
+              "office" : (1.934, 0.163), "front door": (11.722, -1.355), 
+              "end of hall" : (6.932, 0.011), "custom" : (0.0, 0.0)}
+
+_HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
+_OFFICE_RECT = {"left":-0.225,"bottom":-0.3, "width":4.34, "height":2.144}
 _INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
 _STARTUP_ROOM = _OFFICE_RECT
 
@@ -35,6 +39,7 @@ _last_phrase = "nothing"
 _listen_flag = True
 _action = "" # this will be set to whatever specific action is being attempted
 _action_flag = False # True means some action is in progress
+_interrupt_action = False # True when interrupting a previously started action
 _request = "" # comes from someone telling the robot to do something
 _thought = "" # comes from the robot thinking that it wants to do something
 _do_something_flag = False
@@ -105,6 +110,10 @@ def turn(degrees):
     global _sdp, _action_flag, _action, _robot_is_moving
     if degrees == 0:
         return
+    # if already in action, ignore this
+    if _action_flag:
+        return
+
     print("rotating ", degrees, "degrees")
     _action_flag = True # The robot is being commanded to move
     _sdp.rotate(math.radians(degrees))
@@ -158,8 +167,10 @@ def where_am_i():
 # This cancels an ongoing action - which may be a goto or something else.
 
 
-def cancelAction():
-    global _sdp, _action_flag, _action
+def cancelAction(interrupt = False):
+    global _sdp, _action_flag, _action, _interrupt_action
+    if interrupt:
+        _interrupt_action = True
     try:
         _sdp.cancelMoveAction()
         _action_flag = False
@@ -169,7 +180,6 @@ def cancelAction():
         _action = ""  # may want to keep this to see what action got cancelled?
         print("An error occurred canceling the action.")
         return
-
 
 def startrun():
     global _run_flag
@@ -193,7 +203,7 @@ def testgoto(str):
 # replace the earlier request
 
 def handleGotoLocation():
-    global _run_flag, _goal, _action_flag, _sdp
+    global _run_flag, _goal, _action_flag, _sdp, _interrupt_action
     while _run_flag:
         if _goal == "" or _action_flag:
             # no goal or some action is currently in progress, so sleep.
@@ -218,10 +228,13 @@ def handleGotoLocation():
                     _goal = ""
                     continue
                 speak("I'm going to the " + _goal)
+            else:
+                speak("OK.")
             _action_flag = True
             _sdp.moveToFloat(coords[0], coords[1])
 
-        while(1):
+        _interrupt_action = False
+        while(_interrupt_action == False):
             maStatus = getMoveActionStatus()
             if maStatus == ActionStatus.Stopped or \
                 maStatus == ActionStatus.Error or \
@@ -229,15 +242,19 @@ def handleGotoLocation():
                 break
             time.sleep(0.5)
 
-        if _goal != "custom":
-            # reaching this point, the robot first moved, then stopped - so check where it is now
-            location, distance, closeEnough = where_am_i()
+        if _interrupt_action == True:
+            _interrupt_action = False
+            continue
+        # reaching this point, the robot first moved, then stopped - so check where it is now
+        location, distance, closeEnough = where_am_i()
 
-            # and now check to see if it reached the goal
-            if (location == _goal and closeEnough):
-                speak("I've arrived!")
-            else:
-                speak("I didn't make it to the " + _goal)
+        # and now check to see if it reached the goal
+        if (location == _goal and closeEnough):
+            speak("I've arrived!")
+        elif _goal != "custom":
+            speak("Sorry, I didn't make it to the " + _goal)
+        else:
+            speak("Sorry, I didn't make it to where you wanted.")
         
         # finally clear the _action and _action_flag
         _action_flag = False # you've arrived somewhere, so no further action
@@ -322,7 +339,7 @@ def speak(phrase):
 def loadMap():
     _sdp.wakeup()
     print("Loading map")
-    res = _sdp.loadSlamtecMap(b'HCR-MyHouse.stcm')
+    res = _sdp.loadSlamtecMap(_map_filename_str)
     print("Done loading map")
     if (res == 0):
         None
@@ -637,6 +654,7 @@ def listen():
             continue
                             
         if _phrase == "go home" or _phrase == "go recharge" or _phrase == "go to dock":
+            cancelAction(interrupt = True)
             _goal = "home"
             continue
     
@@ -660,6 +678,9 @@ def listen():
             phi = GoDir.Left
 
         if phi != None:
+            # if already in action, ignore this
+            if _action_flag:
+                continue
             unit = None
             dist = None
             phrase_split = _phrase.split() # split string into individual words
@@ -729,6 +750,7 @@ def listen():
             except:
                 None
             if len(words) > 2:
+                cancelAction(interrupt = True)
                 _goal = " ".join(words[2:]).lower()
             continue
                 
@@ -978,6 +1000,7 @@ def initialize():
         if (res == 0):
             speak("I'm now connected to Slamtec. Now loading the map.")
             loadMap()
+            None
         else:
             speak("Something is wrong. I could not connect to Slamtec.")
         robot()

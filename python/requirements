@@ -8,3 +8,6 @@ pip install google-assistant-grpc
 pip install msl.loadlib
 pip install speechrecognition
 conda install pyaudio
+#for coral Edge TPU
+pip3 install https://dl.google.com/coral/python/tflite_runtime-2.1.0.post1-cp37-cp37m-win_amd64.whl
+conda install Pillow
