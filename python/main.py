@@ -58,7 +58,7 @@ import os
 import sys
 import threading
 from threading import Thread
-#from playsound import playsound
+from playsound import playsound
 from word2number import w2n
 import math
 import io
@@ -66,6 +66,9 @@ import io
 #from gtts import gTTS
 from my_sdp_client import MyClient
 from my_sdp_server import *
+import cv2
+import ai_vision.detect as detect
+import ai_vision.classify as classify
 
 # clib free() on windows
 libc = cdll.msvcrt
@@ -358,6 +361,27 @@ def saveMap():
         speak("Something is wrong. I could not save the map.")
     return res
         
+def show_picture_mat(mat):
+    cv2.imshow("Snapshot", mat)
+    cv2.waitKey(10000)
+    cv2.destroyWindow("Snapshot")
+    
+def show_picture(filepath):
+    img = cv2.imread(filepath)
+    cv2.imshow("Snapshot", img)
+    cv2.waitKey(10000)
+    cv2.destroyWindow("Snapshot")
+    
+def take_picture(filename):
+    camera_port = 0
+    camera = cv2.VideoCapture(camera_port)
+    time.sleep(0.5)  # If you don't wait, the image will be dark
+    return_value, image = camera.read()
+    playsound("sounds/camera-shutter.wav", block=True)
+    cv2.imwrite("pictures_taken/" + filename, image)
+    del(camera)  # so that others can use the camera as soon as possible
+    return image
+    
 def statusReport():
     global _person, _main_battery_voltage, _mood, _sdp
     
@@ -831,6 +855,15 @@ def listen():
             _sdp.setUpdate(enable)
             continue
         
+        if "take a picture" in _phrase:
+            speak("Ok. Say Cheeze...")
+            pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
+            mat = take_picture(pic_filename)
+            time.sleep(0.5)
+            speak("Ok. Here is the picture I took.")
+            show_picture_mat(mat)
+            continue
+
         if "set speed" in _phrase:
             if "low" in _phrase:
                 speed = 1
@@ -843,6 +876,45 @@ def listen():
             speak("Ok. I'm setting the speed.")
             if speed != _sdp.setSpeed(speed):
                 speak("Sorry, I could not change my speed this time.")
+            continue
+        
+        if "you see" in _phrase:
+            results = detect.detect_objects(top_count=3)
+            print(results)
+            res_count = len(results) 
+            if res_count > 0 and results[0].percent >= 40:
+                reply_str = "I see a " + results[0].label
+                if res_count == 2 and results[1].percent >= 40:
+                    reply_str += " and a " + results[1].label
+                elif res_count > 2:
+                    for i in range(1, res_count - 1):
+                        if results[i].percent >= 40:
+                            reply_str += ", a " +results[i].label
+                    if results[res_count - 1].percent >= 40:
+                        reply_str += " and a " + results[res_count - 1].label
+            else:
+                reply_str = "I don't see anything I recognize."
+            speak(reply_str)
+            continue
+        
+        if "identify this" in _phrase:
+            model = classify.ModelType.General
+            if "bird" in _phrase:
+                model = classify.ModelType.Birds
+            elif "insect" in _phrase:
+                model = classify.ModelType.Insects
+            elif "plant" in _phrase:
+                model = classify.ModelType.Plants
+            results = classify.classify(model)
+            print(results)
+            if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
+                speak("it looks like a " + results[0].label)
+            else:
+                speak("Sorry, I do not know what it is.")
+            continue
+        
+        if "clear windows" in _phrase:
+            cv2.destroyAllWindows()
             continue
         
         deg = 0
