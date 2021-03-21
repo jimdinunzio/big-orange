@@ -1,13 +1,26 @@
+# For Google Assistant related code
 conda install google-auth
 conda install google-auth-oauthlib
-#conda install oauthlib
-pip install git+https://github.com/DeepHorizons/tts
-conda install -c conda-forge word2number
-yconda install click
 pip install google-assistant-grpc
+conda install click
+
+# For TTS (Text To Speech)
+pip install git+https://github.com/DeepHorizons/tts
+
+# For Word2Number used by robot main
+conda install -c conda-forge word2number
+
+# For Loading shared objects (and specifically 64-bit python bridge to 32-bit DLL)
 pip install msl.loadlib
+
+# Speech Recognition with support for multiple engines online and offline (used for google here)
 pip install speechrecognition
+
+# Not sure if need this anymore
 conda install pyaudio
+
 #for coral Edge TPU
 pip3 install https://dl.google.com/coral/python/tflite_runtime-2.1.0.post1-cp37-cp37m-win_amd64.whl
 conda install Pillow
+
+#For Depth AI, See depthai/requirements.txt
