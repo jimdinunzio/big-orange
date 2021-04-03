@@ -32,6 +32,7 @@ _STARTUP_ROOM = _OFFICE_RECT
 
 # Globals
 _goal = ""
+_goal_queue = []
 _time = "morning"
 _times = ["morning", "noon", "afternoon", "evening", "night"]
 _phrase = "" # set by whatever speech recognition heard
@@ -70,11 +71,6 @@ import cv2
 import ai_vision.detect as detect
 import ai_vision.classify as classify
 
-# clib free() on windows
-libc = cdll.msvcrt
-libc.free.argtypes = (c_void_p,)
-
-
 ###############################################################
 # Text input to Google Assistant for web based queries
 
@@ -102,8 +98,6 @@ def getMoveActionStatus():
     elif status == ActionStatus.Error:
         errStr = _sdp.getMoveActionError()
         print("move action error: ", errStr)
-        if errStr != None:
-            libc.free(errStr)        
     elif status == ActionStatus.Stopped:
         print("action has been cancelled.")
     return status
@@ -223,12 +217,16 @@ def handleGotoLocation():
                 speak("Sorry, I don't know how to get there.")
                 print("unknown location")
                 _goal = ""
+                if len(_goal_queue) > 0:
+                    _goal = _goal_queue.pop(0)
                 continue
             if _goal != "custom":
                 location, distance, closeEnough = where_am_i()
                 if _goal == location and distance < 50:
                     speak("I'm already at the " + _goal)
                     _goal = ""
+                    if len(_goal_queue) > 0:
+                        _goal = _goal_queue.pop(0)
                     continue
                 speak("I'm going to the " + _goal)
             else:
@@ -263,6 +261,8 @@ def handleGotoLocation():
         _action_flag = False # you've arrived somewhere, so no further action
         _action = ""            
         _goal = ""
+        if len(_goal_queue) > 0:
+            _goal = _goal_queue.pop(0)
         time.sleep(0.5)
         
 ################################################################
@@ -340,6 +340,7 @@ def speak(phrase):
 # Miscellaneous
 
 def loadMap():
+    global _sdp
     _sdp.wakeup()
     print("Loading map")
     res = _sdp.loadSlamtecMap(_map_filename_str)
@@ -355,6 +356,7 @@ def loadMap():
     return res
 
 def saveMap():
+    global _sdp
     print("saving map")
     res = _sdp.saveSlamtecMap(b'HCR-MyHouse.stcm')
     if res != 0:
@@ -409,7 +411,7 @@ def listen():
     global _run_flag, _goal, _listen_flag, _phrase, _last_phrase, _motion_flag
     global _thought, _person, _new_person_flag, _mood, _time
     global _request, _action, _internet, _action_flag, _main_battery_voltage
-    global _eyes_flag
+    global _eyes_flag, _sdp
     
     ###########################################################
     # Text input to Google Assistant for web based queries
@@ -677,6 +679,29 @@ def listen():
             statusReport()
             continue
                             
+        if _phrase == "challenge phase 1":
+            speak("Ok. I'm doing the challenge phase 1.")
+            _sdp.wakeup()
+            time.sleep(6)
+            lps = _sdp.getLaserScan()
+            longest_dist = 0
+            longest_angle = 0
+            for i in range(0, lps.size):
+                if lps.distance[i] > longest_dist:
+                    longest_dist = lps.distance[i]
+                    longest_angle = lps.angle[i]
+
+            longest_dist -= 0.75
+            print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+            return_pose = _sdp.pose()
+            xt = return_pose.x + longest_dist * math.cos(math.radians(return_pose.yaw) + longest_angle)
+            yt = return_pose.y + longest_dist * math.sin(math.radians(return_pose.yaw) + longest_angle)
+            _locations["custom"] = (xt, yt)
+            _locations["origin"] = (return_pose.x, return_pose.y)
+            _goal_queue.append("origin")
+            _goal = "custom"
+            continue
+
         if _phrase == "go home" or _phrase == "go recharge" or _phrase == "go to dock":
             cancelAction(interrupt = True)
             _goal = "home"
@@ -766,7 +791,12 @@ def listen():
             _locations["custom"] = (xt, yt)
             _goal = "custom"
             continue
-                
+            
+        if _phrase == "go to sleep":
+            speak("Okay. I'm going to take a nap.")
+            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+            continue
+
         if "go to" in _phrase:
             words = _phrase.split()
             try:
@@ -815,6 +845,12 @@ def listen():
             _run_flag = False
             continue        
 
+        if _phrase == "shutdown system":
+            speak("Okay, I'm shutting down the system.")
+            _run_flag = False
+            os.system("shutdown /s /t 10")
+            continue
+                
         if "battery" in _phrase:
             ans = "My battery is currently at "
             ans = ans + str(_sdp.battery()) + " percent"
@@ -1058,7 +1094,7 @@ def connectToSdp():
         print("Could not connect to SlamTec, connection fail.")#, errStr.value)
     return res
         
-def initialize():
+def run():
     global _sdp
     # Start 32 bit bridge server
     _sdp = MyClient()
@@ -1080,4 +1116,4 @@ def initialize():
         print("Program is in DEBUG mode.")
     
 if __name__ == '__main__':
-    initialize()
+    run()

@@ -55,3 +55,11 @@ typedef struct ExportPose
 	float y;
 	float yaw;
 } ExportPose;
+
+#define MAX_NUM_LASER_POINTS 360
+typedef struct LaserPointsStruct
+{
+	int size;
+	float angle[MAX_NUM_LASER_POINTS];
+	float distance[MAX_NUM_LASER_POINTS];
+} LaserPointsStruct;

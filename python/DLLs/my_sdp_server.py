@@ -11,12 +11,20 @@ from msl.loadlib import Server32
 from ctypes import *
 from enum import Enum
 
+class LASER_POINTS(Structure):
+	"""Structure to hold laser points"""
+	_fields_ = [("size", c_int),
+                ("angle", c_float * 360), 
+                ("distance", c_float * 360)]
+
 class POSE(Structure):
+    """Structure to hold x and y coords, and yaw angle in degrees"""
     _fields_ = [("x", c_float),
                 ("y", c_float),
                 ("yaw", c_float)]
 
 class ActionStatus(Enum):
+    """Enumerated type for status of moving actions"""
     def __init__(self, number):
         self._as_parameter__ = number
         
@@ -59,6 +67,7 @@ class MyServer(Server32):
         self.lib.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
         self.lib.getMoveActionError.restype = c_char_p    
         self.lib.pose.restype = POSE
+        self.lib.getLaserScan.restype = LASER_POINTS
 
     def connectSlamtec(self, ip_address, port, errStr, errStrLen):
         # The Server32 class has a 'lib' property that is a reference to the ctypes.CDLL object.
@@ -66,7 +75,10 @@ class MyServer(Server32):
         return retval
 
     def disconnect(self):
-        self.lib.disconnect();
+        try:
+            self.lib.disconnect();
+        except:
+            None
     
     def forward(self):
         self.lib.forward()

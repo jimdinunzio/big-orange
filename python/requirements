@@ -9,6 +9,7 @@ pip install git+https://github.com/DeepHorizons/tts
 
 # For Word2Number used by robot main
 conda install -c conda-forge word2number
+pip install parse
 
 # For Loading shared objects (and specifically 64-bit python bridge to 32-bit DLL)
 pip install msl.loadlib

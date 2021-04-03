@@ -76,6 +76,7 @@ class MyClient(Client64):
         return self.request32('slamtecLocation')
     
     def pose(self):
+        """Returns x, y, and yaw angle in degrees via POSE class""" 
         return self.request32('pose')
 
     def home(self):
@@ -88,7 +89,7 @@ class MyClient(Client64):
         return self.request32('setSpeed', speed)
 
     def getLaserScan(self):
-        return self.request32('getLaserScan')    
+        return self.request32('getLaserScan')
 
     def clearSlamtecMap(self):
         return self.request32('clearSlamtecMap')

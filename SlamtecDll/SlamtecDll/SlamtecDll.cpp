@@ -63,7 +63,7 @@ extern "C" __declspec(dllexport) ExportPose pose();
 extern "C" __declspec(dllexport) void home();
 extern "C" __declspec(dllexport) int getSpeed();
 extern "C" __declspec(dllexport) int setSpeed(int speed);
-extern "C" __declspec(dllexport) int getLaserScan();
+extern "C" __declspec(dllexport) LaserPointsStruct getLaserScan(int *size);
 extern "C" __declspec(dllexport) int clearSlamtecMap();
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
@@ -350,16 +350,24 @@ extern "C" __declspec(dllexport) int setSpeed(int speed)
 //
 //	Input: none
 //	Output: "C://SDP//cout.txt"
-extern "C" __declspec(dllexport) int getLaserScan()
+extern "C" __declspec(dllexport) LaserPointsStruct getLaserScan(int* size)
 {
+	LaserPointsStruct lps;
 	rpos::features::system_resource::LaserScan laser_scan = sdp.getLaserScan();
 	std::vector<LaserPoint> laser_points = laser_scan.getLaserPoints();
-	for(std::vector<LaserPoint>::iterator it = laser_points.begin(); it != laser_points.end(); ++it)
+	int i = 0;
+	for(std::vector<LaserPoint>::iterator it = laser_points.begin(); i < MAX_NUM_LASER_POINTS && it != laser_points.end(); ++it)
 	{
-		std::cout << "Angle: " << it->angle() << "; Distance: " << it->distance() << "; is Valid: " << it->valid() << std::endl;
+		if (it->valid())
+		{
+			lps.angle[i] = it->angle();
+			lps.distance[i] = it->distance();
+			++i;
+		}
 	}
-
-	return 0;
+	
+	lps.size = min(i, MAX_NUM_LASER_POINTS);
+	return lps;
 }
 
 //----------------------------------------------------------
