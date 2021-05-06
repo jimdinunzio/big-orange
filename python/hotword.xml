@@ -1,0 +1,20 @@
+<!-- Leaf's Grammar Rules:
+     Return one name combined with one phrase as a single string.
+     For example, "Robot this is Bruce" -->
+
+
+<GRAMMAR LANGID="409">
+
+<RULE NAME="RobotHotword" TOPLEVEL="ACTIVE">
+
+	<LIST>
+	   	<P>orange</P>
+		<P>what's your name</P>
+		<P>what is your name</P>
+		<P>who are you</P>
+		<P>stop</P>
+	</LIST>
+</RULE>
+
+
+</GRAMMAR>

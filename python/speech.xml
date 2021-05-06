@@ -1,0 +1,158 @@
+<!-- Leaf's Grammar Rules:
+     Return one name combined with one phrase as a single string.
+     For example, "Robot this is Bruce" -->
+
+
+<GRAMMAR LANGID="409">
+
+<RULE NAME="RobotCommands" TOPLEVEL="ACTIVE">
+
+	<LIST>
+	   	<P>orange</P>
+		<P>what's your name</P>
+		<P>what is your name</P>
+		<P>who are you</P>
+		<P>stop</P>
+	</LIST>
+
+	<O>
+		<LIST>
+    		<P>ask google</P>
+			<P>
+    			<L>
+        			<P>activate</P>
+        			<P>deactivate</P>
+        		</L>
+        		<P>google</P>
+        		<O>mode</O>
+        	</P>
+			<P>resume listening</P>
+			<P>start listening</P>
+			<P>start listening again</P>
+			<P>pause listening</P>
+			<P>stop listening</P>
+			<P>what</P>
+			<P>what did you say</P>
+			<P>please repeat what you just said</P>
+			<P>stop</P>
+			<P>this is jim</P>
+			<P>this is evelyn</P>
+			<P>goodbye</P>
+			<P>who are you with</P>
+			<P>how are you</P>
+			<P>how are you feeling</P>
+			<P>where are you</P>
+			<P>challenge, phase one</P>
+			<P>what time is it</P>
+			<P>challenge phase one</P>
+			<P>go to sleep</P>
+			<P>
+				<P>+go</P>
+				<L>
+				<P>forward</P>
+				<P>backward</P>
+				<P>right</P>
+				<P>left</P>
+				</L>
+				<O>
+					<P>at</P>
+					<P>*</P>
+					<P>degrees</P>
+				</O>
+				<P>*</P>
+				<L>
+					<P>centimeters</P>
+					<P>inches</P>
+					<P>yards</P>
+					<P>meters</P>
+					<P>centimeter</P>
+					<P>inch</P>
+					<P>yard</P>
+					<P>meter</P>
+				</L>
+			</P>
+			<P>list your threads</P>
+			<P>recover localization</P>
+			<P>close your eyes</P>
+			<P>open your eyes</P>
+			<P>
+				<L>
+					<P>initiate</P>
+					<P>begin</P>
+				</L>
+				<L>
+					<P>+shut +down</P>
+					<P>+shutdown</P>
+				</L>
+			</P>
+			<P>+shutdown +system</P>
+			<P>status</P>
+			<P>clear map</P>
+			<P>load map</P>
+			<P>save map</P>
+			<P>motion</P>
+			<P>voltage</P>
+			<P>battery</P>
+			<P>
+				<L>
+					<P>enable</P>
+					<P>disable</P>
+				</L>
+				<P>map updating</P>
+			</P>
+			<P>go home</P>
+			<P>go recharge</P>
+			<P>go to dock</P>	  
+			<P>take a picture</P>
+			<P>
+				<P>set speed</P>
+				<L>
+					<P>low</P>
+					<P>medium</P>
+					<P>high</P>
+				</L>
+			</P>
+			<P>what do you see</P>
+			<P>
+				<P>identify this</P>
+				<L>
+					<P>bird</P>
+					<P>insect</P>
+					<P>plant</P>
+				</L>
+			</P>
+			<P>clear windows</P>
+			<P>
+				<P>+go +to</P>
+				<L>
+					<P>kitchen</P>
+					<P>kitchen nook</P>
+					<P>living room</P>
+					<P>back slider</P>
+					<P>dining area</P>
+					<P>office</P>
+					<P>front door</P>
+					<P>end of hall</P>
+				</L>
+			</P> 
+			<P>
+				<L>
+					<P>turn</P>
+					<P>rotate</P>
+				</L>
+				<L>
+					<P>around</P>
+					<P>
+						<P>*</P>
+						<P>degrees</P>
+						<O>clockwise</O>
+					</P>
+				</L>
+			</P>
+  		</LIST>
+	</O>
+
+</RULE>
+
+
+</GRAMMAR>

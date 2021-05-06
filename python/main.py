@@ -6,7 +6,8 @@ Created on Sun Jun  7 17:39:44 2020
 """
 
 # Constants
-_WAKEUP_WORD = "orange"
+_hotword = "orange"
+_privacy_mode = True
 _map_filename_str = b'MyHouse.stcm'
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
@@ -18,12 +19,11 @@ _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
 _mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
-_places = ["kitchen", "kitchen nook", "living room", "dining area", "office",
-           "front door", "end of hall"]
 _locations = { "kitchen" : (11.357, -4.094), "kitchen nook": (8.764, -4.696), 
-              "living room" : (0.875, -2.435), "dining area" : (6.3, -3.457),
-              "office" : (1.934, 0.163), "front door": (11.722, -1.355), 
-              "end of hall" : (6.932, 0.011), "custom" : (0.0, 0.0)}
+              "living room" : (0.875, -2.435), "back slider": (0.53, -2.90), 
+              "dining area" : (6.3, -3.457), "office" : (1.934, 0.163), 
+              "front door" : (11.722, -1.355), "end of hall" : (6.932, 0.011), 
+              "home" : (0.0, 0.0), "custom" : (float("NaN"), float("NaN")) }
 
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":-0.225,"bottom":-0.3, "width":4.34, "height":2.144}
@@ -35,7 +35,6 @@ _goal = ""
 _goal_queue = []
 _time = "morning"
 _times = ["morning", "noon", "afternoon", "evening", "night"]
-_phrase = "" # set by whatever speech recognition heard
 _last_phrase = "nothing"
 _listen_flag = True
 _action = "" # this will be set to whatever specific action is being attempted
@@ -44,7 +43,6 @@ _interrupt_action = False # True when interrupting a previously started action
 _request = "" # comes from someone telling the robot to do something
 _thought = "" # comes from the robot thinking that it wants to do something
 _do_something_flag = False
-_main_battery_voltage = 100.0 # this gets reset immediately
 _motion_flag = False  # set by monitor_motion thread, looking for humans in motion
 _robot_is_moving = False # set by robotMotion thread: True when robot is in motion
 _last_motion_time = 0 # the time.time() motion was last detected
@@ -70,6 +68,20 @@ from my_sdp_server import *
 import cv2
 import ai_vision.detect as detect
 import ai_vision.classify as classify
+import winspeech
+from enum import Enum
+
+class HandleResponseResult(Enum):
+    """Enumerated type for result of handling response of command"""
+    def __init__(self, number):
+        self._as_parameter__ = number
+        
+    # The response was not handled because the request was unknown
+    NotHandledUnknown = -1
+    # The response was not handle because no hot word was given
+    NotHandledNoHotWord = 0
+    # The response was handled
+    Handled = 1
 
 ###############################################################
 # Text input to Google Assistant for web based queries
@@ -152,7 +164,10 @@ def nearest_location(x, y):
 def where_am_i():
     global _sdp
     
-    pose = _sdp.pose()
+    try:
+        pose = _sdp.pose()
+    except:
+        return "unknown", 0, False
     location, distance = nearest_location(pose.x, pose.y)
     if (distance <= 100):
         closeEnough = True
@@ -168,15 +183,17 @@ def cancelAction(interrupt = False):
     global _sdp, _action_flag, _action, _interrupt_action
     if interrupt:
         _interrupt_action = True
-    try:
-        _sdp.cancelMoveAction()
-        _action_flag = False
-        _action = ""
-    except:
-        _action_flag = False
-        _action = ""  # may want to keep this to see what action got cancelled?
-        print("An error occurred canceling the action.")
-        return
+    for attempt in range(3):
+        try:
+            _sdp.cancelMoveAction()
+            _action_flag = False
+            _action = ""
+        except:            
+            print("An error occurred canceling the action, trying again.")
+            time.sleep(0.1)
+        else:
+            break
+    return
 
 def startrun():
     global _run_flag
@@ -192,7 +209,24 @@ def testgoto(str):
     global _goal
     _goal = str
 
-
+def batteryMonitor():
+    global _sdp
+    try:
+        batteryPercent = _sdp.battery()
+        if batteryPercent < 50:
+            speak(_person + ", F.Y.I., my battery is about half full.")
+        elif batteryPercent < 25:
+            speak(_person + ", my battery is getting low. I'll have to charge up soon.")
+        elif batteryPercent < 10:
+            speak(_person + ", I need to recharge my battery now or I will have to shut down.")
+        elif batteryPercent < 5:
+            speak(_person + ", my battery is exhausted, and I am shutting down now.") 
+            _run_flag = False
+            os.system("shutdown /s /t 10")
+    except:
+        None
+    time.sleep(10)
+    
 ################################################################
 # This is where goto actions are initiated and get carried out.
 # If the robot is in the process of going to a  location, but
@@ -377,7 +411,7 @@ def show_picture(filepath):
 def take_picture(filename):
     camera_port = 0
     camera = cv2.VideoCapture(camera_port)
-    time.sleep(0.5)  # If you don't wait, the image will be dark
+    time.sleep(2.0)  # If you don't wait, the image will be dark
     return_value, image = camera.read()
     playsound("sounds/camera-shutter.wav", block=True)
     cv2.imwrite("pictures_taken/" + filename, image)
@@ -385,7 +419,7 @@ def take_picture(filename):
     return image
     
 def statusReport():
-    global _person, _main_battery_voltage, _mood, _sdp
+    global _person, _mood, _sdp
     
     speak("This is my current status.")
     location, distance, closeEnough = where_am_i()
@@ -404,14 +438,441 @@ def statusReport():
     speak(answer)
     time.sleep(5)
 
+def handle_response(phrase, check_hot_word = True):
+    global _run_flag, _goal, _listen_flag, _last_phrase, _motion_flag
+    global _thought, _person, _new_person_flag, _mood, _time
+    global _request, _action, _action_flag
+    global _eyes_flag, _sdp, _hotword, _privacy_mode
+
+    # convert phrase to lower case for comparison
+    phrase = phrase.lower()
+    if "stop" in phrase:
+        cancelAction()
+        speak("Okay.")
+        location, distance, closeEnough = where_am_i() 
+        if not closeEnough:
+            speak("I'm closest to the " + location)
+        else:
+            ans = "I am now near the " + location + " location."
+            speak(ans)
+        return HandleResponseResult.Handled
+    
+    if (phrase == "what's your name" or
+        phrase == "what is your name" or
+        phrase == "who are you"):
+        speak("My name is Orange. Easy to remember, right?")
+        return HandleResponseResult.Handled
+
+    # check if the first word is the wake up word, otherwise ignore speech
+    if check_hot_word:
+        try:
+            (firstWord, phrase) = phrase.split(maxsplit=1)
+        except:
+            return HandleResponseResult.NotHandledNoHotWord
+        if (firstWord != _hotword):
+            return HandleResponseResult.NotHandledNoHotWord
+        
+    # some verbal commands are handled inside the listen thread
+    
+    if (phrase == "resume listening" or
+        phrase == "start listening" or
+        phrase == "start listening again"):
+        _listen_flag = True
+        speak("Okay, I'm listening.")
+        return HandleResponseResult.Handled
+    
+    if _listen_flag == False:
+        return HandleResponseResult.Handled
+    
+    if (phrase == "pause listening" or
+        phrase == "stop listening"):
+        _listen_flag = False
+        print("Okay, pause listening.")
+        return HandleResponseResult.Handled
+    
+    if (phrase == "what" or
+        phrase == "what did you say" or
+        phrase == "please repeat what you just said"):
+        speak("I said")
+        speak(_last_phrase)
+        return HandleResponseResult.Handled
+        
+    if "on privacy" in phrase:
+        _privacy_mode = True
+        speak("Ok. Privacy is on.")
+        return HandleResponseResult.Handled
+
+    if "off privacy" in phrase:
+        _privacy_mode = False
+        speak("Ok. Privacy is off.")
+        return HandleResponseResult.Handled
+
+    if phrase == "this is evelyn":
+        if _person != "Evelyn":
+            _new_person_flag = True
+        _person = "Evelyn"
+        return HandleResponseResult.Handled
+    
+    if phrase == "this is jim":
+        if _person != "Jim":
+            _new_person_flag = True
+        _person = "Jim"
+        return HandleResponseResult.Handled
+
+    if phrase == "goodbye":
+        answer = "See you later, " + _person
+        speak(answer)
+        if _person != "nobody":
+            _new_person_flag = True
+        _person = "nobody"
+        return HandleResponseResult.Handled
+
+    if phrase == "who are you with":
+        answer = "I'm with " + _person
+        speak(answer)
+        return HandleResponseResult.Handled
+
+    if (phrase == "how are you" or
+        phrase == "how are you feeling"):
+        answer = "I'm feeling " + _mood
+        speak(answer)
+        return HandleResponseResult.Handled
+    
+    if phrase == "where are you":
+        location, distance, closeEnough = where_am_i()
+        if not closeEnough:
+            answer = "I'm closest to the " + location
+            speak(answer)
+            return HandleResponseResult.Handled
+        answer = "I'm at the " + location + " location."
+        speak(answer)
+        return HandleResponseResult.Handled
+                
+    if phrase == "what time is it":
+        day = time.strftime("%A", time.localtime())
+        month = time.strftime("%B", time.localtime())
+        date = str(int(time.strftime("%d", time.localtime())))
+        hour = str(int(time.strftime("%I", time.localtime())))
+        minutes = time.strftime("%M", time.localtime())
+        ampm = time.strftime("%p", time.localtime())
+        if ampm == "AM":
+            ampm = "a.m."
+        else:
+            ampm = "p.m."
+        answer = "It is " + day + " " + month + " " + date + " at " + hour + " " + minutes + " " + ampm
+        speak(answer)
+        answer = "It's " + _time + "."
+        speak(answer)
+        return HandleResponseResult.Handled
+    
+    if "status" in phrase:
+        statusReport()
+        return HandleResponseResult.Handled
+                        
+    if phrase == "challenge phase one":
+        speak("Ok. I'm doing the challenge phase one.")
+        _sdp.wakeup()
+        time.sleep(6)
+        lps = _sdp.getLaserScan()
+        longest_dist = 0
+        longest_angle = 0
+        for i in range(0, lps.size):
+            if lps.distance[i] > longest_dist:
+                longest_dist = lps.distance[i]
+                longest_angle = lps.angle[i]
+
+        longest_dist -= 0.75
+        print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+        pose = _sdp.pose()
+        xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
+        yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
+        _locations["custom"] = (xt, yt)
+        _locations["origin"] = (pose.x, pose.y)
+        _goal_queue.append("origin")
+        _goal = "custom"
+        return HandleResponseResult.Handled
+
+    if phrase == "go home" or phrase == "go recharge" or phrase == "go to dock":
+        cancelAction(interrupt = True)
+        _goal = "home"
+        return HandleResponseResult.Handled
+
+    class GoDir:
+        Forward = 0
+        Backward = -180
+        Right = -90
+        Left = 90
+        
+    phi = None
+    # replace dash if present after gto with space => go <direction> 
+    if phrase.startswith("go-"):
+        phrase = phrase[:3].replace('-',' ') + phrase[3:]
+    if phrase.startswith("go forward"):
+        phi = GoDir.Forward
+    elif phrase.startswith("go backward"):
+        phi = GoDir.Backward
+    elif phrase.startswith("go right"):
+        phi = GoDir.Right
+    elif phrase.startswith("go left"):
+        phi = GoDir.Left
+
+    if phi != None:
+        # if already in action, ignore this
+        if _action_flag:
+            return HandleResponseResult.Handled
+        unit = None
+        dist = None
+        phrase_split = phrase.split() # split string into individual words
+        split_len = len(phrase_split)
+        if split_len < 3:
+            return HandleResponseResult.Handled
+        n = 2
+        # parse optional "at n degrees"
+        if split_len >= 7 and (phi == GoDir.Forward or phi == GoDir.Backward) and \
+            phrase_split[n] == "at" and phrase_split[n+2] == "degrees":
+            try:
+                phi += float(w2n.word_to_num(phrase_split[n+1]))
+            except:
+                try:
+                    phi += float(phrase_split[n+1])
+                except:
+                    return HandleResponseResult.Handled
+            n += 3
+        # parse distance
+        try:
+            dist = float(w2n.word_to_num(phrase_split[n]))
+        except:
+            try:
+                dist = float(phrase_split[n])
+            except:
+                if phrase_split[n] == "to":
+                    dist = 2
+                elif phrase_split[n] == "for":
+                    dist = 4
+                else:
+                    # this handles when distance is combined with unit. e.g. 3M, 3cm
+                    fs = "{:n}{0}"
+                    parsed = parse.parse(fs, phrase_split[n])
+                    if parsed != None:
+                        dist = parsed[0]
+                        unit = parsed[1]
+
+        if dist == None:
+            return HandleResponseResult.NotHandledUnknown
+
+        # parse unit of distance
+        if split_len > n+1:
+            unit = phrase_split[n+1]
+
+        if unit == None or unit.startswith("m"):
+            None
+        elif unit == "cm" or unit == "centimeters":
+            dist /= 100
+        elif unit == "in" or unit == "inches":
+            dist *= 0.0254
+        elif unit == "yard" or unit == "yards":
+            dist /= 1.094
+        else:
+            print("unknown unit")
+            return HandleResponseResult.NotHandledUnknown
+        
+        #if unit not mentioned assume meters
+        pose = _sdp.pose()
+        xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
+        yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
+        _locations["custom"] = (xt, yt)
+        _goal = "custom"
+        return HandleResponseResult.Handled
+        
+    if phrase == "go to sleep":
+        speak("Okay. I'm going to take a nap.")
+        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+        return HandleResponseResult.Handled
+
+    if "go to" in phrase:
+        words = phrase.split()
+        try:
+            words.remove("the")
+        except:
+            None
+        if len(words) > 2:
+            cancelAction(interrupt = True)
+            _goal = " ".join(words[2:]).lower()
+        return HandleResponseResult.Handled
+            
+    if phrase == "recover localization":
+        speak("I will search the whole map to locate myself.")
+        result = recoverLocalization(_HOUSE_RECT)
+        if result == False:
+            speak("I could not confirm my location.")
+
+    if phrase == "list your threads":
+        print()
+        pretty_print_threads()
+        print()
+        return HandleResponseResult.Handled
+    
+    # if phrase == "open your eyes":
+    #     if _eyes_flag == True:
+    #         return HandleResponseResult.Handled
+    #     _eyes_flag = True
+    #     Thread(target = eyes, name = "Display eyes").start()
+    #     return HandleResponseResult.Handled
+    
+    if phrase == "close your eyes":
+        _eyes_flag = False
+        return HandleResponseResult.Handled
+    
+    if (phrase == "initiate shut down" or
+        phrase == "initiate shutdown" or
+        phrase == "begin shut down" or
+        phrase == "begin shutdown"):
+        _eyes_flag = False
+        speak("Okay, I'm shutting down.")
+        #playsound("C:/Users/bjwei/wav/R2D2d.wav")
+        # List all currently running threads
+        print("\nClosing these active threads:")
+        pretty_print_threads()
+        # Have them terminate and close
+        _run_flag = False
+        return HandleResponseResult.Handled        
+
+    if phrase == "shutdown system":
+        speak("Okay, I'm shutting down the system.")
+        _run_flag = False
+        os.system("shutdown /s /t 10")
+        return HandleResponseResult.Handled
+            
+    if "battery" in phrase or "voltage" in phrase:
+        ans = "My battery is currently at "
+        ans = ans + str(_sdp.battery()) + " percent"
+        speak(ans)
+        return HandleResponseResult.Handled
+        
+    if "motion" in phrase:
+        if _motion_flag:
+            speak("I am detecting motion.")
+        else:
+            speak("I'm not detecting any motion.")
+        return HandleResponseResult.Handled
+ 
+    if "load map" in phrase:
+        speak("Ok. I will load my map.")
+        loadMap()
+        return HandleResponseResult.Handled
+    
+    if "save map" in phrase:
+        speak("Ok. I will save my map.")
+        saveMap()
+        return HandleResponseResult.Handled
+    
+    if "clear map" in phrase:
+        speak("Ok. I will clear my map.")
+        _sdp.clearSlamtecMap()
+        return HandleResponseResult.Handled
+    
+    if "map updating" in phrase:
+        if "enable" in phrase:
+            enable = True
+            speak("Ok. I will enable map updating.")
+        elif "disable" in phrase:
+            enable = False
+            speak("Ok. I will disable map updating.")
+        else:
+            return HandleResponseResult.Handled                
+        _sdp.setUpdate(enable)
+        return HandleResponseResult.Handled
+    
+    if "take a picture" in phrase:
+        speak("Ok. Say Cheeze...")
+        pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
+        mat = take_picture(pic_filename)
+        time.sleep(0.5)
+        speak("Ok. Here is the picture I took.")
+        show_picture_mat(mat)
+        return HandleResponseResult.Handled
+
+    if "set speed" in phrase:
+        if "low" in phrase:
+            speed = 1
+        elif "medium" in phrase:
+            speed = 2
+        elif "high" in phrase:
+            speed = 3
+        else:
+            return HandleResponseResult.Handled
+        speak("Ok. I'm setting the speed.")
+        if speed != _sdp.setSpeed(speed):
+            speak("Sorry, I could not change my speed this time.")
+        return HandleResponseResult.Handled
+    
+    if "you see" in phrase:
+        results = detect.detect_objects(top_count=3)
+        print(results)
+        res_count = len(results) 
+        if res_count > 0 and results[0].percent >= 40:
+            reply_str = "I see a " + results[0].label
+            if res_count == 2 and results[1].percent >= 40:
+                reply_str += " and a " + results[1].label
+            elif res_count > 2:
+                for i in range(1, res_count - 1):
+                    if results[i].percent >= 40:
+                        reply_str += ", a " +results[i].label
+                if results[res_count - 1].percent >= 40:
+                    reply_str += " and a " + results[res_count - 1].label
+        else:
+            reply_str = "I don't see anything I recognize."
+        speak(reply_str)
+        return HandleResponseResult.Handled
+    
+    if "identify this" in phrase:
+        model = classify.ModelType.General
+        if "bird" in phrase:
+            model = classify.ModelType.Birds
+        elif "insect" in phrase:
+            model = classify.ModelType.Insects
+        elif "plant" in phrase:
+            model = classify.ModelType.Plants
+        results = classify.classify(model)
+        print(results)
+        if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
+            speak("it looks like a " + results[0].label)
+        else:
+            speak("Sorry, I do not know what it is.")
+        return HandleResponseResult.Handled
+    
+    if "clear windows" in phrase:
+        cv2.destroyAllWindows()
+        return HandleResponseResult.Handled
+    
+    deg = 0
+    temp = phrase # special case requiring parsing
+    temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
+    phrase_split = temp.split() # split string into individual words
+    split_len = len(phrase_split)
+    if split_len >= 2 and ((phrase_split[0] == "turn" and 
+                           phrase_split[1] != "on" and 
+                           phrase_split[1] != "off") or phrase_split[0] == "rotate"):
+        try:
+            deg = int(w2n.word_to_num(phrase_split[1]))
+            if split_len >= 4 and phrase_split[3] == "clockwise":
+                deg = -deg
+        except:
+            if phrase_split[1] == "around":
+                deg = 180
+            else:
+                None
+        turn(deg)
+        return HandleResponseResult.Handled
+    
+    return HandleResponseResult.NotHandledUnknown # not handled
+
 ###############################################################
 # Speech recognition using Google over internet connection
 def listen():
     import speech_recognition as sr
-    global _run_flag, _goal, _listen_flag, _phrase, _last_phrase, _motion_flag
-    global _thought, _person, _new_person_flag, _mood, _time
-    global _request, _action, _internet, _action_flag, _main_battery_voltage
-    global _eyes_flag, _sdp
+    global _run_flag, _goal
+    global _internet, _hotword, _privacy_mode
     
     ###########################################################
     # Text input to Google Assistant for web based queries
@@ -518,7 +979,7 @@ def listen():
     except Exception as e:
         logging.error('Error loading credentials: %s', e)
         logging.error('Run google-oauthlib-tool to initialize '
-                      'new OAuth 2.0 credentials.')
+                        'new OAuth 2.0 credentials.')
     
     # Create an authorized gRPC channel.
     grpc_channel = google.auth.transport.grpc.secure_authorized_channel(credentials, http_request, api_endpoint)
@@ -527,458 +988,100 @@ def listen():
 
     # create a recognizer object
     r = sr.Recognizer()
-    
+        
     speak("Hello, My name is Orange. Pleased to be at your service.")
-    
+        
+    def local_hotword_recog_cb(phrase, listener, hotword):
+        global _pause_listening
+        print("I heard: %s" % phrase)
+        if "stop" in phrase or "what's your name" in phrase or "what is your name" in phrase \
+            or "who are you" in phrase:
+            handle_response(phrase)
+            return
+        if hotword in phrase:
+            _pause_listening = True
+            listener.stop_listening()
+            listenFromGoogleSpeechRecog()
+            handled_result = handle_response(phrase, False)
+        if handled_result == HandleResponseResult.NotHandledUnknown:            
+            sendToGoogleAssistant(phrase)
+        _pause_listening = False
+
+    def local_speech_recog_cb(phrase, listener, hotword):
+        global _privacy_mode
+        print("I heard: %s" % phrase)
+        handled_result = handle_response(phrase)
+        if _privacy_mode == False:
+            listener.stop_listening()
+            return
+        if handled_result == HandleResponseResult.NotHandledUnknown:
+            print("I am not sure how to help with that.")
+            speak("I am not sure how to help with that.")
+        elif handled_result == HandleResponseResult.NotHandledNoHotWord:
+            print("No hot word, ignoring.")
+
     while _run_flag:
-        # obtain audio from the microphone
-        try:
-            with sr.Microphone() as source:
-                # adjust microphone for ambient noise:
-                # first, turn off dynamic thresholding,
-                # eg: r.adjust_for_ambient_noise(source)
-                # then, set a volume threshold at 500 where
-                # 0 = it hears everything. 4000 = it hears nothing.
-                r.dynamic_energy_threshold = False
-                r.energy_threshold = 500
-                print("Say something!")
-                audio = r.listen(source)
-        except:
-            continue
-        
-        # recognize speech using Google Speech Recognition
-        try:
-            _phrase = r.recognize_google(audio)
-            _internet = True
-            print("I heard: " + _phrase)
-        except sr.UnknownValueError:
-            _phrase = ""
-            _internet = True
-            print("What?")
-            continue
-        except sr.RequestError:
-            _phrase = ""
-            _internet = False
-            print("I lost my internet connection.")
-            continue
-        except:
-            print("Unknown speech recognition error.")
-            continue
-            
-        # convert phrase to lower case for comparison
-        _phrase = _phrase.lower()
-        if "stop" in _phrase:
-            cancelAction()
-            speak("Okay.")
-            location, distance, closeEnough = where_am_i() 
-            if not closeEnough:
-                speak("I'm closest to the " + location)
-            else:
-                ans = "I am now near the " + location + " location."
-                speak(ans)
-            continue
-        
-        # check if the first word is the wake up word, otherwise ignore speech
-        try:
-            (firstWord, _phrase) = _phrase.split(maxsplit=1)
-        except:
-            continue
-        if (firstWord != _WAKEUP_WORD):
-            continue
-            
-        # some verbal commands are handled inside the listen thread
-        
-        if (_phrase == "resume listening" or
-            _phrase == "start listening" or
-            _phrase == "start listening again"):
-            _listen_flag = True
-            speak("Okay, I'm listening.")
-            continue
-        
-        if _listen_flag == False:
-            continue
-        
-        if (_phrase == "pause listening" or
-            _phrase == "stop listening"):
-            _listen_flag = False
-            print("Okay, pause listening.")
-            continue
-        
-        if (_phrase == "what" or
-            _phrase == "what did you say" or
-            _phrase == "please repeat what you just said"):
-            speak("I said")
-            speak(_last_phrase)
-            continue
-        
-        if (_phrase == "what's your name" or
-            _phrase == "what is your name" or
-            _phrase == "who are you"):
-            speak("My name is Orange. Easy to remember, right?")
-            continue
-        
-        if _phrase == "this is Evelyn":
-            if _person != "Evelyn":
-                _new_person_flag = True
-            _person = "Evelyn"
-            continue
-        
-        if _phrase == "this is Jim":
-            if _person != "Jim":
-                _new_person_flag = True
-            _person = "Jim"
-            continue
+        use_local_speech = (not _internet) or _privacy_mode
 
-        if _phrase == "goodbye":
-            answer = "See you later, " + _person
-            speak(answer)
-            if _person != "nobody":
-                _new_person_flag = True
-            _person = "nobody"
-            continue
+        if use_local_speech:
+            print("local listener")
+            # if no internet access or privacy mode is active, use WSR / SAPI to recognize a command subset
+            local_listener = winspeech.listen_for(None, "speech.xml", "RobotCommands", 
+            lambda phrase, listener, hotword=_hotword: local_speech_recog_cb(phrase, listener, hotword))
+        else: # use winspeech to detect hotword or stop and then invoke google cloud speech
+            print("detecting hotword")
+            local_listener = winspeech.listen_for(None, "hotword.xml", "RobotHotword", 
+            lambda phrase, listener, hotword=_hotword: local_hotword_recog_cb(phrase, listener, hotword))
 
-        if _phrase == "who are you with":
-            answer = "I'm with " + _person
-            speak(answer)
-            continue
+        while local_listener.is_listening() or _pause_listening:
+            time.sleep(0.1)
 
-        if (_phrase == "how are you" or
-            _phrase == "how are you feeling"):
-            answer = "I'm feeling " + _mood
-            speak(answer)
-            continue
-        
-        if _phrase == "where are you":
-            location, distance, closeEnough = where_am_i()
-            if not closeEnough:
-                answer = "I'm closest to the " + location
-                speak(answer)
-                continue
-            answer = "I'm at the " + location + " location."
-            speak(answer)
-            continue
-                    
-        if _phrase == "what time is it":
-            day = time.strftime("%A", time.localtime())
-            month = time.strftime("%B", time.localtime())
-            date = str(int(time.strftime("%d", time.localtime())))
-            hour = str(int(time.strftime("%I", time.localtime())))
-            minutes = time.strftime("%M", time.localtime())
-            ampm = time.strftime("%p", time.localtime())
-            if ampm == "AM":
-                ampm = "a.m."
-            else:
-                ampm = "p.m."
-            answer = "It is " + day + " " + month + " " + date + " at " + hour + " " + minutes + " " + ampm
-            speak(answer)
-            answer = "It's " + _time + "."
-            speak(answer)
-            continue
-        
-        if "status" in _phrase:
-            statusReport()
-            continue
-                            
-        if _phrase == "challenge phase 1":
-            speak("Ok. I'm doing the challenge phase 1.")
-            _sdp.wakeup()
-            time.sleep(6)
-            lps = _sdp.getLaserScan()
-            longest_dist = 0
-            longest_angle = 0
-            for i in range(0, lps.size):
-                if lps.distance[i] > longest_dist:
-                    longest_dist = lps.distance[i]
-                    longest_angle = lps.angle[i]
 
-            longest_dist -= 0.75
-            print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
-            return_pose = _sdp.pose()
-            xt = return_pose.x + longest_dist * math.cos(math.radians(return_pose.yaw) + longest_angle)
-            yt = return_pose.y + longest_dist * math.sin(math.radians(return_pose.yaw) + longest_angle)
-            _locations["custom"] = (xt, yt)
-            _locations["origin"] = (return_pose.x, return_pose.y)
-            _goal_queue.append("origin")
-            _goal = "custom"
-            continue
-
-        if _phrase == "go home" or _phrase == "go recharge" or _phrase == "go to dock":
-            cancelAction(interrupt = True)
-            _goal = "home"
-            continue
+def listenFromGoogleSpeechRecog():
+    # obtain audio from the microphone
+    try:
+        with sr.Microphone() as source:
+            # adjust microphone for ambient noise:
+            # first, turn off dynamic thresholding,
+            # eg: r.adjust_for_ambient_noise(source)
+            # then, set a volume threshold at 500 where
+            # 0 = it hears everything. 4000 = it hears nothing.
+            r.dynamic_energy_threshold = False
+            r.energy_threshold = 2000 if _goal != "" else 500 
+            print("Say something!")
+            audio = r.listen(source, phrase_time_limit= 2 if _goal != "" else None)
+    except:
+        return
     
-        class GoDir:
-            Forward = 0
-            Backward = -180
-            Right = -90
-            Left = 90
-            
-        phi = None
-        # replace dash if present after gto with space => go <direction> 
-        if _phrase.startswith("go-"):
-            _phrase = _phrase[:3].replace('-',' ') + _phrase[3:]
-        if _phrase.startswith("go forward"):
-            phi = GoDir.Forward
-        elif _phrase.startswith("go backward"):
-            phi = GoDir.Backward
-        elif _phrase.startswith("go right"):
-            phi = GoDir.Right
-        elif _phrase.startswith("go left"):
-            phi = GoDir.Left
+    # recognize speech using Google Speech Recognition
+    try:
+        phrase = r.recognize_google(audio)
+        _internet = True
+        print("I heard: " + phrase)
+    except sr.UnknownValueError:
+        phrase = ""
+        _internet = True
+        print("What?")
+    except sr.RequestError:
+        phrase = ""
+        _internet = False
+        print("I lost my internet connection.")
+    except:
+        print("Unknown speech recognition error.")
+    
 
-        if phi != None:
-            # if already in action, ignore this
-            if _action_flag:
-                continue
-            unit = None
-            dist = None
-            phrase_split = _phrase.split() # split string into individual words
-            split_len = len(phrase_split)
-            if split_len < 3:
-                continue
-            n = 2
-            # parse optional "at n degrees"
-            if split_len >= 7 and (phi == GoDir.Forward or phi == GoDir.Backward) and \
-                phrase_split[n] == "at" and phrase_split[n+2] == "degrees":
-                try:
-                    phi += float(w2n.word_to_num(phrase_split[n+1]))
-                except:
-                    try:
-                        phi += float(phrase_split[n+1])
-                    except:
-                        continue
-                n += 3
-            # parse distance
-            try:
-                dist = float(w2n.word_to_num(phrase_split[n]))
-            except:
-                try:
-                    dist = float(phrase_split[n])
-                except:
-                    if phrase_split[n] == "to":
-                        dist = 2
-                    elif phrase_split[n] == "for":
-                        dist = 4
-                    else:
-                        # this handles when distance is combined with unit. e.g. 3M, 3cm
-                        fs = "{:n}{0}"
-                        parsed = parse.parse(fs, phrase_split[n])
-                        if parsed != None:
-                            dist = parsed[0]
-                            unit = parsed[1]
-            # parse unit of distance
-            if split_len > n+1:
-                unit = phrase_split[n+1]
-
-            if unit == None or unit.startswith("m"):
-                None
-            elif unit == "cm" or unit == "centimeters":
-                dist /= 100
-            elif unit == "in" or unit == "inches":
-                dist *= 0.0254
-            elif unit == "yard" or unit == "yards":
-                dist /= 1.094
-            else:
-                print("unknown unit")
-                continue
-            
-            if dist == None:
-                continue
-            #if unit not mentioned assume meters
-            pose = _sdp.pose()
-            xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
-            yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
-            _locations["custom"] = (xt, yt)
-            _goal = "custom"
-            continue
-            
-        if _phrase == "go to sleep":
-            speak("Okay. I'm going to take a nap.")
-            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-            continue
-
-        if "go to" in _phrase:
-            words = _phrase.split()
-            try:
-                words.remove("the")
-            except:
-                None
-            if len(words) > 2:
-                cancelAction(interrupt = True)
-                _goal = " ".join(words[2:]).lower()
-            continue
-                
-        if _phrase == "recover localization":
-            speak("I will search the whole map to locate myself.")
-            result = recoverLocalization(_HOUSE_RECT)
-            if result == False:
-                speak("I could not confirm my location.")
-
-        if _phrase == "list your threads":
-            print()
-            pretty_print_threads()
-            print()
-            continue
-        
-        # if _phrase == "open your eyes":
-        #     if _eyes_flag == True:
-        #         continue
-        #     _eyes_flag = True
-        #     Thread(target = eyes, name = "Display eyes").start()
-        #     continue
-        
-        if _phrase == "close your eyes":
-            _eyes_flag = False
-            continue
-        
-        if (_phrase == "initiate shut down" or
-            _phrase == "initiate shutdown" or
-            _phrase == "begin shut down" or
-            _phrase == "begin shutdown"):
-            _eyes_flag = False
-            speak("Okay, I'm shutting down.")
-            #playsound("C:/Users/bjwei/wav/R2D2d.wav")
-            # List all currently running threads
-            print("\nClosing these active threads:")
-            pretty_print_threads()
-            # Have them terminate and close
-            _run_flag = False
-            continue        
-
-        if _phrase == "shutdown system":
-            speak("Okay, I'm shutting down the system.")
-            _run_flag = False
-            os.system("shutdown /s /t 10")
-            continue
-                
-        if "battery" in _phrase:
-            ans = "My battery is currently at "
-            ans = ans + str(_sdp.battery()) + " percent"
-            speak(ans)
-            continue
-            
-        if "motion" in _phrase:
-            if _motion_flag:
-                speak("I am detecting motion.")
-            else:
-                speak("I'm not detecting any motion.")
-            continue
- 
-        if "load map" in _phrase:
-            speak("Ok. I will load my map.")
-            loadMap()
-            continue
-        
-        if "save map" in _phrase:
-            speak("Ok. I will save my map.")
-            saveMap()
-            continue
-        
-        if "clear map" in _phrase:
-            speak("Ok. I will clear my map.")
-            _sdp.clearSlamtecMap()
-            continue
-        
-        if "map updating" in _phrase:
-            if "enable" in _phrase:
-                enable = True
-                speak("Ok. I will enable map updating.")
-            elif "disable" in _phrase:
-                enable = False
-                speak("Ok. I will disable map updating.")
-            else:
-                continue                
-            _sdp.setUpdate(enable)
-            continue
-        
-        if "take a picture" in _phrase:
-            speak("Ok. Say Cheeze...")
-            pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
-            mat = take_picture(pic_filename)
-            time.sleep(0.5)
-            speak("Ok. Here is the picture I took.")
-            show_picture_mat(mat)
-            continue
-
-        if "set speed" in _phrase:
-            if "low" in _phrase:
-                speed = 1
-            elif "medium" in _phrase:
-                speed = 2
-            elif "high" in _phrase:
-                speed = 3
-            else:
-                continue
-            speak("Ok. I'm setting the speed.")
-            if speed != _sdp.setSpeed(speed):
-                speak("Sorry, I could not change my speed this time.")
-            continue
-        
-        if "you see" in _phrase:
-            results = detect.detect_objects(top_count=3)
-            print(results)
-            res_count = len(results) 
-            if res_count > 0 and results[0].percent >= 40:
-                reply_str = "I see a " + results[0].label
-                if res_count == 2 and results[1].percent >= 40:
-                    reply_str += " and a " + results[1].label
-                elif res_count > 2:
-                    for i in range(1, res_count - 1):
-                        if results[i].percent >= 40:
-                            reply_str += ", a " +results[i].label
-                    if results[res_count - 1].percent >= 40:
-                        reply_str += " and a " + results[res_count - 1].label
-            else:
-                reply_str = "I don't see anything I recognize."
-            speak(reply_str)
-            continue
-        
-        if "identify this" in _phrase:
-            model = classify.ModelType.General
-            if "bird" in _phrase:
-                model = classify.ModelType.Birds
-            elif "insect" in _phrase:
-                model = classify.ModelType.Insects
-            elif "plant" in _phrase:
-                model = classify.ModelType.Plants
-            results = classify.classify(model)
-            print(results)
-            if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
-                speak("it looks like a " + results[0].label)
-            else:
-                speak("Sorry, I do not know what it is.")
-            continue
-        
-        if "clear windows" in _phrase:
-            cv2.destroyAllWindows()
-            continue
-        
-        deg = 0
-        temp = _phrase # special case requiring parsing
-        temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
-        phrase_split = temp.split() # split string into individual words
-        split_len = len(phrase_split)
-        if split_len >= 2 and ((phrase_split[0] == "turn" and 
-                               phrase_split[1] != "on" and 
-                               phrase_split[1] != "off") or phrase_split[0] == "rotate"):
-            try:
-                deg = int(w2n.word_to_num(phrase_split[1]))
-                if split_len >= 4 and phrase_split[3] == "clockwise":
-                    deg = -deg
-            except:
-                if phrase_split[1] == "around":
-                    deg = 180
-                else:
-                    None
-            turn(deg)
-            continue
+def sendToGoogleAssistant(phrase):
+    global _internet
+    if _internet:
         print("Don't know about that, sending question to google assistant")
         with TextAssistant(lang, device_model_id, device_id, display,
-                 grpc_channel, grpc_deadline) as assistant:
-            response_text, response_html = assistant.assist(text_query = _phrase)
+                grpc_channel, grpc_deadline) as assistant:
+            response_text, response_html = assistant.assist(text_query = phrase)
             if response_text:
                 speak(response_text)
-                continue
+    else: 
+        print("I am not sure how to help with that.")
+        speak("I am not sure how to help with that.")
 
 def recoverLocalization(rect):
     result = _sdp.recoverLocalization(rect["left"], 
@@ -1040,7 +1143,7 @@ def initialize_robot():
 #    Thread(target = eyes, name = "Display eyes").start()
     
     #Thread(target = display, name = "Display").start()
-
+    #Thread(target = batteryMonitor, name = "Battery monitor").start()
     
 ################################################################
 # This is where data gets saved to disk
@@ -1093,21 +1196,28 @@ def connectToSdp():
     elif res == 2:
         print("Could not connect to SlamTec, connection fail.")#, errStr.value)
     return res
-        
+
+def init_local_speech_rec():
+    # Start an in-process edge recognizer using SAPI.
+    winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
+    
 def run():
     global _sdp
     # Start 32 bit bridge server
     _sdp = MyClient()
 
     if _execute:
+        init_local_speech_rec()
         initialize_speech()
         speak("I'm starting up.")
 
         res = connectToSdp()
 
         if (res == 0):
-            speak("I'm now connected to Slamtec. Now loading the map.")
+            print("I'm now connected to Slamtec. Now loading the map.")
             loadMap()
+            # set to update map by default.
+            _sdp.setUpdate(True)
             None
         else:
             speak("Something is wrong. I could not connect to Slamtec.")
