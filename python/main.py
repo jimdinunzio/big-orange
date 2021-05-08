@@ -6,7 +6,6 @@ Created on Sun Jun  7 17:39:44 2020
 """
 
 # Constants
-_pause_listening = False
 _hotword = "orange"
 _google_mode = False
 _map_filename_str = b'MyHouse.stcm'
@@ -281,13 +280,16 @@ def handleGotoLocation():
 
         _interrupt_action = False
         while(_interrupt_action == False):
-            maStatus = getMoveActionStatus()
-            if maStatus == ActionStatus.Stopped or \
-                maStatus == ActionStatus.Error or \
-                maStatus == ActionStatus.Finished:
-                break
+            try:
+                maStatus = getMoveActionStatus()
+                if maStatus == ActionStatus.Stopped or \
+                    maStatus == ActionStatus.Error or \
+                    maStatus == ActionStatus.Finished:
+                    break
+            except:
+                None
             time.sleep(0.5)
-
+            
         if _interrupt_action == True:
             _interrupt_action = False
             continue
@@ -341,13 +343,12 @@ def time_update():
 ###############################################################
 # Speech Related
             
-def speak(phrase, a_sync=False):
+def speak(phrase):
     global _last_phrase, _voice
 
     try:
         print(phrase)
-        _voice.say(phrase, tts.sapi.SpeechVoiceSpeakFlags.FlagsAsync.value if a_sync
-                   else tts.sapi.SpeechVoiceSpeakFlags.Default.value)
+        _voice.say(phrase)
     except Exception:
         print("Speak has timed out.")
         pass
@@ -581,11 +582,11 @@ def listen():
         global _run_flag, _goal, _listen_flag, _last_phrase, _motion_flag
         global _thought, _person, _new_person_flag, _mood, _time
         global _request, _action, _action_flag, _internet, _use_internet
-        global _eyes_flag, _sdp, _hotword, _google_mode
+        global _eyes_flag, _sdp, _hotword
 
         # convert phrase to lower case for comparison
         phrase = phrase.lower()
-        if "stop" in phrase:
+        if phrase == "stop" or phrase == "orange stop":
             cancelAction()
             speak("Okay.")
             location, distance, closeEnough = where_am_i() 
@@ -635,20 +636,7 @@ def listen():
             speak("I said")
             speak(_last_phrase)
             return HandleResponseResult.Handled
-            
-        if phrase == "activate google":
-            if _use_internet and _internet:
-                _google_mode = True
-                speak("Ok. Google mode is active.")
-            else:
-                speak("Google mode is not available.")
-            return HandleResponseResult.Handled
-
-        if phrase == "deactivate google":
-            _google_mode = False
-            speak("Ok. Google mode is not active.")
-            return HandleResponseResult.Handled
-
+        
         if phrase == "this is evelyn":
             if _person != "Evelyn":
                 _new_person_flag = True
@@ -1040,11 +1028,11 @@ def listen():
         except sr.RequestError:
             phrase = ""
             _internet = False
-            speak("I lost my internet connection.")
+            speak("I lost my internet connection.")            
         except:
+            phrase = ""
             print("Unknown speech recognition error.")
-        else:
-            return phrase
+        return phrase
         
     def sendToGoogleAssistant(phrase):
         global _internet
@@ -1061,70 +1049,81 @@ def listen():
             speak("I am not sure how to help with that.")
 
     def local_hotword_recog_cb(phrase, listener, hotword, r, sr):
-        global _pause_listening
         phrase = phrase.lower()
         print("I heard: %s" % phrase)
-        if "stop" in phrase or "what's your name" in phrase or "what is your name" in phrase \
+        if phrase == "stop" or "what's your name" in phrase or "what is your name" in phrase \
             or "who are you" in phrase:
-            _pause_listening = True
-            listener.stop_listening()
-            handle_response(phrase)
-            _pause_listening = False
+            listener.set_active(False)
+            try:
+                handle_response(phrase)
+            except:
+                speak("sorry, i could not do what you wanted.")
+            finally:
+                listener.set_active(True)
             return
         if hotword in phrase:
-            _pause_listening = True
-            listener.stop_listening()
-            speak("yes?", a_sync=True)
-            time.sleep(1)
-            phrase = listenFromGoogleSpeechRecog(r, sr)
-            handled_result = handle_response(phrase, False)
-            if handled_result == HandleResponseResult.NotHandledUnknown:
-                sendToGoogleAssistant(phrase)
-            _pause_listening = False
+            listener.set_active(False)
+            speak("yes?")
+            try:
+                phrase = listenFromGoogleSpeechRecog(r, sr)
+                handled_result = handle_response(phrase, False)
+                if handled_result == HandleResponseResult.NotHandledUnknown:
+                    sendToGoogleAssistant(phrase)
+            except:
+                speak("sorry, i could not do what you wanted.")
+            finally:
+                listener.set_active(True)
 
     def local_speech_recog_cb(phrase, listener, hotword, r, sr):
-        global _google_mode, _pause_listening, _internet, _use_internet
+        global _internet, _use_internet
         print("I heard: %s" % phrase)
         phrase = phrase.lower()
-        _pause_listening = True
-        listener.stop_listening()
+        listener.set_active(False)
         if phrase == "orange ask google":
-            if _use_internet and _internet:
-                speak("Go ahead", a_sync=True)
-                time.sleep(1)
-                phrase = listenFromGoogleSpeechRecog(r, sr)
-                sendToGoogleAssistant(phrase)
-            else:
-                speak("ask google is not available.")
-            _pause_listening = False
+            try:
+                if _use_internet and _internet:
+                    speak("Go ahead")
+                    phrase = listenFromGoogleSpeechRecog(r, sr)
+                    sendToGoogleAssistant(phrase)
+                else:
+                    speak("ask google is not available.")
+            finally:
+                listener.set_active(True)
             return
-        handled_result = handle_response(phrase)
-        if handled_result == HandleResponseResult.NotHandledUnknown:
-            speak("I am not sure how to help with that.")
-        elif handled_result == HandleResponseResult.NotHandledNoHotWord:
-            print("No hot word, ignoring.")
-        _pause_listening = False
+        try:
+            handled_result = handle_response(phrase)
+            if handled_result == HandleResponseResult.NotHandledUnknown:
+                speak("I am not sure how to help with that.")
+            elif handled_result == HandleResponseResult.NotHandledNoHotWord:
+                print("No hot word, ignoring.")
+        except:
+            speak("sorry, i could not do what you wanted.")
+        finally:
+            listener.set_active(True)
 
     while _run_flag:
+        local_listener = None
         use_local_speech = not _use_internet or not _internet or not _google_mode
+        try:
+            if use_local_speech:
+                print("local listener")
+                # if no internet access or google mode is inactive, use WSR / SAPI
+                # to recognize a command subset
+                local_listener = winspeech.listen_for(None, "speech.xml", 
+                "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
+                sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, sr))
+            else: 
+                # use winspeech to detect hotword or stop and then invoke google 
+                # cloud speech
+                print("detecting hotword")
+                local_listener = winspeech.listen_for(None, "hotword.xml", 
+                "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
+                sr=sr: local_hotword_recog_cb(phrase, listener, hotword, r, sr))
+        except Exception as e:
+            print(e)
 
-        if use_local_speech:
-            print("local listener")
-            # if no internet access or google mode is inactive, use WSR / SAPI
-            # to recognize a command subset
-            local_listener = winspeech.listen_for(None, "speech.xml", 
-              "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
-              sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, sr))
-        else: 
-            # use winspeech to detect hotword or stop and then invoke google 
-            # cloud speech
-            print("detecting hotword")
-            local_listener = winspeech.listen_for(None, "hotword.xml", 
-              "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
-              sr=sr: local_hotword_recog_cb(phrase, listener, hotword, r, sr))
-
-        while _run_flag and (local_listener.is_listening() or _pause_listening):
-            time.sleep(0.1)
+        while _run_flag and local_listener is not None:
+            time.sleep(2)
 
 def recoverLocalization(rect):
     result = _sdp.recoverLocalization(rect["left"], 
@@ -1229,7 +1228,7 @@ def robot():
         while _run_flag:
             time.sleep(1)
     except KeyboardInterrupt:
-        None
+        pretty_print_threads()
 
     shutdown_robot()
 

@@ -18,14 +18,6 @@
 	<O>
 		<LIST>
     		<P>ask google</P>
-			<P>
-    			<L>
-        			<P>activate</P>
-        			<P>deactivate</P>
-        		</L>
-        		<P>google</P>
-        		<O>mode</O>
-        	</P>
 			<P>resume listening</P>
 			<P>start listening</P>
 			<P>start listening again</P>
