@@ -4,6 +4,7 @@ Created on Sun Jun  7 17:39:44 2020
 
 @author: LattePanda
 """
+import math
 
 # Constants
 _hotword = "orange"
@@ -19,11 +20,11 @@ _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
 _mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
-_locations = { "kitchen" : (11.357, -4.094), "kitchen nook": (8.764, -4.696), 
-              "living room" : (0.875, -2.435), "back slider": (0.53, -2.90), 
-              "dining area" : (6.3, -3.457), "office" : (1.934, 0.163), 
-              "front door" : (11.722, -1.355), "end of hall" : (6.932, 0.011), 
-              "home" : (0.0, 0.0), "custom" : (float("NaN"), float("NaN")) }
+_locations = { "kitchen" : (11.357, -4.094, 0), "kitchen nook": (8.764, -4.696, -math.pi/2.0), 
+              "living room" : (0.875, -2.435, math.pi), "back slider": (0.53, -2.90, math.pi/2.0), 
+              "dining area" : (6.3, -3.457, -math.pi/2), "office" : (1.934, 0.163, math.pi/2.0), 
+              "front door" : (11.722, -1.355, 0.0), "end of hall" : (6.932, 0.011, math.pi), 
+              "home" : (0.0, 0.0, 0.0) }
 
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":-0.225,"bottom":-0.3, "width":4.34, "height":2.144}
@@ -60,7 +61,6 @@ import threading
 from threading import Thread
 from playsound import playsound
 from word2number import w2n
-import math
 import io
 #import pygame
 #from gtts import gTTS
@@ -71,6 +71,9 @@ import ai_vision.detect as detect
 import ai_vision.classify as classify
 import winspeech
 from enum import Enum
+import move_oak_d as oakd
+import my_depthai
+import random
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -245,6 +248,7 @@ def batteryMonitor():
 
 def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _sdp, _interrupt_action
+    global _deliveree, _package
     while _run_flag:
         if _goal == "" or _action_flag:
             # no goal or some action is currently in progress, so sleep.
@@ -255,7 +259,15 @@ def handleGotoLocation():
         if _goal == "home":
             speak("I'm going home")
             _sdp.home()
-        else:
+        elif _goal == "deliver" and _locations.get(_goal) is None:
+            # need to find person in room for delivery
+            if not setDeliverToPersonAsGoal():
+                speak("Sorry, I could not find "+ _deliveree)
+                _goal = ""
+                _deliveree = ""
+                _goal_queue.clear()
+            continue
+        else: # expect a goal in the list of locations 
             coords = _locations.get(_goal)
             if coords is None:
                 speak("Sorry, I don't know how to get there.")
@@ -264,7 +276,7 @@ def handleGotoLocation():
                 if len(_goal_queue) > 0:
                     _goal = _goal_queue.pop(0)
                 continue
-            if _goal != "custom":
+            if _goal != "custom" and _goal != "deliver":
                 location, distance, closeEnough = where_am_i()
                 if _goal == location and distance < 50:
                     speak("I'm already at the " + _goal)
@@ -273,10 +285,15 @@ def handleGotoLocation():
                         _goal = _goal_queue.pop(0)
                     continue
                 speak("I'm going to the " + _goal)
+            elif _goal == "deliver":
+                speak("hello " + _deliveree)
             else:
                 speak("OK.")
             _action_flag = True
-            _sdp.moveToFloat(coords[0], coords[1])
+            if len(coords) == 3:
+                _sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
+            else:
+                _sdp.moveToFloat(coords[0], coords[1])
 
         _interrupt_action = False
         while(_interrupt_action == False):
@@ -292,21 +309,34 @@ def handleGotoLocation():
             
         if _interrupt_action == True:
             _interrupt_action = False
+            _goal_queue.clear()
             continue
         # reaching this point, the robot first moved, then stopped - so check where it is now
         location, distance, closeEnough = where_am_i()
 
         # and now check to see if it reached the goal
         if (location == _goal and closeEnough):
-            speak("I've arrived!")
-        elif _goal != "custom":
-            speak("Sorry, I didn't make it to the " + _goal)
+            if _goal == "deliver":
+                speak(_deliveree + ", I have a " + _package + " for you.")
+                _deliveree = None
+            else:
+                speak("I've arrived.")
         else:
-            speak("Sorry, I didn't make it to where you wanted.")
+            if _goal == "deliver":
+                speak("Sorry, I could not make my delivery")
+            elif _goal != "custom":
+                speak("Sorry, I didn't make it to the " + _goal)
+            else:
+                speak("Sorry, I didn't make it to where you wanted.")
         
-        # finally clear the _action and _action_flag
+        # finally clear temp goals and _action and _action_flags
+        if _goal == "custom":
+            del _locations["custom"]
+        elif _goal == "deliver":
+            del _locations["deliver"]
+            _deliveree = ""
         _action_flag = False # you've arrived somewhere, so no further action
-        _action = ""            
+        _action = ""
         _goal = ""
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
@@ -420,11 +450,17 @@ def show_picture(filepath):
     cv2.imshow("Snapshot", img)
     cv2.waitKey(10000)
     cv2.destroyWindow("Snapshot")
+        
+def init_camera():
+    camera_port = 0
+    camera = cv2.VideoCapture(camera_port)
+    time.sleep(1.0)  # If you don't wait, the image will be dark
+    camera.read()
     
 def take_picture(filename):
     camera_port = 0
     camera = cv2.VideoCapture(camera_port)
-    time.sleep(2.0)  # If you don't wait, the image will be dark
+    time.sleep(1.0)  # If you don't wait, the image will be dark
     return_value, image = camera.read()
     playsound("sounds/camera-shutter.wav", block=True)
     cv2.imwrite("pictures_taken/" + filename, image)
@@ -450,7 +486,165 @@ def statusReport():
     answer = "And I'm feeling " + _mood
     speak(answer)
     time.sleep(5)
+    
+    
+# rotate 360 and stop if a person is spotted
+def searchForPerson(clockwise):
+    global _sdp, _action_flag, _interrupt_action
+    
+    ps = []
+    # First see if person is already in view and if so return
+    found, ps = checkForPerson()
+    if found:
+        return ps
+    
+    # if no person in view, then slowly rotate 360 degrees and check every so often
+    _action_flag = True
+    
+    oldyaw = _sdp.pose().yaw + 360
+    yaw = oldyaw
+    sweep = 0
+    nextPause = 45
+    recheck_person = False
+    while (sweep < 380 and not _interrupt_action):
+        _sdp.right()# if clockwise else _sdp.left()
+        time.sleep(0.1)
+        found, ps = checkForPerson()
+        if found:
+            recheck_person = True
+            break
+        yaw = _sdp.pose().yaw + 360
+        covered = abs(yaw - oldyaw)
+        if covered > 180:
+            covered = 360 - covered
+        sweep += covered
+        oldyaw = yaw
+        if sweep >= nextPause:
+            _sdp.cancelMoveAction()
+            time.sleep(1)
+            found, ps = checkForPerson()
+            if found:
+                break
+            nextPause += 45
+    if recheck_person:
+        _sdp.cancelMoveAction()
+        time.sleep(1)
+        found, ps = checkForPerson()
+    _action_flag = False
+    return ps
 
+def checkForPerson():
+    ps = None
+    p = None
+    for i in range(1,5):
+        try:
+            ps = my_depthai.getPersonDetections()
+            if len(ps) > 0:
+                p = ps[0]
+                print("Person BBox Ctr = [", p.bboxCtr[0], ",", p.bboxCtr[1], "]")
+                # If bbox ctr of detection is away from edge then stop
+                if p.bboxCtr[0] >= 0.1 and p.bboxCtr[0] <= 0.9:
+                    return True, ps
+                    break
+        except:
+            None
+            time.sleep(0.050)
+    return False, ps
+
+def setDeliverToPersonAsGoal():
+    global _locations, _sdp, _interrupt_action
+    ps = searchForPerson(random.randint(0,1))
+    if _interrupt_action:
+        _interrupt_action = False
+        return False
+    if len(ps):
+        # take first person for now, later check gender/age match
+        p = ps[0]
+        p.z -= 0.75 # come up to the person within certain distance
+        pose = _sdp.pose()
+        xt = pose.x + p.z * math.cos(math.radians(pose.yaw + p.theta))
+        yt = pose.y + p.z * math.sin(math.radians(pose.yaw + p.theta))
+        print("detected person at distance ", p.z, " meters at ", p.theta, "degrees")
+        _locations["deliver"] = (xt, yt)
+        return True
+    return False
+
+def checkForObject():
+    ps = None
+    p = None
+    for i in range(1,5):
+        try:
+            ps = my_depthai.getObjectDetections()
+            if len(ps) > 0:
+                p = ps[0]
+                print("Object BBox Ctr = [", p.bboxCtr[0], ",", p.bboxCtr[1], "]")
+                # If bbox ctr of detection is away from edge then stop
+                if p.bboxCtr[0] >= 0.0 and p.bboxCtr[0] <= 1:
+                    return True, ps
+                    break
+        except:
+            None
+            time.sleep(0.050)
+    return False, ps
+
+def waitForObjectOnTray():
+    ps = None
+    found = False
+    objLabel = None
+    time.sleep(1)
+    timeout = time.monotonic() + 10
+    while not found and time.monotonic() < timeout:
+        found, ps = checkForObject()
+    if found:
+        p = ps[0]
+        objLabel = p.label
+    return objLabel
+
+def detectObjectOnTray():
+    # for middle of tray
+    p = None
+    objLabel = None
+    # For right side
+    time.sleep(1)
+    found, ps = checkForObject()
+    if found:
+        p = ps[0]
+        objLabel = p.label
+        return objLabel
+    # For left side
+    aim_oakd(yaw=90)
+    time.sleep(1)
+    found, ps = checkForObject()
+    if found:
+        p = ps[0]
+        objLabel = p.label
+    return objLabel
+
+def deliverToPersonInRoom(person, package, room):
+    global _deliveree, _package, _goal, _goal_queue
+    oakd.initialize(yaw=81, pitch=140)
+    _deliveree = person
+    _package = package
+    loc, dist, closeEnough = where_am_i()
+    speak("Ok. Please place the object on my tray.")
+    objLabel = waitForObjectOnTray()
+    #objLabel = detectObjectOnTray()
+    if objLabel is not None:
+        _package = objLabel
+    # aim oakd up to for detecting a person
+    aim_oakd(pitch=90)
+    oakd.shutdown()
+    print("delivering ", _package, " to ", _deliveree, " in the ", room)
+    speak("Ok, I will deliver this " + _package + " to " + _deliveree 
+          + ((" in the " + room) if room is not None else ""))
+    # if in another room set the first goal for the room
+    if room is not None and (room != loc or not closeEnough):
+        _goal_queue.append("deliver")
+        _goal = room
+    else: # in the same room, just deliver to person
+        _goal = "deliver"
+        
+    
 ###############################################################
 # Speech recognition using Google over internet connection
 def listen():
@@ -582,7 +776,7 @@ def listen():
         global _run_flag, _goal, _listen_flag, _last_phrase, _motion_flag
         global _thought, _person, _new_person_flag, _mood, _time
         global _request, _action, _action_flag, _internet, _use_internet
-        global _eyes_flag, _sdp, _hotword
+        global _eyes_flag, _sdp, _hotword, _package
 
         # convert phrase to lower case for comparison
         phrase = phrase.lower()
@@ -753,6 +947,7 @@ def listen():
                 return HandleResponseResult.Handled
             unit = None
             dist = None
+            phrase = phrase.replace('\xb0', ' degrees') 
             phrase_split = phrase.split() # split string into individual words
             split_len = len(phrase_split)
             if split_len < 3:
@@ -814,10 +1009,15 @@ def listen():
             _locations["custom"] = (xt, yt)
             _goal = "custom"
             return HandleResponseResult.Handled
-            
+        
+        if phrase == "wake up":
+            _sdp.wakeup()
+            return HandleResponseResult.Handled
+
         if phrase == "go to sleep":
-            speak("Okay. I'm going to take a nap.")
-            os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+            speak("Okay. I'm going to take a nap. Press my power button to wake me up.")
+            _run_flag = False
+            os.system("timeout 30 /nobreak && rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
             return HandleResponseResult.Handled
 
         if "go to" in phrase:
@@ -976,6 +1176,51 @@ def listen():
             cv2.destroyAllWindows()
             return HandleResponseResult.Handled
         
+        if "bring this" in phrase:
+            room = None
+            person = None
+            package = None
+            words = phrase.split(' ')
+            try:
+                words.remove("the")
+            except:
+                None
+            ct = len(words)
+            try:
+                idx_this = words.index("this")
+            except:
+                None
+            else:
+                i = 1
+                while ct > idx_this + i:
+                    temp = words[idx_this + i]
+                    if temp != "to":
+                        package += temp + " "
+                    else:
+                        break
+                    i += 1
+                if package is None:
+                    package = "something"
+            try:
+                idx_to = words.index("to")
+            except:
+                 return HandleResponseResult.NotHandledUnknown
+            if ct > 3:
+                person = words[idx_to + 1]
+                if ct > 5:
+                    try:
+                        idx_in = words.index("in")
+                    except:
+                        None
+                    else:
+                        room = " ".join(words[idx_in+1:]).lower()
+            else:
+                return HandleResponseResult.NotHandledUnknown
+            deliverToPersonInRoom(person, package, room)
+            return HandleResponseResult.Handled
+            #if math.abs(p[0].theta) > 2):
+            #    turn(p[0].theta)
+            
         deg = 0
         temp = phrase # special case requiring parsing
         temp = temp.replace('\xb0', ' degrees') # convert '90°' to '90 degrees'
@@ -1090,16 +1335,16 @@ def listen():
             finally:
                 listener.set_active(True)
             return
-        try:
-            handled_result = handle_response(phrase)
-            if handled_result == HandleResponseResult.NotHandledUnknown:
-                speak("I am not sure how to help with that.")
-            elif handled_result == HandleResponseResult.NotHandledNoHotWord:
-                print("No hot word, ignoring.")
-        except:
-            speak("sorry, i could not do what you wanted.")
-        finally:
-            listener.set_active(True)
+#        try:
+        handled_result = handle_response(phrase)
+        if handled_result == HandleResponseResult.NotHandledUnknown:
+            speak("I am not sure how to help with that.")
+        elif handled_result == HandleResponseResult.NotHandledNoHotWord:
+            print("No hot word, ignoring.")
+#        except:
+#           speak("sorry, i could not do what you wanted.")
+#        finally:
+        listener.set_active(True)
 
     while _run_flag:
         local_listener = None
@@ -1140,6 +1385,12 @@ def recoverLocalization(rect):
         return True
     return False
 
+def aim_oakd(yaw = None, pitch = None):
+    if yaw is not None:
+        oakd.setYaw(yaw)
+    if pitch is not None:
+        oakd.setPitch(pitch)
+
 def initialize_speech():
     global _voice
     _voice = tts.sapi.Sapi()
@@ -1164,7 +1415,9 @@ def initialize_robot():
     # _ser6 = serial.Serial('COM6', 9600, timeout=1.0)
     
     _internet = True
-        
+
+    Thread(target = my_depthai.startUp, name="my_depthai").start()
+    
     Thread(target = listen, name = "Listen").start()
     
     Thread(target = time_update, name = "Time").start()
@@ -1200,6 +1453,7 @@ def shutdown_robot():
     #     json.dump(_people, outfile)
     
     _run_flag = False
+    my_depthai.shutdown()
     
     # TBD join threads
     
@@ -1223,6 +1477,8 @@ def robot():
     global _run_flag, _ser6
     
     initialize_robot()
+    oakd.initialize()
+    oakd.shutdown()
     
     try:
         while _run_flag:
@@ -1253,6 +1509,7 @@ def run():
     if _execute:
         init_local_speech_rec()
         initialize_speech()
+        init_camera()
         speak("I'm starting up.")
 
         res = connectToSdp()
