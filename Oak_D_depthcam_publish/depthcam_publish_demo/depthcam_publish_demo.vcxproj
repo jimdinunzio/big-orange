@@ -11,25 +11,23 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{BD47FE07-9FC0-491F-83F1-0F72A5E38758}</ProjectGuid>
-    <RootNamespace>SlamtecDll</RootNamespace>
-    <Keyword>MFCDLLProj</Keyword>
+    <ProjectGuid>{84D6BFC3-C4B6-4384-AF7A-BE7E386B6F34}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>depthcam_publish_demo</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Dynamic</UseOfMfc>
+    <CharacterSet>Unicode</CharacterSet>
     <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Dynamic</UseOfMfc>
+    <CharacterSet>Unicode</CharacterSet>
     <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -44,102 +42,74 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath)</LibraryPath>
-    <CustomBuildAfterTargets>
-    </CustomBuildAfterTargets>
+    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath);..\..\..\depthai-core\build\install\lib\cmake\depthai\dependencies\include;..\..\..\depthai-core\build\install\include\depthai-shared\3rdparty;..\..\..\depthai-core\build\install\include</IncludePath>
+    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath);..\..\..\depthai-core\build\install\lib</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath);..\..\..\depthai-core\build\install\lib\cmake\depthai\dependencies\include;..\..\..\depthai-core\build\install\include\depthai-shared\3rdparty;..\..\..\depthai-core\build\install\include</IncludePath>
+    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath);..\..\..\depthai-core\build\install\lib</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>
+      </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <ModuleDefinitionFile>.\SlamtecDll.def</ModuleDefinitionFile>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;depthai-cored.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
-    <Midl>
-      <MkTypLibCompatible>false</MkTypLibCompatible>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </Midl>
-    <ResourceCompile>
-      <Culture>0x0409</Culture>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ResourceCompile>
     <CustomBuildStep>
       <Command>copy "$(TargetPath)" "$(ProjectDir)..\..\Deployment\DLLs\Debug\"</Command>
     </CustomBuildStep>
     <CustomBuildStep>
-      <Message>Copying "$(TargetPath)" to Deployment dir</Message>
+      <Message>Copying $(TargetPath) to Deployment dir</Message>
     </CustomBuildStep>
     <CustomBuildStep>
-      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Debug\SlamtecDll.dll</Outputs>
+      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Debug\$(TargetFileName)</Outputs>
+    </CustomBuildStep>
+    <CustomBuildStep>
       <Inputs>$(TargetPath)</Inputs>
     </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>
+      </PrecompiledHeader>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <ModuleDefinitionFile>.\SlamtecDll.def</ModuleDefinitionFile>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;depthai-core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
-    <Midl>
-      <MkTypLibCompatible>false</MkTypLibCompatible>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </Midl>
-    <ResourceCompile>
-      <Culture>0x0409</Culture>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ResourceCompile>
+    <PostBuildEvent>
+      <Command>
+      </Command>
+    </PostBuildEvent>
+    <PostBuildEvent>
+      <Message>
+      </Message>
+    </PostBuildEvent>
     <CustomBuildStep>
       <Command>copy "$(TargetPath)" "$(ProjectDir)..\..\Deployment\DLLs\Release\"</Command>
       <Message>Copying $(TargetPath) to Deployment dir</Message>
-      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Release\SlamtecDll.dll</Outputs>
+      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Release\$(TargetFileName)</Outputs>
       <Inputs>$(TargetPath)</Inputs>
     </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <None Include="ReadMe.txt" />
-    <None Include="SlamtecDll.def" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="SlamtecDll.cpp" />
-    <ClCompile Include="stdafx.cpp">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
-    </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="bitmap_image.hpp" />
-    <ClInclude Include="Resource.h" />
-    <ClInclude Include="SlamtecDll.h" />
-    <ClInclude Include="stdafx.h" />
-    <ClInclude Include="targetver.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="SlamtecDll.rc" />
+    <ClCompile Include="depthcam_publish_demo.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
