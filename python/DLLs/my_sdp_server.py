@@ -11,6 +11,8 @@ from msl.loadlib import Server32
 from ctypes import *
 from enum import Enum
 
+MAX_ATTEMPTS = 3
+
 class LASER_POINTS(Structure):
 	"""Structure to hold laser points"""
 	_fields_ = [("size", c_int),
@@ -22,6 +24,26 @@ class POSE(Structure):
     _fields_ = [("x", c_float),
                 ("y", c_float),
                 ("yaw", c_float)]
+
+class MOVEOPTIONS(Structure):
+    """Structure to hold Move Options for movement commands"""
+    _fields_ = [("flag", c_int),
+                ("speed_ratio", c_double)]
+    
+class MoveOptionFlag(Enum):
+    """Enumerated type for Move Option flags field"""
+    def __init__(self, number):
+        self._as_parameter__ = number
+
+    MoveOptionFlagNone = 0
+    MoveOptionFlagAppending = 1
+    MoveOptionFlagMilestone = 2
+    MoveOptionFlagNoSmooth  = 4
+    MoveOptionFlagKeyPoints = 8
+    MoveOptionFlagPrecise   = 16
+    MoveOptionFlagWithYaw   = 32
+    MoveOptionFlagReturnUnreachableDirectly = 64
+    MoveOptionFlagKeyPointsWithOA = 0x00000080
 
 class ActionStatus(Enum):
     """Enumerated type for status of moving actions"""
@@ -50,24 +72,29 @@ class MyServer(Server32):
         print("A Server was created.")
         #Set up C function input and output types
 
-        self.lib.connectSlamtec.argtypes = c_char_p, c_int, c_char_p
-        self.lib.slamtecLocation.restype = c_char_p
-    
+        self.lib.connectSlamtec.argtypes = c_char_p, c_int, c_char_p    
         self.lib.loadSlamtecMap.argtypes = c_char_p,
         self.lib.loadSlamtecMap.restype = c_int
 
         self.lib.waitUntilMoveActionDone.restype = ActionStatus
+        self.lib.moveToFloatWithYaw.argtypes = c_float, c_float, c_float
+        self.lib.moveToFloatWithYaw.restype = None
         self.lib.moveToFloat.argtypes = c_float, c_float
         self.lib.moveToFloat.restype = None
         self.lib.home.restype = None
         self.lib.disconnect.restype = None
         self.lib.getMoveActionStatus.restype = ActionStatus
+        self.lib.rotateWithOpt.argtypes = c_float, MOVEOPTIONS
         self.lib.rotate.argtypes = c_float,
+        self.lib.rotateToWithOpt.argtypes = c_float, MOVEOPTIONS
+        self.lib.rotateTo.argtypes = c_float,
         self.lib.recoverLocalization.restype = ActionStatus
         self.lib.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
-        self.lib.getMoveActionError.restype = c_char_p    
+        self.lib.getMoveActionError.restype = c_char_p
         self.lib.pose.restype = POSE
         self.lib.getLaserScan.restype = LASER_POINTS
+        self.lib.freeIt.argtypes = c_void_p,
+        self.lib.freeIt.restype = None
 
     def connectSlamtec(self, ip_address, port, errStr, errStrLen):
         # The Server32 class has a 'lib' property that is a reference to the ctypes.CDLL object.
@@ -84,19 +111,47 @@ class MyServer(Server32):
         self.lib.forward()
 
     def left(self):
-        self.lib.left()
+        attempt = 1
+        while attempt <= MAX_ATTEMPTS:
+            try:
+                self.lib.left()
+            except:
+                attempt += 1
+                time.sleep(0.1)
+            else:
+                break
 
     def right(self):
-        self.lib.right()
-
+        attempt = 1
+        while attempt <= MAX_ATTEMPTS:
+            try:
+                self.lib.right()
+            except:
+                attempt += 1
+                time.sleep(0.1)
+            else:
+                break
+            
     def back(self):
         self.lib.back()
 
     def moveToFloat(self, x, y):
         self.lib.moveToFloat(x, y)
 
+    def moveToFloatWithYaw(self, x, y, yaw):
+        self.lib.moveToFloatWithYaw(x, y, yaw)
+
     def moveToInteger(self, x, y):
         self.lib.moveToInteger(x, y)
+
+    def rotateToWithOpt(self, rads, moveOptions):
+        self.lib.rotateToWithOpt(rads, moveOptions)
+
+    def rotateTo(self, rads):
+        self.lib.rotateTo(rads)
+
+    def rotateWithOpt(self, rads, moveOptions):
+        self.lib.rotateWithOpt(rads, moveOptions)
 
     def rotate(self, rads):
         self.lib.rotate(rads)
@@ -112,7 +167,10 @@ class MyServer(Server32):
 
     # returns ptr to new char array, must free with libc.free()
     def getMoveActionError(self):
-        return self.lib.getMoveActionError()
+        _str = self.lib.getMoveActionError()
+        str = cast(_str, c_char_p).value
+        self.lib.freeIt(_str)
+        return str
 
     def waitUntilMoveActionDone(self):
         return self.lib.waitUntilMoveActionDone()
@@ -122,11 +180,7 @@ class MyServer(Server32):
     
     def odometry(self):
         return self.lib.odometry()
-    
-    # returns ptr to new char array, must free with libc.free()
-    def slamtecLocation(self):
-        return self.lib.slamtecLocation()
-    
+        
     def pose(self):
         return self.lib.pose()
     
