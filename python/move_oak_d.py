@@ -60,8 +60,9 @@ def resume():
 def shutdown():
     global _board
     #allHome()
-    _board.exit()
-    _board = None
+    if _board is not None:
+        _board.exit()
+        _board = None
 
 if __name__ == '__main__':
     initialize()

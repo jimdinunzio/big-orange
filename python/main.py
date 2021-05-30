@@ -49,7 +49,7 @@ _robot_is_moving = False # set by robotMotion thread: True when robot is in moti
 _last_motion_time = 0 # the time.time() motion was last detected
 _ser6 = ""
 _internet = False # True when connected to the internet
-_use_internet = True # If False don't use internet
+_use_internet = False # If False don't use internet
 
 import parse
 import tts.sapi
@@ -74,6 +74,7 @@ from enum import Enum
 import move_oak_d as oakd
 import my_depthai
 import random
+import eyes
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -318,6 +319,11 @@ def handleGotoLocation():
         if (location == _goal and closeEnough):
             if _goal == "deliver":
                 speak(_deliveree + ", I have a " + _package + " for you.")
+                taken = waitForObjectToBeTaken()
+                if taken:
+                    speak("Thanks. Enjoy!")
+                else:
+                    speak("Sorry, don't you want the " + _package + "?")
                 _deliveree = None
             else:
                 speak("I've arrived.")
@@ -518,6 +524,8 @@ def searchForPerson(clockwise):
         if covered > 180:
             covered = 360 - covered
         sweep += covered
+        print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
+
         oldyaw = yaw
         if sweep >= nextPause:
             _sdp.cancelMoveAction()
@@ -536,14 +544,14 @@ def searchForPerson(clockwise):
 def checkForPerson():
     ps = None
     p = None
-    for i in range(1,5):
+    for i in range(1,10):
         try:
             ps = my_depthai.getPersonDetections()
             if len(ps) > 0:
                 p = ps[0]
-                print("Person BBox Ctr = [", p.bboxCtr[0], ",", p.bboxCtr[1], "]")
                 # If bbox ctr of detection is away from edge then stop
                 if p.bboxCtr[0] >= 0.1 and p.bboxCtr[0] <= 0.9:
+                    print("Person at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
                     return True, ps
                     break
         except:
@@ -577,7 +585,7 @@ def checkForObject():
             ps = my_depthai.getObjectDetections()
             if len(ps) > 0:
                 p = ps[0]
-                print("Object BBox Ctr = [", p.bboxCtr[0], ",", p.bboxCtr[1], "]")
+                #print("Object BBox Ctr = [", p.bboxCtr[0], ",", p.bboxCtr[1], "]")
                 # If bbox ctr of detection is away from edge then stop
                 if p.bboxCtr[0] >= 0.0 and p.bboxCtr[0] <= 1:
                     return True, ps
@@ -585,7 +593,29 @@ def checkForObject():
         except:
             None
             time.sleep(0.050)
-    return False, ps
+    return False, None
+
+def waitForObjectToBeTaken():
+    oakd.initialize(yaw=70, pitch=140)
+    time.sleep(2)
+    speak("Please take it.");
+    foundOnRight, _ = checkForObject()
+    found = foundOnRight
+    timeout = time.monotonic() + 10
+    while found and time.monotonic() < timeout:
+        found, _ = checkForObject()
+    if not foundOnRight:
+        # check left side
+        aim_oakd(yaw=90)
+        time.sleep(1)
+        foundOnLeft, _ = checkForObject()
+        found = foundOnLeft
+        timeout = time.monotonic() + 10
+        while found and time.monotonic() < timeout:
+            found, _ = checkForObject()
+    aim_oakd(yaw=81, pitch=110)
+    oakd.shutdown()
+    return not found
 
 def waitForObjectOnTray():
     ps = None
@@ -593,6 +623,16 @@ def waitForObjectOnTray():
     objLabel = None
     time.sleep(1)
     timeout = time.monotonic() + 10
+    while not found and time.monotonic() < timeout:
+        found, ps = checkForObject()
+    if found:
+        p = ps[0]
+        objLabel = p.label
+        return objLabel
+    
+    # For left side
+    aim_oakd(yaw=90)
+    timeout = time.monotonic() + 2
     while not found and time.monotonic() < timeout:
         found, ps = checkForObject()
     if found:
@@ -622,7 +662,7 @@ def detectObjectOnTray():
 
 def deliverToPersonInRoom(person, package, room):
     global _deliveree, _package, _goal, _goal_queue
-    oakd.initialize(yaw=81, pitch=140)
+    oakd.initialize(yaw=70, pitch=140)
     _deliveree = person
     _package = package
     loc, dist, closeEnough = where_am_i()
@@ -632,7 +672,7 @@ def deliverToPersonInRoom(person, package, room):
     if objLabel is not None:
         _package = objLabel
     # aim oakd up to for detecting a person
-    aim_oakd(pitch=90)
+    aim_oakd(yaw=81, pitch=90)
     oakd.shutdown()
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     speak("Ok, I will deliver this " + _package + " to " + _deliveree 
@@ -1043,15 +1083,16 @@ def listen():
             print()
             return HandleResponseResult.Handled
         
-        # if phrase == "open your eyes":
-        #     if _eyes_flag == True:
-        #         return HandleResponseResult.Handled
-        #     _eyes_flag = True
-        #     Thread(target = eyes, name = "Display eyes").start()
-        #     return HandleResponseResult.Handled
+        if phrase == "open your eyes":
+            if _eyes_flag == True:
+                return HandleResponseResult.Handled
+            _eyes_flag = True
+            Thread(target = eyes.start, name = "Eyes").start()
+            return HandleResponseResult.Handled
         
         if phrase == "close your eyes":
             _eyes_flag = False
+            eyes.shutdown()
             return HandleResponseResult.Handled
         
         if (phrase == "initiate shut down" or
@@ -1433,11 +1474,13 @@ def initialize_robot():
     
 #    Thread(target = megaCOM7, name = "megaCOM7").start()
     
-    _eyes_flag = True # this is needed to start the display and to keep it open
 #    Thread(target = eyes, name = "Display eyes").start()
     
     #Thread(target = display, name = "Display").start()
     Thread(target = batteryMonitor, name = "Battery monitor").start()
+
+    if _eyes_flag: # this is needed to start the display and to keep it open
+        Thread(target = eyes.start, name = "Eyes").start()
     
 ################################################################
 # This is where data gets saved to disk
@@ -1453,8 +1496,10 @@ def shutdown_robot():
     #     json.dump(_people, outfile)
     
     _run_flag = False
+    eyes.shutdown()
     my_depthai.shutdown()
-    
+    oakd.shutdown()
+
     # TBD join threads
     
     # Close all open threads
@@ -1477,6 +1522,7 @@ def robot():
     global _run_flag, _ser6
     
     initialize_robot()
+    eyes.set(270, 10)
     oakd.initialize()
     oakd.shutdown()
     
