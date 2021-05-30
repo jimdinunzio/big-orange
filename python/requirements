@@ -16,6 +16,7 @@ pip install msl.loadlib
 
 # Speech Recognition with support for multiple engines online and offline (used for google here)
 pip install speechrecognition
+pip install winspeech # then apply forked modifications
 
 # Not sure if need this anymore
 conda install pyaudio

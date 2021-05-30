@@ -5,6 +5,10 @@
 
 <GRAMMAR LANGID="409">
 
+<DEFINE>
+    <ID NAME="PERSON" VAL="1"/>
+</DEFINE>
+
 <RULE NAME="RobotCommands" TOPLEVEL="ACTIVE">
 
 	<LIST>
@@ -27,8 +31,10 @@
 			<P>what did you say</P>
 			<P>please repeat what you just said</P>
 			<P>stop</P>
-			<P>this is jim</P>
-			<P>this is evelyn</P>
+			<P>
+    			<P>this is</P>
+    			<RULEREF NAME="person"/>
+    		</P>
 			<P>goodbye</P>
 			<P>who are you with</P>
 			<P>how are you</P>
@@ -37,6 +43,7 @@
 			<P>challenge, phase one</P>
 			<P>what time is it</P>
 			<P>challenge phase one</P>
+			<P>wake up</P>
 			<P>go to sleep</P>
 			<P>
 				<P>+go</P>
@@ -48,10 +55,10 @@
 				</L>
 				<O>
 					<P>at</P>
-					<P>*</P>
+					<RULEREF NAME="angle"/>
 					<P>degrees</P>
 				</O>
-				<P>*</P>
+				<P><RULEREF NAME="distance"/></P>
 				<L>
 					<P>centimeters</P>
 					<P>inches</P>
@@ -97,6 +104,14 @@
 			<P>go to dock</P>	  
 			<P>take a picture</P>
 			<P>
+    			<P>bring this to</P>
+		    	<RULEREF NAME="person"/>
+    			<O>
+        			<P>in the</P>
+        			<RULEREF NAME="location"/>
+        		</O>
+			</P>
+			<P>
 				<P>set speed</P>
 				<L>
 					<P>low</P>
@@ -116,16 +131,8 @@
 			<P>clear windows</P>
 			<P>
 				<P>+go +to</P>
-				<L>
-					<P>kitchen</P>
-					<P>kitchen nook</P>
-					<P>living room</P>
-					<P>back slider</P>
-					<P>dining area</P>
-					<P>office</P>
-					<P>front door</P>
-					<P>end of hall</P>
-				</L>
+				<O>the</O>
+				<RULEREF NAME="location"/>
 			</P> 
 			<P>
 				<L>
@@ -135,7 +142,7 @@
 				<L>
 					<P>around</P>
 					<P>
-						<P>*</P>
+						<P><RULEREF NAME="angle"/></P>
 						<P>degrees</P>
 						<O>clockwise</O>
 					</P>
@@ -143,8 +150,73 @@
 			</P>
   		</LIST>
 	</O>
-
 </RULE>
 
+<RULE NAME="person">
+    <L PROPNAME="person" PROPID="PERSON">
+        <P VAL="1">jim</P>
+        <P VAL="2">evelyn</P>
+    </L>
+</RULE>
 
+<RULE NAME="location">
+	<L>
+    	<P>kitchen</P>
+		<P>kitchen nook</P>
+		<P>living room</P>
+		<P>back slider</P>
+		<P>dining area</P>
+		<P>office</P>
+		<P>front door</P>
+		<P>end of hall</P>
+	</L>
+</RULE>
+
+<RULE NAME="digit">
+	<L>
+		<P>zero</P>
+		<P>one</P>
+		<P>two</P>
+		<P>three</P>
+		<P>four</P>
+		<P>five</P>
+		<P>six</P>
+		<P>seven</P>
+		<P>eight</P>
+		<P>nine</P>
+	</L>
+</RULE>
+
+<RULE NAME="distance">
+	<L>
+		<RULEREF NAME="digit"/>
+		<P>ten</P>
+	</L>
+	<O>
+		<P>point</P>
+		<RULEREF NAME="digit"/>
+		<O><RULEREF NAME="digit"/></O>
+	</O>
+</RULE>
+
+<RULE NAME="angle">
+	<O>
+		<L>
+			<P>negative</P>
+			<P>minus</P>
+		</L>
+	</O>
+	<L>
+		<P>ten</P>
+		<P>fifteen</P>
+		<P>thirty</P>
+		<P>sixty</P>
+		<P>forty five</P>
+		<P>ninety</P>
+		<P>one thirty five</P>
+		<P>one eighty</P>
+		<P>two seventy</P>
+		<P>three sixty</P>
+	</L>
+</RULE>
 </GRAMMAR>
