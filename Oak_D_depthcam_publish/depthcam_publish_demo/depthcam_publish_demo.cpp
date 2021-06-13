@@ -12,13 +12,12 @@ using namespace std;
 
 static const std::string DEPTH_DEVICE_ID = "14442C10E18CC0D200";
 static const std::string SLAMWARE_IP_ADDR_STR = "192.168.11.1";
-static const int DEPTH_CONFIDENCE_THRESHOLD = 150;
+static const int DEPTH_CONFIDENCE_THRESHOLD = 200;
 static const int SLAMWARE_PORT = 1445;
 
 
 static const int        cDepthWidth  = 320;
 static const int        cDepthHeight = 200;
-static const int		c2DepthWidth = cDepthWidth * 2;
 static const size_t NUM_FRAME_DATA = cDepthWidth * cDepthHeight;
 
 // Closer - in minimum depth, disparity range is doubled(from 95 to 190) :
@@ -39,10 +38,8 @@ void update(std::vector<float>& frame_buffer, uint16_t* depth_frame)
 	{
 		for (int x = 0; x < cDepthWidth; ++x)
 		{
-			*pFrameBuffer++ = *pDepth / 1000.0f;
-			pDepth += 2; // skip every other column
+			*pFrameBuffer++ = *pDepth++ / 1000.0f;
 		}
-		pDepth += c2DepthWidth; // skip every other row
 	}
 }
 
@@ -67,8 +64,8 @@ int main(int argc, char* argv[])
 			frame.maxValidDistance = 4.0f;
 			frame.minFovPitch = deg2rad(-50.f / 2.f);
 			frame.maxFovPitch = deg2rad(50.f / 2.f);
-			frame.minFovYaw = deg2rad(-73.5f / 2.f);
-			frame.maxFovYaw = deg2rad(73.5f / 2.f);
+			frame.minFovYaw = deg2rad(-71.86f / 2.f);
+			frame.maxFovYaw = deg2rad(71.86f / 2.f);
 			frame.cols = cDepthWidth;
 			frame.rows = cDepthHeight;
 
@@ -133,7 +130,6 @@ int main(int argc, char* argv[])
 				d.getOutputQueue(name, 4, false);
 			}
 
-			std::unordered_map<std::string, uint16_t*> depthFrame;
 			cv::Mat disparityFrame;
 
 			while (1)
@@ -156,12 +152,19 @@ int main(int argc, char* argv[])
 					if (latestPacket.find(name) != latestPacket.end())
 					{
 						if (name == "depth") {
-							depthFrame[name] = reinterpret_cast<uint16_t*>(&latestPacket[name]->getData()[0]);
-							update(frame.data, depthFrame[name]);
+							cv::Mat halfDepthFrameCv = latestPacket[name]->getFrame(true);
+							cv::resize(halfDepthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_AREA);						
+							update(frame.data, reinterpret_cast<uint16_t*>(halfDepthFrameCv.data));
+							cv::Mat depthFrameColor;
+							cv::normalize(halfDepthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
+							cv::equalizeHist(depthFrameColor, depthFrameColor);
+							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_HOT);
+							cv::imshow("depth", depthFrameColor);
 						}
 						else if (name == "disparity") {
 							disparityFrame = latestPacket[name]->getFrame();
 							cv::resize(disparityFrame, disparityFrame, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
+							
 							disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
 
 							// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
