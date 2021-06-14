@@ -30,22 +30,38 @@ static const bool lr_check = false;
 /// <summary>
 /// Main processing function
 /// </summary>
-void update(std::vector<float>& frame_buffer, uint16_t* depth_frame)
+void updateSlamtecBuffer(std::vector<float>& slamtec_depth_buffer, const cv::Mat& cv_depth_frame)
 {
-	uint16_t* pDepth = depth_frame;
-	float* pFrameBuffer = &frame_buffer[0];
-	for (int y = 0; y < cDepthHeight; ++y)
+	assert(cv_depth_frame.depth() == CV_16U);
+
+	int nRows = cv_depth_frame.rows;
+	int nCols = cv_depth_frame.cols;
+
+	assert(slamtec_depth_buffer.size() == nRows * nCols);
+
+	if (cv_depth_frame.isContinuous())
 	{
-		for (int x = 0; x < cDepthWidth; ++x)
+		nCols *= nRows;
+		nRows = 1;
+	}
+
+	int i, j;
+	const uint16_t* p;
+	float* p_slamtec = &slamtec_depth_buffer[0];
+
+	for (i = 0; i < nRows; ++i)
+	{
+		p = cv_depth_frame.ptr<uint16_t>(i);
+		for (j = 0; j < nCols; ++j)
 		{
-			*pFrameBuffer++ = *pDepth++ / 1000.0f;
+			*p_slamtec++ = *p++ / 1000.0f; // convert to meters
 		}
 	}
 }
 
 float deg2rad(float deg)
 {
-	return deg * M_PI / 180.f;
+	return deg * (float)M_PI / 180.f;
 }
 
 int main(int argc, char* argv[])
@@ -59,18 +75,17 @@ int main(int argc, char* argv[])
 			std::cout << "SDK Version: " << platform.getSDKVersion() << std::endl;
 			std::cout << "SDP Version: " << platform.getSDPVersion() << std::endl;
 
-			rpos::message::depth_camera::DepthCameraFrame frame;
-			frame.minValidDistance = 0.196f;                   //frame.minValidDistance = camera_attr.minValidDistance;
-			frame.maxValidDistance = 4.0f;
-			frame.minFovPitch = deg2rad(-50.f / 2.f);
-			frame.maxFovPitch = deg2rad(50.f / 2.f);
-			frame.minFovYaw = deg2rad(-71.86f / 2.f);
-			frame.maxFovYaw = deg2rad(71.86f / 2.f);
-			frame.cols = cDepthWidth;
-			frame.rows = cDepthHeight;
+			rpos::message::depth_camera::DepthCameraFrame slamtecDepthFrame;
+			slamtecDepthFrame.minValidDistance = 0.35f;                   //slamtecDepthFrame.minValidDistance = camera_attr.minValidDistance;
+			slamtecDepthFrame.maxValidDistance = 4.0f;
+			slamtecDepthFrame.minFovPitch = deg2rad(-50.f / 2.f);
+			slamtecDepthFrame.maxFovPitch = deg2rad(50.f / 2.f);
+			slamtecDepthFrame.minFovYaw = deg2rad(-71.86f / 2.f);
+			slamtecDepthFrame.maxFovYaw = deg2rad(71.86f / 2.f);
+			slamtecDepthFrame.cols = cDepthWidth;
+			slamtecDepthFrame.rows = cDepthHeight;
 
-			frame.data.resize(NUM_FRAME_DATA);
-			std::vector<float> frame_buffer(cDepthWidth * cDepthHeight, 0);
+			slamtecDepthFrame.data.resize(NUM_FRAME_DATA);
 			const boost::posix_time::time_duration cMinTimeBetweenPublishing = boost::posix_time::millisec(105);
 			const boost::posix_time::time_duration cZeroTime = boost::posix_time::millisec(0);
 			boost::posix_time::ptime lastTime = boost::posix_time::microsec_clock::local_time();
@@ -131,7 +146,6 @@ int main(int argc, char* argv[])
 			}
 
 			cv::Mat disparityFrame;
-
 			while (1)
 			{
 				std::unordered_map<std::string, std::shared_ptr<dai::ImgFrame>> latestPacket;
@@ -153,8 +167,9 @@ int main(int argc, char* argv[])
 					{
 						if (name == "depth") {
 							cv::Mat halfDepthFrameCv = latestPacket[name]->getFrame(true);
-							cv::resize(halfDepthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_AREA);						
-							update(frame.data, reinterpret_cast<uint16_t*>(halfDepthFrameCv.data));
+							cv::resize(halfDepthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
+							updateSlamtecBuffer(slamtecDepthFrame.data, halfDepthFrameCv);
+
 							cv::Mat depthFrameColor;
 							cv::normalize(halfDepthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
 							cv::equalizeHist(depthFrameColor, depthFrameColor);
@@ -164,7 +179,6 @@ int main(int argc, char* argv[])
 						else if (name == "disparity") {
 							disparityFrame = latestPacket[name]->getFrame();
 							cv::resize(disparityFrame, disparityFrame, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
-							
 							disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
 
 							// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
@@ -174,7 +188,7 @@ int main(int argc, char* argv[])
 					}
 				}
 
-				int sensorId = 3; //TODO: Config your own SensorId
+				const int sensorId = 3; //TODO: Config your own SensorId
 
 				// Publish one single frame no faster than 10/s.
 				boost::posix_time::time_duration waitTime = cMinTimeBetweenPublishing -
@@ -187,7 +201,7 @@ int main(int argc, char* argv[])
 					boost::this_thread::sleep(waitTime);
 				}
 				lastTime = boost::posix_time::microsec_clock::local_time();
-				platform.publishDepthCamFrame(sensorId, frame);
+				platform.publishDepthCamFrame(sensorId, slamtecDepthFrame);
 #ifdef DEBUG
 				pubCount++;
 				if (boost::posix_time::microsec_clock::local_time() - lastSecond >= cOneSecond)
