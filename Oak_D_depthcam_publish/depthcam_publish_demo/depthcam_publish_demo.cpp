@@ -4,6 +4,8 @@
 //#include <Windows.h>
 #include <cstdio>
 
+//#define PUBLISH_TO_SLAMTEC
+
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
 using namespace std;
@@ -12,9 +14,8 @@ using namespace std;
 
 static const std::string DEPTH_DEVICE_ID = "14442C10E18CC0D200";
 static const std::string SLAMWARE_IP_ADDR_STR = "192.168.11.1";
-static const int DEPTH_CONFIDENCE_THRESHOLD = 200;
+static const int DEFAULT_CONF_THRESHOLD = 200;
 static const int SLAMWARE_PORT = 1445;
-
 
 static const int        cDepthWidth  = 320;
 static const int        cDepthHeight = 200;
@@ -64,16 +65,38 @@ float deg2rad(float deg)
 	return deg * (float)M_PI / 180.f;
 }
 
+static void onFilterChange(int pos, void* ptr)
+{
+	dai::StereoDepthProperties::MedianFilter *pFilter = static_cast<dai::StereoDepthProperties::MedianFilter*>(ptr);
+	switch (pos)
+	{
+	case 0:
+		*pFilter = dai::StereoDepthProperties::MedianFilter::MEDIAN_OFF;
+		break;
+	case 1:
+		*pFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_3x3;
+		break;
+	case 2:
+		*pFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_5x5;
+		break;
+	case 3:
+		*pFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_7x7;
+		break;
+	}
+}
+
 int main(int argc, char* argv[])
 {
 	while (1)
 	{
 		try
 		{
+#ifdef PUBLISH_TO_SLAMTEC
 			rpos::robot_platforms::SlamwareCorePlatform platform = rpos::robot_platforms::SlamwareCorePlatform::connect(SLAMWARE_IP_ADDR_STR, SLAMWARE_PORT);
 			std::cout << "Connected to Slamware Core at " << SLAMWARE_IP_ADDR_STR << " port: " << SLAMWARE_PORT << endl;
 			std::cout << "SDK Version: " << platform.getSDKVersion() << std::endl;
 			std::cout << "SDP Version: " << platform.getSDPVersion() << std::endl;
+#endif
 
 			rpos::message::depth_camera::DepthCameraFrame slamtecDepthFrame;
 			slamtecDepthFrame.minValidDistance = 0.35f;                   //slamtecDepthFrame.minValidDistance = camera_attr.minValidDistance;
@@ -108,8 +131,6 @@ int main(int argc, char* argv[])
 			right->initialControl.setManualFocus(130);
 
 			auto stereo = p.create<dai::node::StereoDepth>();
-			stereo->setConfidenceThreshold(DEPTH_CONFIDENCE_THRESHOLD);
-			stereo->setMedianFilter(dai::StereoDepthProperties::MedianFilter::KERNEL_7x7);
 			stereo->setLeftRightCheck(lr_check);
 			stereo->setExtendedDisparity(extended_disparity);
 			stereo->setSubpixel(subpixel);
@@ -137,23 +158,49 @@ int main(int argc, char* argv[])
 			}
 
 			// Connect to device and start pipeline
-			dai::Device d(p, std::get<1>(devInfo));
+			dai::Device *d = new dai::Device(p, std::get<1>(devInfo));
 
 			// Sets queues size and behavior
 			for (const auto& name : queueNames)
 			{
-				d.getOutputQueue(name, 4, false);
+				d->getOutputQueue(name, 4, false);
 			}
 
-			cv::Mat disparityFrame;
+			cv::Mat depthFrameColor(200, 320, CV_8UC1), depthFrameCv(400, 640, CV_16UC1), halfDepthFrameCv(200, 320, CV_16UC1);
+			cv::Mat disparityFrame(400, 640, CV_8UC1);
+
+			int confThresh = DEFAULT_CONF_THRESHOLD;
+			int lastConfThresh = DEFAULT_CONF_THRESHOLD;
+			const cv::String disparityColorWindowName = "disparity_color";
+			cv::namedWindow(disparityColorWindowName);
+			cv::createTrackbar("Confidence", disparityColorWindowName, &confThresh, 255);
+			cv::setTrackbarPos("Confidence", disparityColorWindowName, 200);	
+			stereo->setConfidenceThreshold(confThresh);
+
+			dai::StereoDepthProperties::MedianFilter medianFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_5x5;
+			dai::StereoDepthProperties::MedianFilter lastMedianFilter = medianFilter;
+			cv::createTrackbar("Filter", disparityColorWindowName, nullptr, 3, onFilterChange, &medianFilter);
+			cv::setTrackbarPos("Filter", disparityColorWindowName, 2);
+			stereo->setMedianFilter(medianFilter);
+
 			while (1)
 			{
+				if (confThresh != lastConfThresh || medianFilter != lastMedianFilter)
+				{
+					delete d;
+					stereo->setConfidenceThreshold(confThresh);
+					stereo->setMedianFilter(medianFilter);
+					d = new dai::Device(p, std::get<1>(devInfo));
+					lastConfThresh = confThresh;
+					lastMedianFilter = medianFilter;
+				}
+
 				std::unordered_map<std::string, std::shared_ptr<dai::ImgFrame>> latestPacket;
 
-				auto queueEvents = d.getQueueEvents(queueNames);
+				auto queueEvents = d->getQueueEvents(queueNames);
 				for (const auto& name : queueEvents)
 				{
-					auto packets = d.getOutputQueue(name)->tryGetAll<dai::ImgFrame>();
+					auto packets = d->getOutputQueue(name)->tryGetAll<dai::ImgFrame>();
 					auto count = packets.size();
 					if (count > 0)
 					{
@@ -161,29 +208,28 @@ int main(int argc, char* argv[])
 					}
 				}
 
+
 				for (const auto& name : queueNames)
 				{
 					if (latestPacket.find(name) != latestPacket.end())
 					{
 						if (name == "depth") {
-							cv::Mat halfDepthFrameCv = latestPacket[name]->getFrame(true);
-							cv::resize(halfDepthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
+							depthFrameCv = latestPacket[name]->getCvFrame();
+							cv::resize(depthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
+							
 							updateSlamtecBuffer(slamtecDepthFrame.data, halfDepthFrameCv);
 
-							cv::Mat depthFrameColor;
 							cv::normalize(halfDepthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
 							cv::equalizeHist(depthFrameColor, depthFrameColor);
-							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_HOT);
+							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_JET);
 							cv::imshow("depth", depthFrameColor);
 						}
 						else if (name == "disparity") {
-							disparityFrame = latestPacket[name]->getFrame();
-							cv::resize(disparityFrame, disparityFrame, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
+							disparityFrame = latestPacket[name]->getCvFrame();
 							disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
-
 							// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
 							cv::applyColorMap(disparityFrame, disparityFrame, cv::COLORMAP_JET);
-							cv::imshow("disparity_color", disparityFrame);
+							cv::imshow(disparityColorWindowName, disparityFrame);
 						}
 					}
 				}
@@ -201,7 +247,9 @@ int main(int argc, char* argv[])
 					boost::this_thread::sleep(waitTime);
 				}
 				lastTime = boost::posix_time::microsec_clock::local_time();
+#ifdef PUBLISH_TO_SLAMTEC
 				platform.publishDepthCamFrame(sensorId, slamtecDepthFrame);
+#endif
 #ifdef DEBUG
 				pubCount++;
 				if (boost::posix_time::microsec_clock::local_time() - lastSecond >= cOneSecond)
