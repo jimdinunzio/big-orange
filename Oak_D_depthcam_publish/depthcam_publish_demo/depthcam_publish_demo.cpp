@@ -2,7 +2,12 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <rpos/robot_platforms/slamware_core_platform.h>
 //#include <Windows.h>
+#include "opencv2/imgproc/imgproc.hpp"
+#include "opencv2/ximgproc.hpp"
+
 #include <cstdio>
+
+#define ENABLE_SLAMTEC_PUBLISHING
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -12,13 +17,15 @@ using namespace std;
 
 static const std::string DEPTH_DEVICE_ID = "14442C10E18CC0D200";
 static const std::string SLAMWARE_IP_ADDR_STR = "192.168.11.1";
-static const int DEPTH_CONFIDENCE_THRESHOLD = 200;
+static const int DEPTH_CONFIDENCE_THRESHOLD = 255;
 static const int SLAMWARE_PORT = 1445;
 
 
 static const int        cDepthWidth  = 320;
 static const int        cDepthHeight = 200;
-static const size_t NUM_FRAME_DATA = cDepthWidth * cDepthHeight;
+static const size_t		NUM_FRAME_DATA = cDepthWidth * cDepthHeight;
+static const float		dWlsLambda = 8000;
+static const float		dWlsSigma = 1.5;
 
 // Closer - in minimum depth, disparity range is doubled(from 95 to 190) :
 static const bool extended_disparity = false;
@@ -27,12 +34,16 @@ static const bool subpixel = false;
 // Better handling for occlusions:
 static const bool lr_check = false;
 
+static const int baseline = 75; //mm
+static const int disp_levels = extended_disparity ? 192 : 96;
+static const float hfov = 71.86f;
+
 /// <summary>
 /// Main processing function
 /// </summary>
 void updateSlamtecBuffer(std::vector<float>& slamtec_depth_buffer, const cv::Mat& cv_depth_frame)
 {
-	assert(cv_depth_frame.depth() == CV_16U);
+	assert(cv_depth_frame.type() == CV_16SC1);
 
 	int nRows = cv_depth_frame.rows;
 	int nCols = cv_depth_frame.cols;
@@ -46,15 +57,52 @@ void updateSlamtecBuffer(std::vector<float>& slamtec_depth_buffer, const cv::Mat
 	}
 
 	int i, j;
-	const uint16_t* p;
+	const int16_t* p;
 	float* p_slamtec = &slamtec_depth_buffer[0];
 
 	for (i = 0; i < nRows; ++i)
 	{
-		p = cv_depth_frame.ptr<uint16_t>(i);
+		p = cv_depth_frame.ptr<int16_t>(i);
 		for (j = 0; j < nCols; ++j)
 		{
 			*p_slamtec++ = *p++ / 1000.0f; // convert to meters
+		}
+	}
+}
+
+
+// Converts filtered disparity input (16SC1 and 1 pixel = 16) to depth in millimeters
+void convertFilteredDisp16SToDepth(cv::Mat& dispDepth, float depthScaleFactor)
+{
+	assert(dispDepth.type() == CV_16SC1);
+
+	int nRows = dispDepth.rows;
+	int nCols = dispDepth.cols;
+	
+	if (dispDepth.isContinuous())
+	{
+		nCols *= nRows;
+		nRows = 1;
+	}
+
+	int i, j;
+
+	for (i = 0; i < nRows; ++i)
+	{
+		int16_t* p = dispDepth.ptr<int16_t>(i);
+
+		for (j = 0; j < nCols; ++j, ++p)
+		{
+			int16_t shiftedP = *p >> 4;
+			if (shiftedP != 0)
+			{
+				*p = max(static_cast<int16_t>(depthScaleFactor / shiftedP), short(0));
+			}
+			else
+			{
+				*p = 0;
+			}
+			
 		}
 	}
 }
@@ -70,11 +118,12 @@ int main(int argc, char* argv[])
 	{
 		try
 		{
+#ifdef ENABLE_SLAMTEC_PUBLISHING
 			rpos::robot_platforms::SlamwareCorePlatform platform = rpos::robot_platforms::SlamwareCorePlatform::connect(SLAMWARE_IP_ADDR_STR, SLAMWARE_PORT);
 			std::cout << "Connected to Slamware Core at " << SLAMWARE_IP_ADDR_STR << " port: " << SLAMWARE_PORT << endl;
 			std::cout << "SDK Version: " << platform.getSDKVersion() << std::endl;
 			std::cout << "SDP Version: " << platform.getSDPVersion() << std::endl;
-
+#endif
 			rpos::message::depth_camera::DepthCameraFrame slamtecDepthFrame;
 			slamtecDepthFrame.minValidDistance = 0.35f;                   //slamtecDepthFrame.minValidDistance = camera_attr.minValidDistance;
 			slamtecDepthFrame.maxValidDistance = 4.0f;
@@ -95,36 +144,34 @@ int main(int argc, char* argv[])
 #endif
 			int pubCount = 0;
 			dai::Pipeline p;
-			std::vector<std::string> queueNames;
 
 			auto left = p.create<dai::node::MonoCamera>();
 			left->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
 			left->setBoardSocket(dai::CameraBoardSocket::LEFT);
-			left->initialControl.setManualFocus(130);
+			//left->initialControl.setManualFocus(130);
 
 			auto right = p.create<dai::node::MonoCamera>();
 			right->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
 			right->setBoardSocket(dai::CameraBoardSocket::RIGHT);
-			right->initialControl.setManualFocus(130);
+			//right->initialControl.setManualFocus(130);
 
 			auto stereo = p.create<dai::node::StereoDepth>();
 			stereo->setConfidenceThreshold(DEPTH_CONFIDENCE_THRESHOLD);
-			stereo->setMedianFilter(dai::StereoDepthProperties::MedianFilter::KERNEL_7x7);
+			//stereo->setMedianFilter(dai::StereoDepthProperties::MedianFilter::KERNEL_3x3);
 			stereo->setLeftRightCheck(lr_check);
 			stereo->setExtendedDisparity(extended_disparity);
 			stereo->setSubpixel(subpixel);
+			stereo->setRectifyEdgeFillColor(0); // Black, to better see the cutout from rectification (black stripe on the edges)
 
 			left->out.link(stereo->left);
 			right->out.link(stereo->right);
 			
-			auto depthOut = p.create<dai::node::XLinkOut>();
-			depthOut->setStreamName("depth");
-			queueNames.push_back("depth");
-			stereo->depth.link(depthOut->input);
+			auto rectifiedLeftOut = p.create<dai::node::XLinkOut>();
+			rectifiedLeftOut->setStreamName("rectifiedLeft");
+			stereo->rectifiedLeft.link(rectifiedLeftOut->input);
 
 			auto disparityOut = p.create<dai::node::XLinkOut>();
 			disparityOut->setStreamName("disparity");
-			queueNames.push_back("disparity");
 			stereo->disparity.link(disparityOut->input);
 
 			std::tuple<bool, dai::DeviceInfo> devInfo = dai::Device::getDeviceByMxId(DEPTH_DEVICE_ID);
@@ -136,59 +183,105 @@ int main(int argc, char* argv[])
 				return 1;
 			}
 
+			float wlsLambda = dWlsLambda;
+			float wlsSigma = dWlsSigma;
+
 			// Connect to device and start pipeline
 			dai::Device d(p, std::get<1>(devInfo));
 
-			// Sets queues size and behavior
-			for (const auto& name : queueNames)
-			{
-				d.getOutputQueue(name, 4, false);
-			}
+			std::shared_ptr<dai::DataOutputQueue> qLeft = d.getOutputQueue("rectifiedLeft", 4, false);
+			std::shared_ptr<dai::DataOutputQueue> qDisparity = d.getOutputQueue("disparity", 4, false);
 
-			cv::Mat disparityFrame;
+			cv::Mat disparityFrame, depthFrameColor(400, 640, CV_8UC1), disparity16SFrame(400, 640, CV_16SC1), filteredDispDepth16S(400, 640, CV_16SC1),
+				halfFilteredDispDepth16S(200, 320, CV_16SC1);
+			cv::Mat rectifiedLeftFrame;
+
+			class WlsFilter 
+			{
+				
+			public: 
+				const cv::String wlsStream = "wlsFilter";
+
+				WlsFilter(float lambda, float sigma)
+					: mLambda(lambda), mSigma(sigma)
+				{
+					mWlsFilter = cv::ximgproc::createDisparityWLSFilterGeneric(false);
+					if (!mWlsFilter)
+					{
+						throw exception("wls_filter is null");
+					}
+
+					cv::namedWindow(wlsStream);
+					cv::createTrackbar("Lambda", wlsStream, nullptr, 255, &WlsFilter::onTrackbarChangeLambda, this);
+					cv::createTrackbar("Sigma", wlsStream, nullptr, 100, &WlsFilter::onTrackbarChangeSigma, this);
+					cv::setTrackbarPos("Lambda", wlsStream, 80);
+					cv::setTrackbarPos("Sigma", wlsStream, 15);
+				}
+
+				void filter(const cv::Mat& disparity, const cv::Mat& left, cv::Mat& filteredDisparity)
+				{
+					mWlsFilter->setLambda(mLambda);
+					mWlsFilter->setSigmaColor(mSigma);
+					mWlsFilter->filter(disparity, left, filteredDisparity);
+				}
+
+			private:
+
+				static void onTrackbarChangeLambda(int pos, void* ptr)
+				{
+					WlsFilter* f = static_cast<WlsFilter*>(ptr);
+					f->mLambda = pos * 100.;
+				}
+
+				static void onTrackbarChangeSigma(int pos, void* ptr)
+				{
+					WlsFilter* f = static_cast<WlsFilter*>(ptr);
+					f->mSigma = pos / 10.f;
+				}
+
+				float mLambda;
+				float mSigma;
+				cv::Ptr<cv::ximgproc::DisparityWLSFilter> mWlsFilter;
+			};
+
+			WlsFilter wlsFilter(8000, 1.5f);
+
 			while (1)
 			{
-				std::unordered_map<std::string, std::shared_ptr<dai::ImgFrame>> latestPacket;
+				auto inLeft = qLeft.get();
+				auto inDisparity = qDisparity.get();
+				
+				disparityFrame = inDisparity->get<dai::ImgFrame>()->getCvFrame();
+				rectifiedLeftFrame = inLeft->get<dai::ImgFrame>()->getCvFrame();
+				cv::flip(rectifiedLeftFrame, rectifiedLeftFrame, 1); // flip horizontally
 
-				auto queueEvents = d.getQueueEvents(queueNames);
-				for (const auto& name : queueEvents)
-				{
-					auto packets = d.getOutputQueue(name)->tryGetAll<dai::ImgFrame>();
-					auto count = packets.size();
-					if (count > 0)
-					{
-						latestPacket[name] = packets[count - 1];
-					}
-				}
+				float focal = disparityFrame.size().width / (2.f * tan(deg2rad(hfov / 2.0f)));
+				float depthScaleFactor = baseline * focal;
+				disparityFrame.convertTo(disparity16SFrame, CV_16SC1, 16); // filter expects 1 pixel = 16
 
-				for (const auto& name : queueNames)
-				{
-					if (latestPacket.find(name) != latestPacket.end())
-					{
-						if (name == "depth") {
-							cv::Mat halfDepthFrameCv = latestPacket[name]->getFrame(true);
-							cv::resize(halfDepthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
-							updateSlamtecBuffer(slamtecDepthFrame.data, halfDepthFrameCv);
+				// apply the wls filter
+				wlsFilter.filter(disparity16SFrame, rectifiedLeftFrame, filteredDispDepth16S);	
 
-							cv::Mat depthFrameColor;
-							cv::normalize(halfDepthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
-							cv::equalizeHist(depthFrameColor, depthFrameColor);
-							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_HOT);
-							cv::imshow("depth", depthFrameColor);
-						}
-						else if (name == "disparity") {
-							disparityFrame = latestPacket[name]->getFrame();
-							cv::resize(disparityFrame, disparityFrame, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
-							disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
+				cv::Mat filteredDisp;
+				filteredDispDepth16S.convertTo(filteredDisp, CV_8UC1, 255.0 / (disp_levels - 1) / 16.0);
+				cv::applyColorMap(filteredDisp, filteredDisp, cv::COLORMAP_JET);
+				cv::imshow("wls colored disp", filteredDisp);
 
-							// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
-							cv::applyColorMap(disparityFrame, disparityFrame, cv::COLORMAP_JET);
-							cv::imshow("disparity_color", disparityFrame);
-						}
-					}
-				}
+				// Compute Depth from disparity
+				convertFilteredDisp16SToDepth(filteredDispDepth16S, depthScaleFactor);
 
-				const int sensorId = 3; //TODO: Config your own SensorId
+				// resize by half for Slamtec suggested size of 320 width
+				cv::resize(filteredDispDepth16S, halfFilteredDispDepth16S, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
+				cv::imshow("raw depth", halfFilteredDispDepth16S);
+
+				updateSlamtecBuffer(slamtecDepthFrame.data, halfFilteredDispDepth16S);
+
+				cv::normalize(filteredDispDepth16S, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
+				cv::equalizeHist(depthFrameColor, depthFrameColor);
+				cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_HOT);
+				cv::imshow(wlsFilter.wlsStream, depthFrameColor);
+	
+				int sensorId = 3; //TODO: Config your own SensorId
 
 				// Publish one single frame no faster than 10/s.
 				boost::posix_time::time_duration waitTime = cMinTimeBetweenPublishing -
@@ -201,7 +294,9 @@ int main(int argc, char* argv[])
 					boost::this_thread::sleep(waitTime);
 				}
 				lastTime = boost::posix_time::microsec_clock::local_time();
+#ifdef ENABLE_SLAMTEC_PUBLISHING
 				platform.publishDepthCamFrame(sensorId, slamtecDepthFrame);
+#endif
 #ifdef DEBUG
 				pubCount++;
 				if (boost::posix_time::microsec_clock::local_time() - lastSecond >= cOneSecond)
