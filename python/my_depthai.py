@@ -11,6 +11,7 @@ from copy import deepcopy
 import math
 
 MAX_ATTEMPTS = 3
+TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
 
 '''
 Spatial Tiny-yolo example
@@ -141,11 +142,16 @@ def getObjectDetections():
 def startUp():
     global _run_flag, _personDetections, _objectDetections
     # Connect and start the pipeline
-    attempt = 1
     _run_flag = True
-    while attempt < MAX_ATTEMPTS and _run_flag:
+    
+    found, device_info = dai.Device.getDeviceByMxId(TOP_MOUNTED_OAK_D_ID)
+
+    if not found:
+        raise RuntimeError("Top mounted Oak-D device not found!")
+
+    while _run_flag:
         try:
-            with dai.Device(pipeline) as device:
+            with dai.Device(pipeline, device_info) as device:
             
                 # Output queues will be used to get the rgb frames and nn data from the outputs defined above
                 previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
@@ -249,6 +255,5 @@ def startUp():
                 cv2.destroyAllWindows()
         except Exception as e:
             print(repr(e))
-            attempt += 1
             time.sleep(1)
             
