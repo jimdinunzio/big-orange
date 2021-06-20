@@ -4,7 +4,7 @@
 //#include <Windows.h>
 #include <cstdio>
 
-//#define PUBLISH_TO_SLAMTEC
+#define PUBLISH_TO_SLAMTEC
 
 // Includes common necessary includes for development using depthai library
 #include "depthai/depthai.hpp"
@@ -138,15 +138,25 @@ int main(int argc, char* argv[])
 			left->out.link(stereo->left);
 			right->out.link(stereo->right);
 			
+			auto leftOut = p.create<dai::node::XLinkOut>();
+			leftOut->setStreamName("left");
+			queueNames.push_back("left");
+			left->out.link(leftOut->input);
+
 			auto depthOut = p.create<dai::node::XLinkOut>();
 			depthOut->setStreamName("depth");
 			queueNames.push_back("depth");
 			stereo->depth.link(depthOut->input);
 
-			auto disparityOut = p.create<dai::node::XLinkOut>();
-			disparityOut->setStreamName("disparity");
-			queueNames.push_back("disparity");
-			stereo->disparity.link(disparityOut->input);
+			//auto disparityOut = p.create<dai::node::XLinkOut>();
+			//disparityOut->setStreamName("disparity");
+			//queueNames.push_back("disparity");
+			//stereo->disparity.link(disparityOut->input);
+
+			// set up stereo depth config
+			auto xinStereoDepthConfig = p.create<dai::node::XLinkIn>();
+			xinStereoDepthConfig->setStreamName("stereoDepthConfig");
+			xinStereoDepthConfig->out.link(stereo->inputConfig);
 
 			std::tuple<bool, dai::DeviceInfo> devInfo = dai::Device::getDeviceByMxId(DEPTH_DEVICE_ID);
 			bool found = std::get<0>(devInfo);
@@ -166,36 +176,51 @@ int main(int argc, char* argv[])
 				d->getOutputQueue(name, 4, false);
 			}
 
+			// input queues
+			auto stereoDepthConfigInQueue = d->getInputQueue("stereoDepthConfig");
+
 			cv::Mat depthFrameColor(200, 320, CV_8UC1), depthFrameCv(400, 640, CV_16UC1), halfDepthFrameCv(200, 320, CV_16UC1);
-			cv::Mat disparityFrame(400, 640, CV_8UC1);
+			//cv::Mat disparityFrame(400, 640, CV_8UC1);
+
+			dai::StereoDepthConfig currentStereoDepthConfig = dai::StereoDepthConfig();
 
 			int confThresh = DEFAULT_CONF_THRESHOLD;
-			int lastConfThresh = DEFAULT_CONF_THRESHOLD;
-			const cv::String disparityColorWindowName = "disparity_color";
-			cv::namedWindow(disparityColorWindowName);
-			cv::createTrackbar("Confidence", disparityColorWindowName, &confThresh, 255);
-			cv::setTrackbarPos("Confidence", disparityColorWindowName, 200);	
-			stereo->setConfidenceThreshold(confThresh);
+			int lastConfThresh = 0;
+			int bilateralSigma = stereo->initialConfig.getBilateralFilterSigma();
+			int lastBilateralSigma = bilateralSigma;
+			
+			const cv::String depthColorWindowName = "depth_color";
+			cv::namedWindow(depthColorWindowName);
+			
+			cv::createTrackbar("Confidence", depthColorWindowName, &confThresh, 255);
+			cv::setTrackbarPos("Confidence", depthColorWindowName, confThresh);
+			stereo->initialConfig.setConfidenceThreshold(confThresh);
+			currentStereoDepthConfig.setConfidenceThreshold(confThresh);
+
+			cv::createTrackbar("Bilateral sigma", depthColorWindowName, &bilateralSigma, 250);
+			cv::setTrackbarPos("Bilateral sigma", depthColorWindowName, bilateralSigma);
 
 			dai::StereoDepthProperties::MedianFilter medianFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_5x5;
 			dai::StereoDepthProperties::MedianFilter lastMedianFilter = medianFilter;
-			cv::createTrackbar("Filter", disparityColorWindowName, nullptr, 3, onFilterChange, &medianFilter);
-			cv::setTrackbarPos("Filter", disparityColorWindowName, 2);
-			stereo->setMedianFilter(medianFilter);
+			cv::createTrackbar("Filter", depthColorWindowName, nullptr, 3, onFilterChange, &medianFilter);
+			cv::setTrackbarPos("Filter", depthColorWindowName, 2);
+			stereo->initialConfig.setMedianFilter(medianFilter);
+			currentStereoDepthConfig.setMedianFilter(medianFilter);
 
 			while (1)
 			{
-				if (confThresh != lastConfThresh || medianFilter != lastMedianFilter)
+				std::unordered_map<std::string, std::shared_ptr<dai::ImgFrame>> latestPacket;
+
+				if (confThresh != lastConfThresh || medianFilter != lastMedianFilter || bilateralSigma != lastBilateralSigma)
 				{
-					delete d;
-					stereo->setConfidenceThreshold(confThresh);
-					stereo->setMedianFilter(medianFilter);
-					d = new dai::Device(p, std::get<1>(devInfo));
+					currentStereoDepthConfig.setConfidenceThreshold(confThresh);
+					currentStereoDepthConfig.setMedianFilter(medianFilter);
+					currentStereoDepthConfig.setBilateralFilterSigma(bilateralSigma);
+					stereoDepthConfigInQueue->send(currentStereoDepthConfig);
 					lastConfThresh = confThresh;
 					lastMedianFilter = medianFilter;
+					lastBilateralSigma = bilateralSigma;
 				}
-
-				std::unordered_map<std::string, std::shared_ptr<dai::ImgFrame>> latestPacket;
 
 				auto queueEvents = d->getQueueEvents(queueNames);
 				for (const auto& name : queueEvents)
@@ -208,7 +233,6 @@ int main(int argc, char* argv[])
 					}
 				}
 
-
 				for (const auto& name : queueNames)
 				{
 					if (latestPacket.find(name) != latestPacket.end())
@@ -219,17 +243,21 @@ int main(int argc, char* argv[])
 							
 							updateSlamtecBuffer(slamtecDepthFrame.data, halfDepthFrameCv);
 
-							cv::normalize(halfDepthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
+							cv::normalize(depthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
 							cv::equalizeHist(depthFrameColor, depthFrameColor);
 							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_JET);
-							cv::imshow("depth", depthFrameColor);
+							cv::imshow(depthColorWindowName, depthFrameColor);
 						}
-						else if (name == "disparity") {
-							disparityFrame = latestPacket[name]->getCvFrame();
-							disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
-							// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
-							cv::applyColorMap(disparityFrame, disparityFrame, cv::COLORMAP_JET);
-							cv::imshow(disparityColorWindowName, disparityFrame);
+						//else if (name == "disparity") {
+							//disparityFrame = latestPacket[name]->getCvFrame();
+							//disparityFrame.convertTo(disparityFrame, CV_8UC1, 255. / stereo->getMaxDisparity());
+							//// Available color maps: https://docs.opencv.org/3.4/d3/d50/group__imgproc__colormap.html
+							//cv::applyColorMap(disparityFrame, disparityFrame, cv::COLORMAP_JET);
+							//cv::imshow("disparity_color", disparityFrame);
+						//}
+						else if (name == "left") 
+						{
+							cv::imshow("left", latestPacket[name]->getFrame());
 						}
 					}
 				}
