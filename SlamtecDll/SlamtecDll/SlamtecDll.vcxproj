@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -14,6 +14,7 @@
     <ProjectGuid>{BD47FE07-9FC0-491F-83F1-0F72A5E38758}</ProjectGuid>
     <RootNamespace>SlamtecDll</RootNamespace>
     <Keyword>MFCDLLProj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -21,6 +22,7 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
@@ -28,7 +30,7 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <PlatformToolset>v100</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -42,15 +44,15 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(ProjectDir)\..\..\slamware_sdk_windows.2.6.0_rtm.20180820\\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)\..\..\slamware_sdk_windows.2.6.0_rtm.20180820\\lib;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath)</LibraryPath>
     <CustomBuildAfterTargets>
     </CustomBuildAfterTargets>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(ProjectDir)\..\..\slamware_sdk_windows_2.6.7_rtm.20190929\\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(ProjectDir)\..\..\slamware_sdk_windows_2.6.7_rtm.20190929\\lib;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)\..\..\..\Slamtec SDP-Mini\slamware_sdk_windows_vs17.2.6.7_rtm.20190715\\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -75,13 +77,14 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <CustomBuildStep>
-      <Command>copy "$(TargetPath)" "$(ProjectDir)..\..\UseSlamtecDll\Debug\"</Command>
+      <Command>copy "$(TargetPath)" "$(ProjectDir)..\..\Deployment\DLLs\Debug\"</Command>
     </CustomBuildStep>
     <CustomBuildStep>
-      <Message>Copying SlamtecDll.dll to UseSlamtecDll project</Message>
+      <Message>Copying "$(TargetPath)" to Deployment dir</Message>
     </CustomBuildStep>
     <CustomBuildStep>
-      <Outputs>$(ProjectDir)..\..\UseSlamtecDll\Debug\$(TargetFileName)</Outputs>
+      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Debug\SlamtecDll.dll</Outputs>
+      <Inputs>$(TargetPath)</Inputs>
     </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -111,9 +114,9 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <CustomBuildStep>
-      <Command>copy "$(TargetPath)" E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs</Command>
-      <Message>Deploying Target to Runtime location E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs</Message>
-      <Outputs>E:\ProgramData\Anaconda3_x64\envs\BigOrange\DLLs\SlamtecDll.dll</Outputs>
+      <Command>copy "$(TargetPath)" "$(ProjectDir)..\..\Deployment\DLLs\Release\"</Command>
+      <Message>Copying $(TargetPath) to Deployment dir</Message>
+      <Outputs>$(ProjectDir)..\..\Deployment\DLLs\Release\SlamtecDll.dll</Outputs>
       <Inputs>$(TargetPath)</Inputs>
     </CustomBuildStep>
   </ItemDefinitionGroup>

@@ -48,8 +48,12 @@ extern "C" __declspec(dllexport) void left();
 extern "C" __declspec(dllexport) void right();
 extern "C" __declspec(dllexport) void back();
 extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove);
+extern "C" __declspec(dllexport) void moveToFloatWithYaw(float xMove, float yMove, float yaw);
 extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove);
+extern "C" __declspec(dllexport) void rotateWithOpt(float angle, MoveOptionsStruct moStruct);
 extern "C" __declspec(dllexport) void rotate(float angle);
+extern "C" __declspec(dllexport) void rotateToWithOpt(float angle, MoveOptionsStruct moStruct);
+extern "C" __declspec(dllexport) void rotateTo(float angle);
 extern "C" __declspec(dllexport) void wakeup();
 extern "C" __declspec(dllexport) void cancelMoveAction();
 extern "C" __declspec(dllexport) int getMoveActionStatus();
@@ -58,7 +62,6 @@ extern "C" __declspec(dllexport) int waitUntilMoveActionDone();
 
 extern "C" __declspec(dllexport) int battery();
 extern "C" __declspec(dllexport) float odometry();
-extern "C" __declspec(dllexport) const char* slamtecLocation();
 extern "C" __declspec(dllexport) ExportPose pose();
 extern "C" __declspec(dllexport) void home();
 extern "C" __declspec(dllexport) int getSpeed();
@@ -69,6 +72,7 @@ extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height);
 extern "C" __declspec(dllexport) int setUpdate(int enable);
+extern "C" __declspec(dllexport) void freeIt(void *ptr);
 
 BEGIN_MESSAGE_MAP(CSlamtecDllApp, CWinApp)
 END_MESSAGE_MAP()
@@ -173,6 +177,18 @@ extern "C" __declspec(dllexport) void back()
 
 
 //-----------------------------------------------------
+// move to x,y using float with yaw
+//	Input: float x and y
+//	Output:	none
+extern "C" __declspec(dllexport) void moveToFloatWithYaw(float xMove, float yMove, float yaw)
+{
+	Location loc(xMove, yMove);		//get location
+	MoveOptions options;
+	options.flag = MoveOptionFlagWithYaw;
+	MoveAction moveTo = sdp.moveTo(loc, options, yaw);		//move there and end at specified yaw
+}
+
+//-----------------------------------------------------
 // move to x,y using float
 //	Input: float x and y
 //	Output:	none
@@ -190,6 +206,39 @@ extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove)
 {
 	Location loc(xMove / 1000.0, yMove / 1000.0);		//get loacation
 	MoveAction moveTo = sdp.moveTo(loc, false, true);		//move there
+}
+
+
+//----------------------------------------------------------------------
+// rotateToWithOpt
+//	Input: float angle in radians, rotates to heading specified, MoveOptions
+//	Output:	none
+extern "C" __declspec(dllexport) void rotateToWithOpt(float angle, MoveOptionsStruct moStruct)
+{
+	MoveOptions mo;
+	mo.flag = static_cast<MoveOptionFlag>(moStruct.flag);
+	mo.speed_ratio = moStruct.speed_ratio;
+	sdp.rotateTo(angle, mo);
+}
+//----------------------------------------------------------------------
+// rotateTo
+//	Input: float angle in radians, rotates to heading specified
+//	Output:	none
+extern "C" __declspec(dllexport) void rotateTo(float angle)
+{
+	sdp.rotateTo(angle);
+}
+
+//----------------------------------------------------------------------
+// rotateWithOpt
+//	Input: float angle in radians, positive valus goes left, negative value goes right, MoveOptions
+//	Output:	none
+extern "C" __declspec(dllexport) void rotateWithOpt(float angle, MoveOptionsStruct moStruct)
+{
+	MoveOptions mo;
+	mo.flag = static_cast<MoveOptionFlag>(moStruct.flag);
+	mo.speed_ratio = moStruct.speed_ratio;
+	sdp.rotate(angle, mo);
 }
 
 //----------------------------------------------------------------------
@@ -266,18 +315,6 @@ extern "C" __declspec(dllexport) int battery()
 extern "C" __declspec(dllexport) float odometry()
 {
 	return static_cast<float>(sdp.getOdometry());
-}
-
-//----------------------------------------------------------
-// get location
-//	Input: none
-//	Output:	float => x
-extern "C" __declspec(dllexport) const char* slamtecLocation()
-{
-	Location location = sdp.getLocation();
-	CString str_temp;
-	str_temp.Format("%f,%f", location.x(), location.y());
-	return _strdup((LPCTSTR)str_temp);
 }
 
 //----------------------------------------------------------
@@ -440,3 +477,14 @@ extern "C" __declspec(dllexport) int setUpdate(int enable)
 	
 	return result;
 }
+
+//-----------------------------------------------------------
+// Call free on pointer allocated by malloc (e.g. _strdup)
+extern "C" __declspec(dllexport) void freeIt(void *ptr)
+{
+	if (ptr)
+	{
+		free(ptr);
+	}
+}
+

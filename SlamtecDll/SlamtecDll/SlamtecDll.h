@@ -26,7 +26,7 @@ using namespace rpos::features::location_provider;		//for locations, map
 //using namespace rpos::features::artifact_provider;		//for artifacts (walls, etc)
 ////using namespace rpos::features::system_resource;		//for docking, health, network
 //using namespace rpos::features::impact_sensor;			//for sensors
-//using namespace rpos::features::motion_planner;			//for movement, health
+using namespace rpos::features::motion_planner;			//for movement, health
 //using namespace rpos::features::artifact_provider;		//for artifacts, health
 //using namespace rpos::core;								//for map
 //using namespace rpos::system::types;					//for map (_U8)
@@ -63,3 +63,9 @@ typedef struct LaserPointsStruct
 	float angle[MAX_NUM_LASER_POINTS];
 	float distance[MAX_NUM_LASER_POINTS];
 } LaserPointsStruct;
+
+typedef struct MoveOptionsStruct
+{
+	int flag;
+	double speed_ratio;
+} MoveOptionsStruct;
