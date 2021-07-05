@@ -101,10 +101,21 @@
 			</P>
 			<P>go home</P>
 			<P>go recharge</P>
-			<P>go to dock</P>	  
+			<P>go to dock</P>
+			<P>
+				<P>find</P>
+				<O>a</O>
+				<RULEREF NAME="object"/>
+				<P>in the</P>
+       			<RULEREF NAME="location"/>
+			</P>
 			<P>take a picture</P>
 			<P>
-    			<P>bring this to</P>
+				<L>
+					<P>bring</P>
+					<P>take</P>
+				</L>
+    			<P>this to</P>
 		    	<RULEREF NAME="person"/>
     			<O>
         			<P>in the</P>
@@ -161,6 +172,7 @@
 
 <RULE NAME="location">
 	<L>
+		<P>room</P>
     	<P>kitchen</P>
 		<P>kitchen nook</P>
 		<P>living room</P>
@@ -169,6 +181,41 @@
 		<P>office</P>
 		<P>front door</P>
 		<P>end of hall</P>
+		<P>home</P>
+	</L>
+</RULE>
+
+<RULE NAME="object">
+	<L>
+		<P>person</P>
+		<P>baseball glove</P>
+		<P>suitcase</P>
+		<P>chair</P>
+		<P>book</P>
+		<P>teddy bear</P>
+		<P>cat</P>
+		<P>frisbee</P>
+		<P>pottedplant</P>
+		<P>remote</P>
+		<P>backpack</P>
+		<P>bowl</P>
+		<P>sports ball</P>
+		<P>bottle</P>
+		<P>handbag</P>
+		<P>tvmonitor</P>
+		<P>banana</P>
+		<P>cup</P>
+		<P>cell phone</P>
+		<P>spoon</P>
+		<P>fork</P>
+		<P>apple</P>
+		<P>orange</P>
+		<P>donut</P>
+		<P>sink</P>
+		<P>hair drier</P>
+		<P>carrot</P>
+		<P>keyboard</P>
+		<P>scissors</P>
 	</L>
 </RULE>
 

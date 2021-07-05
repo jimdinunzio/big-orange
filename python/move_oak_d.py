@@ -1,5 +1,6 @@
 from pyfirmata import Arduino, util
 import time
+from threading import Thread
 
 _YAW_HOME_ = 81
 _PITCH_HOME_ = 110
@@ -42,7 +43,24 @@ def pitchHome():
 def allHome():
     yawHome()
     pitchHome()
-    
+
+_sweeping = False
+def stopSweepingBackAndForth():
+    global _sweeping
+    _sweeping = False
+
+def startSweepingBackAndForth():
+    Thread(target = sweepYawBackAndForth).start()
+        
+def sweepYawBackAndForth():
+    global _sweeping
+    setYaw(35)
+    _sweeping = True
+    while _sweeping:
+        sweepYaw(35, 120)
+        time.sleep(0.5)
+        sweepYaw(120, 35)
+
 def sweepYaw(begin, end):
     inc = 1 if begin <= end else -1
     for pos in range(begin, end, inc):
@@ -69,11 +87,11 @@ if __name__ == '__main__':
     setYaw(45)
     try:
         while(1):
-            for pos in range(45, 135): # goes from 0 degrees to 180 degrees in steps of 1 degree
+            for pos in range(35, 120): # goes from 0 degrees to 180 degrees in steps of 1 degree
                 _yawServo.write(pos)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)
-            for pos in range(135, 45, -1): # goes from 180 degrees to 0 degrees
+            for pos in range(120, 35, -1): # goes from 180 degrees to 0 degrees
                 _yawServo.write(pos)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)        

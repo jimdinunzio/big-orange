@@ -51,6 +51,7 @@ pipeline = dai.Pipeline()
 
 # Define a source - color camera
 colorCam = pipeline.createColorCamera()
+colorCam.initialControl.setManualFocus(130)
 spatialDetectionNetwork = pipeline.createYoloSpatialDetectionNetwork()
 monoLeft = pipeline.createMonoCamera()
 monoRight = pipeline.createMonoCamera()
@@ -226,8 +227,8 @@ def startUp():
                                                                      detection.spatialCoordinates.x, 
                                                                      detection.spatialCoordinates.y,
                                                                      detection.spatialCoordinates.z,
-                                                                     [(detection.xmax - detection.xmin) / 2.0,
-                                                                      (detection.ymax - detection.ymin) / 2.0],
+                                                                     [(detection.xmax + detection.xmin) / 2.0,
+                                                                      (detection.ymax + detection.ymin) / 2.0],
                                                                      detection.confidence))
                                 #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
                                 #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
@@ -237,8 +238,8 @@ def startUp():
                                                                      detection.spatialCoordinates.x, 
                                                                      detection.spatialCoordinates.y,
                                                                      detection.spatialCoordinates.z,
-                                                                     [(detection.xmax - detection.xmin) / 2.0,
-                                                                      (detection.ymax - detection.ymin) / 2.0],
+                                                                     [(detection.xmax + detection.xmin) / 2.0,
+                                                                      (detection.ymax + detection.ymin) / 2.0],
                                                                      detection.confidence))
                             cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
                             cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
