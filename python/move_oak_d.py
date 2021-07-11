@@ -10,16 +10,21 @@ _PITCH_HOME_ = 110
 _pitchServo = None
 _yawServo = None
 _board = None
+_yaw = 0
+_pitch = 0
 
 def initialize(yaw=_YAW_HOME_, pitch=_PITCH_HOME_):
     global _board, _pitchServo, _yawServo
+    global _pitch, _yaw
     _board = Arduino('COM6')
     iter = util.Iterator(_board)
     iter.start()
     _pitchServo = _board.get_pin('d:3:s')
     _yawServo = _board.get_pin('d:5:s')
     _pitchServo.write(pitch)
+    _pitch = pitch
     _yawServo.write(yaw)
+    _yaw = yaw
 
 def setServo(servo, angle):
     curr = servo.read()
@@ -28,10 +33,26 @@ def setServo(servo, angle):
         servo.write(pos)
         time.sleep(0.015)
 
+def getPitch(relToHome=True):
+    if relToHome:
+        return _pitch - _PITCH_HOME_
+    else:
+        return _pitch
+
 def setPitch(angle):
+    global _pitch
+    _pitch = angle
     setServo(_pitchServo, angle)
 
+def getYaw(relToHome=True):
+    if relToHome:
+        return _yaw - _YAW_HOME_
+    else:
+        return _yaw
+
 def setYaw(angle):
+    global _yaw
+    _yaw = angle
     setServo(_yawServo, angle)
 
 def yawHome():
@@ -44,27 +65,39 @@ def allHome():
     yawHome()
     pitchHome()
 
+def isSweeping():
+    return _sweeping
+
 _sweeping = False
 def stopSweepingBackAndForth():
     global _sweeping
     _sweeping = False
 
-def startSweepingBackAndForth():
-    Thread(target = sweepYawBackAndForth).start()
+def startSweepingBackAndForth(count=0):
+    Thread(target = sweepYawBackAndForth, args=(count,)).start()
         
-def sweepYawBackAndForth():
+def sweepYawBackAndForth(count):
     global _sweeping
+    sweep_count = 0
     setYaw(35)
     _sweeping = True
-    while _sweeping:
-        sweepYaw(35, 120)
-        time.sleep(0.5)
-        sweepYaw(120, 35)
+    while _sweeping and (count == 0 or sweep_count < count):
+        sweepYaw(41, 120) # 35 is limit on low end
+        time.sleep(0.1)
+        sweepYaw(120, 41)
+        sweep_count += 1
+    _sweeping = False
 
 def sweepYaw(begin, end):
+    global _yaw
+    if not _sweeping:
+        return
     inc = 1 if begin <= end else -1
     for pos in range(begin, end, inc):
         _yawServo.write(pos)
+        _yaw = pos
+        if not _sweeping:
+            return
         time.sleep(0.05)
 
 def suspend():

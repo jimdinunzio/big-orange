@@ -308,7 +308,9 @@ def handleGotoLocation():
         sub_goal_found = False
         idx = 0
         objDict = {}
-        lastObjInWay = ""
+        if _sub_goal != "":
+            oakd.startSweepingBackAndForth()
+        lookingAgain = False
         while(_run_flag and _interrupt_action == False):
 #            try:
             if _sub_goal == "":
@@ -319,19 +321,20 @@ def handleGotoLocation():
                         objDict[next(iter(objDict))]
                         persistObjs = computePersistance(objDict)
                         obj = next(iter(persistObjs.items()))
-                        if obj[1] > 0.5 and obj[0] != lastObjInWay:
+                        if obj[1] > 0.5:
                             print("there's a", obj[0], "in my way seen", obj[1] * 100, "% of the time in the last 2 seconds.")
                             speak("There's a " + obj[0] + " in my way. I will plan a way around it.")
-                            lastObjInWay = obj[0]
+                            del objDict[obj[0]] # we've reported this object, so delete its history from the buffer
             else: # _sub_goal != ""
                 objDict = {}
                 checkForObjects([_sub_goal], objDict, 9, checkPersons=checkPersons, checkObjects=checkObjects, maxValueLen=9)
                 objDict = computePersistance(objDict)
                 if len(objDict) > 0 and objDict[_sub_goal] > 0.05:
                     print("spotted", _sub_goal, ", stopping to get a look")
-                    _sdp.cancelMoveAction()                        
+                    _sdp.cancelMoveAction()
+                    oakd.stopSweepingBackAndForth()
                     time.sleep(2)            
-                    if setFoundObjAsGoal(_sub_goal):
+                    if setFoundObjAsGoal(_sub_goal, cam_yaw=oakd.getYaw()):
                         print("got a lock on ", _sub_goal)
                         _goal_queue.append(_sub_goal)
                         speak("I see a " + _sub_goal)
@@ -339,10 +342,20 @@ def handleGotoLocation():
                         _sdp.setSpeed(_user_set_speed) #restore speed after finding obj
                         break
                     else:
+                        if lookingAgain:
+                            if oakd.isSweeping():
+                                continue
+                            else:
+                                speak("I'll keep going.")
+                                lookingAgain = False
+                                _sdp.moveToFloat(coords[0], coords[1])
                         print("saw", _sub_goal, "but lost track of it")
-                        speak("I thought I saw a " + _sub_goal + ". I'll keep going.")
-                        _sdp.moveToFloat(coords[0], coords[1])
-                        
+                        speak("I thought I saw a " + _sub_goal + ". I'll look again.")
+                        oakd.startSweepingBackAndForth(2)
+                        lookingAgain = True
+                        continue
+                if lookingAgain:
+                    continue
             maStatus = getMoveActionStatus()
             if maStatus == ActionStatus.Stopped or \
                 maStatus == ActionStatus.Error or \
@@ -392,6 +405,8 @@ def handleGotoLocation():
         _action = ""
         _goal = ""
         _sub_goal = ""
+        oakd.stopSweepingBackAndForth()
+        oakd.allHome()
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
         time.sleep(0.5)
@@ -640,7 +655,7 @@ def setFoundObjAsGoal(obj, cam_yaw=0):
         pose = _sdp.pose()
         xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
         yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
-        print("detected ", obj, " at distance ", p.z + 0.5, " meters at ", cam_yaw + p.theta, "degrees")
+        print("detected ", obj, " at distance ", p.z + 0.75, " meters at ", cam_yaw + p.theta, "degrees")
         _locations[obj] = (xt, yt)
         return True
     return False
@@ -750,7 +765,7 @@ def computePersistance(objDict):
 checkForSpecificObject("person", numChecks=16, maxDist=30)
 
 def waitForObjectToBeTaken(obj):
-    oakd.initialize(yaw=70, pitch=140)
+    aim_oakd(yaw=70, pitch=140)
 #    time.sleep(2)
     speak("Please take it.");
     foundOnRight = checkForSpecificObject(obj, maxDist=0.4)
@@ -768,7 +783,6 @@ def waitForObjectToBeTaken(obj):
         while found and time.monotonic() < timeout:
             found = checkForSpecificObject(obj, maxDist=0.4)
     aim_oakd(yaw=81, pitch=110)
-    oakd.shutdown()
     return not found
 
 def waitForObjectOnTray():
@@ -789,7 +803,7 @@ def waitForObjectOnTray():
 
 def deliverToPersonInRoom(person, package, room):
     global _deliveree, _package, _goal, _goal_queue
-    oakd.initialize(yaw=70, pitch=140)
+    aim_oakd(yaw=70, pitch=140)
     _deliveree = person
     _package = package
     loc, dist, closeEnough = where_am_i()
@@ -799,7 +813,6 @@ def deliverToPersonInRoom(person, package, room):
         _package = objLabel
     # aim oakd up to for detecting a person
     aim_oakd(yaw=81, pitch=90)
-    oakd.shutdown()
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     speak("Ok, I will deliver this " + _package + " to " + _deliveree 
           + ((" in the " + room) if room is not None else ""))
@@ -1687,8 +1700,7 @@ def robot():
     initialize_robot()
     eyes.set(270, 10)
     oakd.initialize()
-    oakd.shutdown()
-    
+
     try:
         while _run_flag:
             time.sleep(1)
