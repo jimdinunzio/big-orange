@@ -1,8 +1,9 @@
 from pyfirmata import Arduino, util
 import time
 from threading import Thread
+import eyes
 
-_YAW_HOME_ = 81
+_YAW_HOME_ = 90
 _PITCH_HOME_ = 110
 
 #print("opening board: " + str(board))
@@ -74,17 +75,24 @@ def stopSweepingBackAndForth():
     _sweeping = False
 
 def startSweepingBackAndForth(count=0):
+    global _sweeping
+    _sweeping = True
     Thread(target = sweepYawBackAndForth, args=(count,)).start()
         
 def sweepYawBackAndForth(count):
     global _sweeping
-    sweep_count = 0
-    setYaw(35)
     _sweeping = True
+    sweep_count = 0
+    yawHome()
     while _sweeping and (count == 0 or sweep_count < count):
-        sweepYaw(41, 120) # 35 is limit on low end
-        time.sleep(0.1)
-        sweepYaw(120, 41)
+        sweepYaw(_YAW_HOME_, 125)
+        time.sleep(0.5)
+        sweepYaw(125, _YAW_HOME_)
+        time.sleep(0.5)
+        sweepYaw(_YAW_HOME_, 55)
+        time.sleep(0.5)
+        sweepYaw(55, _YAW_HOME_)
+        time.sleep(0.5)
         sweep_count += 1
     _sweeping = False
 
@@ -95,6 +103,8 @@ def sweepYaw(begin, end):
     inc = 1 if begin <= end else -1
     for pos in range(begin, end, inc):
         _yawServo.write(pos)
+        if eyes._going:
+            eyes.setAngleOffset(0, (pos - 90) * (60.0/35.0))
         _yaw = pos
         if not _sweeping:
             return
@@ -110,7 +120,7 @@ def resume():
     
 def shutdown():
     global _board
-    #allHome()
+    allHome()
     if _board is not None:
         _board.exit()
         _board = None
@@ -120,11 +130,11 @@ if __name__ == '__main__':
     setYaw(45)
     try:
         while(1):
-            for pos in range(35, 120): # goes from 0 degrees to 180 degrees in steps of 1 degree
+            for pos in range(45, 125): # goes from 0 degrees to 180 degrees in steps of 1 degree
                 _yawServo.write(pos)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)
-            for pos in range(120, 35, -1): # goes from 180 degrees to 0 degrees
+            for pos in range(125, 45, -1): # goes from 180 degrees to 0 degrees
                 _yawServo.write(pos)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)        
