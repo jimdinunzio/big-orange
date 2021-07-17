@@ -3,14 +3,19 @@ from pygame.locals import *
 from pygame.compat import geterror
 import math
 import random
+from threading import Lock
 
 WIDTH = 1024
 HEIGHT = 600
+_PUPIL_MOVE_RATE = 20
 
 _going = False
 _angle = 0
 _offset = 0
+_targetAngle = 0
+_targetOffset = 0
 _dims = None
+_eyeAngleOffsetLock = Lock()
 
 def update():
     pass
@@ -40,16 +45,35 @@ def shutdown():
     global _going
     _going = False
 
-def set(angle, offset):
-    global _angle, _offset
-    _angle = angle
-    _offset = offset
+def set(angle=None, offset=None):
+    global _angle, _offset, _targetAngle, _targetOffset
+    with _eyeAngleOffsetLock:
+        if angle is not None:
+            _angle = angle
+            _targetAngle = angle
+        if offset is not None:
+            _offset = offset
+            _targetOffset = offset
 
 def next_blink_time():
     return pygame.time.get_ticks() + 1000 + (random.random()*6000)
 
+def setHome():
+    global _targetAngle, _targetOffset
+    with _eyeAngleOffsetLock:
+        _targetAngle = 0
+        _targetOffset = 0
+
+def setAngleOffset(targetAngle=None, targetOffset=None):
+    global _targetAngle, _targetOffset
+    with _eyeAngleOffsetLock:
+        if targetAngle is not None:
+            _targetAngle = targetAngle
+        if targetOffset is not None:
+            _targetOffset = targetOffset
+
 def start():
-    global _going, _dims
+    global _going, _dims, _angle, _offset
     _going = True
 
     pygame.init()
@@ -84,17 +108,32 @@ def start():
             clock.tick(30)
 
             # Handle Input Events
-            # for event in pygame.event.get():
-            #     if event.type == QUIT:
-            #         going = False
-            #     elif event.type == KEYDOWN and event.key == K_ESCAPE:
-            #         going = False
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    going = False
+                elif event.type == KEYDOWN and event.key == K_ESCAPE:
+                    going = False
 
             #allsprites.update()
 
             # Draw Everything
             screen.blit(background, (0, 0))
             #allsprites.draw(screen)
+            with _eyeAngleOffsetLock:
+                targetAngle = _targetAngle
+                targetOffset = _targetOffset
+
+            angleDiff = _targetAngle - _angle
+            offsetDiff = _targetOffset - _offset
+            if _offset != 0 and abs(angleDiff) >= _PUPIL_MOVE_RATE:
+                _angle += math.copysign(_PUPIL_MOVE_RATE, angleDiff)
+            else:
+                _angle = _targetAngle
+            if abs(offsetDiff) >= _PUPIL_MOVE_RATE:
+                _offset += math.copysign(_PUPIL_MOVE_RATE, offsetDiff)
+            else:
+                _offset = _targetOffset
+
             draw_eyes(screen, _angle, _offset)
 
             #blink
