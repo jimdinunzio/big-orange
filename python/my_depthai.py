@@ -120,7 +120,10 @@ detection_lock.release()
 
 class MyDetection(object):
     def __init__(self, label, x, y, z, bboxCtr, confidence):
-        self.label = label
+        if label == "sports ball":
+            self.label = "baseball"
+        else:
+            self.label = label
         self.x = x / 1000.0
         self.y = y / 1000.0
         self.z = z / 1000.0
@@ -140,7 +143,7 @@ def getObjectDetections():
     with detection_lock:
         return deepcopy(_objectDetections)
     
-def startUp():
+def startUp(showRgbWindow=False, showDepthWindow=False):
     global _run_flag, _personDetections, _objectDetections
     # Connect and start the pipeline
     _run_flag = True
@@ -152,6 +155,9 @@ def startUp():
 
     while _run_flag:
         try:
+            if showRgbWindow:
+                cv2.namedWindow('rgb', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('rgb', 832, 832)
             with dai.Device(pipeline, device_info) as device:
             
                 # Output queues will be used to get the rgb frames and nn data from the outputs defined above
@@ -181,16 +187,16 @@ def startUp():
                         startTime = current_time
             
                     frame = inPreview.getCvFrame()
-                    depthFrame = depth.getFrame()
-            
-                    #depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
-                    #depthFrameColor = cv2.equalizeHist(depthFrameColor)
-                    #depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+                    
+                    if showDepthWindow:
+                        depthFrame = depth.getFrame()
+                        depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+                        depthFrameColor = cv2.equalizeHist(depthFrameColor)
+                        depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
                     detections = inNN.detections
                     if len(detections) != 0:
                         boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
-                        roiDatas = boundingBoxMapping.getConfigData()
-            
+                        #roiDatas = boundingBoxMapping.getConfigData()            
                         # for roiData in roiDatas:
                         #     roi = roiData.roi
                         #     roi = roi.denormalize(depthFrameColor.shape[1], depthFrameColor.shape[0])
@@ -200,9 +206,7 @@ def startUp():
                         #     ymin = int(topLeft.y)
                         #     xmax = int(bottomRight.x)
                         #     ymax = int(bottomRight.y)
-            
-                        #    cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
-            
+                        #     cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
             
                     # If the frame is available, draw bounding boxes on it and show the frame
                     height = frame.shape[0]
@@ -212,10 +216,11 @@ def startUp():
                         _objectDetections = []
                         for detection in detections:                
                             # Denormalize bounding box
-                            x1 = int(detection.xmin * width)
-                            x2 = int(detection.xmax * width)
-                            y1 = int(detection.ymin * height)
-                            y2 = int(detection.ymax * height)
+                            if showRgbWindow:
+                                x1 = int(detection.xmin * width)
+                                x2 = int(detection.xmax * width)
+                                y1 = int(detection.ymin * height)
+                                y2 = int(detection.ymax * height)
                             try:
                                 label = labelMap[detection.label]
                             except:
@@ -241,17 +246,24 @@ def startUp():
                                                                      [(detection.xmax + detection.xmin) / 2.0,
                                                                       (detection.ymax + detection.ymin) / 2.0],
                                                                      detection.confidence))
-                            cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                            cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                            cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                            cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                            cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                            if label == "sports ball":
+                                l = "baseball"
+                            else:
+                                l = label
+                            
+                            if showRgbWindow:
+                                cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
                     
-                    cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-                    #cv2.imshow("depth", depthFrameColor)
-                    cv2.imshow("rgb", frame)
+                    if showRgbWindow:                    
+                        cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                        cv2.imshow("rgb", frame)
+                    if showDepthWindow:
+                        cv2.imshow("depth", depthFrameColor)
                     cv2.waitKey(50)
                 cv2.destroyAllWindows()
         except Exception as e:
