@@ -21,6 +21,10 @@
 
 	<O>
 		<LIST>
+			<P>
+				<P>you are in the</P>
+				<RULEREF NAME="location"/>
+			</P>
     		<P>ask google</P>
 			<P>resume listening</P>
 			<P>start listening</P>
@@ -104,10 +108,17 @@
 			<P>go to dock</P>
 			<P>
 				<P>find</P>
-				<O>a</O>
+				<O>
+					<L>
+						<P>a</P>
+						<P>the</P>
+					</L>
+				</O>
 				<RULEREF NAME="object"/>
-				<P>in the</P>
-       			<RULEREF NAME="location"/>
+				<O>
+					<P>in the</P>
+					<RULEREF NAME="location"/>
+				</O>
 			</P>
 			<P>take a picture</P>
 			<P>
@@ -199,7 +210,7 @@
 		<P>remote</P>
 		<P>backpack</P>
 		<P>bowl</P>
-		<P>sports ball</P>
+		<P>baseball</P>
 		<P>bottle</P>
 		<P>handbag</P>
 		<P>tvmonitor</P>
