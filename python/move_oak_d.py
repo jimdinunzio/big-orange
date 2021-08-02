@@ -4,7 +4,7 @@ from threading import Thread
 import eyes
 
 _YAW_HOME_ = 90
-_PITCH_HOME_ = 110
+_PITCH_HOME_ = 100
 
 #print("opening board: " + str(board))
 
@@ -84,6 +84,7 @@ def sweepYawBackAndForth(count):
     _sweeping = True
     sweep_count = 0
     yawHome()
+    eyes.set(0,0)
     while _sweeping and (count == 0 or sweep_count < count):
         sweepYaw(_YAW_HOME_, 125)
         time.sleep(0.5)
@@ -104,7 +105,7 @@ def sweepYaw(begin, end):
     for pos in range(begin, end, inc):
         _yawServo.write(pos)
         if eyes._going:
-            eyes.setAngleOffset(0, (pos - 90) * (60.0/35.0))
+            eyes.setAngleOffset(targetOffset=(pos - 90) * (60.0/35.0))
         _yaw = pos
         if not _sweeping:
             return

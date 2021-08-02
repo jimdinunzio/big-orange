@@ -7,7 +7,7 @@ Created on Sun Jun  7 17:39:44 2020
 import math
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window = True
 _show_depth_window = False
 _hotword = "orange"
 _google_mode = False
@@ -314,10 +314,10 @@ def handleGotoLocation():
             checkPersons = _sub_goal == 'person'
             if checkPersons:
                 aim_oakd(pitch=80) # aim up to see people better                
-                eyes.setAngleOffset(90, 50)
-            else:
-                aim_oakd(pitch=120) # aim down towards floor for objects
                 eyes.setAngleOffset(90, -50)
+            else:
+                aim_oakd(pitch=110) # aim down towards floor for objects
+                eyes.setAngleOffset(90, 50)
         else:
             checkPersons = _goal != "deliver" # avoid saying there's a person in the way going to a person
         checkObjects = not checkPersons        
@@ -445,10 +445,12 @@ def handleGotoLocation():
         _goal = ""
         _sub_goal = ""
         oakd.stopSweepingBackAndForth()
-        oakd.allHome()
-        eyes.setHome()
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
+        else:
+            oakd.allHome()
+            eyes.setHome()
+
         time.sleep(0.5)
         
 ################################################################
@@ -601,8 +603,9 @@ def statusReport():
 def searchForPerson(clockwise):
     global _sdp, _action_flag, _interrupt_action
     
-    aim_oakd(pitch=80) # aim up to see people better                
-    eyes.setAngleOffset(90, 50)
+    aim_oakd(pitch=80) # aim up to see people better
+    eyes.set(0,0)             
+    eyes.setAngleOffset(90, -50)
 
     ps = []
     # First see if person is already in view and if so return
@@ -630,7 +633,7 @@ def searchForPerson(clockwise):
         if covered > 180:
             covered = 360 - covered
         sweep += covered
-        print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
+        #print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
 
         oldyaw = yaw
         if sweep >= nextPause:
@@ -644,10 +647,19 @@ def searchForPerson(clockwise):
         print("rechecking person")
         _sdp.cancelMoveAction()
         time.sleep(1)
-        for i in range(1,10):
-            found, ps = checkForPerson()
-            if found:
+        for j in range(1,5):
+            for i in range(1,5):
+                found, ps = checkForPerson()
+                if found:
+                    break
+            if not found:
+                # go back other way
+                deg = -5 if j % 2 == 0 else 5
+                _sdp.rotate(math.radians(deg))
+                _sdp.waitUntilMoveActionDone()
+            else:
                 break
+            
     _action_flag = False
     return ps
 
@@ -696,7 +708,7 @@ def checkForPerson():
 
 def setLocationOfObj(obj, p, cam_yaw=0):
     global _locations
-    p.z -= 0.75 # come up to the object within certain distance
+    p.z -= 1.0 # come up to the object within certain distance
     pose = _sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
     yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
@@ -783,7 +795,7 @@ def checkForObjectOnTray(numChecks=16):
     objDict = {}
     checkForObjects(_possObjOnTray, objDict, numChecks, maxDist=1.5, maxValueLen=numChecks)
     objDict = computePersistance(objDict)
-    return next(iter(objDict)) if len(objDict) > 0 and next(iter(objDict.values())) > 0.5 else None
+    return next(iter(objDict)) if len(objDict) > 0 and next(iter(objDict.values())) > 0.25 else None
 
 def computePersistance(objDict):
     def by_value(item):
@@ -798,7 +810,7 @@ def computePersistance(objDict):
 # import my_depthai
 # import time
 # from threading import Thread
-# t = Thread(target = my_depthai.startUp).start()
+# t = Thread(target = my_depthai.startUp, args=(True,)).start()
 
 # objDict = {} # dictionary of objects identifications
 # idx=0
@@ -811,8 +823,9 @@ def computePersistance(objDict):
 #checkForSpecificObject("person", numChecks=16, maxDist=30)
 
 def waitForObjectToBeTaken(obj):
-    aim_oakd(yaw=79, pitch=120)
-    eyes.set(offset=0)
+    # aim down to right side of tray
+    aim_oakd(yaw=79, pitch=110)
+    eyes.set(0,0)
     eyes.setAngleOffset(-70, -40)
 #    time.sleep(2)
     speak("Please take it.");
@@ -822,7 +835,7 @@ def waitForObjectToBeTaken(obj):
     while found and time.monotonic() < timeout:
         found = checkForSpecificObject(obj, maxDist=0.4)
     if not foundOnRight:
-        # check left side
+        # check left side of tray
         aim_oakd(yaw=99)
         eyes.setAngleOffset(-110, -40)
         time.sleep(1)
@@ -844,9 +857,9 @@ def waitForObjectOnTray():
     if objLabel is not None:
         return objLabel
 
-    # For left side
+    # Aim down to left side of tray
     aim_oakd(yaw=99)
-    eyes.setAngleOffset(-70, -40)
+    eyes.setAngleOffset(-110, -40)
 
     timeout = time.monotonic() + 2
     while objLabel is None and time.monotonic() < timeout:
@@ -872,13 +885,15 @@ def sweepToFindObjAndSetAsGoal(obj, sweepCount):
                 print("got a lock on ", obj)
                 _goal = obj
                 oakd.yawHome()
-                eyes.setHome()
+                # eyes looking to obj or person
+                eyes.set(0,0)
+                eyes.setAngleOffset(90, -50 if checkPersons else 50)
                 return True
             else: # obj not found after stopping
                 if lookingAgain:
                     if oakd.isSweeping():
                         continue
-                    else:
+                    else: # failed to find it
                         oakd.stopSweepingBackAndForth()
                         lookingAgain = False
                         oakd.allHome()
@@ -892,7 +907,12 @@ def sweepToFindObjAndSetAsGoal(obj, sweepCount):
 def deliverToPersonInRoom(person, package, room):
     global _deliveree, _package, _goal, _goal_queue
     #go to person to pick up item 
-    speak("Ok. I'll come get it.")    
+    speak("Ok. I'll come get it.")
+    # aim up to see people better
+    aim_oakd(pitch=80) 
+    eyes.set(0,0)
+    eyes.setAngleOffset(90, -50)
+
     if setFoundObjAsGoal("person"): 
         print("got a lock on the person")
         _goal = "person"
@@ -917,7 +937,8 @@ def deliverToPersonInRoom(person, package, room):
         return
     time.sleep(2)
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=130)
+    aim_oakd(yaw=79, pitch=110)
+    eyes.set(0,0)
     eyes.setAngleOffset(-70, -40)
     _deliveree = person
     _package = package
@@ -928,8 +949,8 @@ def deliverToPersonInRoom(person, package, room):
         _package = objLabel
     # aim oakd up to for detecting a person
     aim_oakd(yaw=oakd._YAW_HOME_, pitch=80)
-    eyes.set(-70, 0)
-    eyes.setAngleOffset(90, -40)
+    eyes.set(0,0)
+    eyes.setAngleOffset(90, -50)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     speak("Ok, I will take this " + _package + " to " + _deliveree 
           + ((" in the " + room) if room is not None else ""))
@@ -1199,6 +1220,7 @@ def listen():
             response = "Ok. I'll search for " + obj_p 
             if len(loc):
                 response += " in the " + loc
+            speak(response)
 
             if inThisRoom:
                 time.sleep(3)
@@ -1643,6 +1665,17 @@ def listen():
         else: 
             speak("I am not sure how to help with that.")
 
+    def listenFromGoogle(finallyFunc=lambda:None, check_hot_word=True):
+        try:
+            phrase = listenFromGoogleSpeechRecog(r, sr)
+            handled_result = handle_response(phrase, check_hot_word)
+            if handled_result == HandleResponseResult.NotHandledUnknown:
+                sendToGoogleAssistant(phrase)
+        except:
+            speak("sorry, i could not do what you wanted.")
+        finally:
+            finallyFunc()
+
     def local_hotword_recog_cb(phrase, listener, hotword, r, sr):
         phrase = phrase.lower()
         print("I heard: %s" % phrase)
@@ -1659,15 +1692,7 @@ def listen():
         if hotword in phrase:
             listener.set_active(False)
             speak("yes?")
-            try:
-                phrase = listenFromGoogleSpeechRecog(r, sr)
-                handled_result = handle_response(phrase, False)
-                if handled_result == HandleResponseResult.NotHandledUnknown:
-                    sendToGoogleAssistant(phrase)
-            except:
-                speak("sorry, i could not do what you wanted.")
-            finally:
-                listener.set_active(True)
+            listenFromGoogle(lambda:listener.set_active(True), False)
 
     def local_speech_recog_cb(phrase, listener, hotword, r, sr):
         global _internet, _use_internet
@@ -1708,12 +1733,15 @@ def listen():
                 "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, sr))
             else: 
-                # use winspeech to detect hotword or stop and then invoke google 
+                # use google cloud speech
+                listenFromGoogle()
+
+                # winspeech to detect hotword or stop and then invoke google 
                 # cloud speech
-                print("detecting hotword")
-                local_listener = winspeech.listen_for(None, "hotword.xml", 
-                "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
-                sr=sr: local_hotword_recog_cb(phrase, listener, hotword, r, sr))
+                # print("detecting hotword")
+                # local_listener = winspeech.listen_for(None, "hotword.xml", 
+                # "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
+                # sr=sr: local_hotword_recog_cb(phrase, listener, hotword, r, sr))
         except Exception as e:
             print(e)
 
@@ -1833,7 +1861,7 @@ def robot():
     global _run_flag, _ser6
     
     initialize_robot()
-    eyes.setAngleOffset(270, 10)
+    eyes.setAngleOffset(90, -10)
 
     try:
         while _run_flag:
