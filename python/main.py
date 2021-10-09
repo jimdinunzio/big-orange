@@ -32,7 +32,7 @@ _DELIVERY_RESPONSES = [
     "You know, I'm only doing this until I get discovered... I, want to direct... For now, its back to the bar",
     "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, back to the bartender",
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
-
+_loaded_locations = {}
 _LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT}
 _dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
@@ -95,6 +95,7 @@ import my_depthai
 import eyes
 import facial_recognize as fr
 import pickle
+from copy import deepcopy
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -2139,13 +2140,15 @@ def init_local_speech_rec():
     winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
     
 def save_locations():
-    with open("locations.pkl", "wb"):
-        pickle.dump(_locations, f)
+    if _locations != _loaded_locations:
+        with open("locations.pkl", "wb") as f:
+            pickle.dump(_locations, f)
 
 def load_locations():
-    global _locations
+    global _locations, _loaded_locations
     with open("locations.pkl", "rb") as f:
-        _locations = pickle.load(f)
+        _loaded_locations = pickle.load(f)
+    _locations = deepcopy(_loaded_locations)
 
 def run():
     global _sdp, _slamtec_on
