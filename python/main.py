@@ -5,12 +5,13 @@ Created on Sun Jun  7 17:39:44 2020
 @author: LattePanda
 """
 import math
+import random
 
 # Constants
-_show_rgb_window = True
+_show_rgb_window = False
 _show_depth_window = False
 _hotword = "orange"
-_google_mode = False
+_google_mode = True
 _map_filename_str = b'MyHouse.stcm'
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
@@ -22,18 +23,19 @@ _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
 _mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
-_locations = { "kitchen" : (11.357, -4.094, 0), "kitchen nook": (8.764, -4.696, -math.pi/2.0), 
-              "living room" : (0.875, -2.435, math.pi), "back slider": (0.53, -2.90, math.pi/2.0), 
-              "dining area" : (6.3, -3.457, -math.pi/2), "office" : (1.934, 0.163, math.pi), 
-              "front door" : (11.722, -1.355, 0.0), "end of hall" : (6.932, 0.011, math.pi), 
-              "home" : (0.0, 0.0, 0.0) }
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":0.405,"bottom":-0.128, "width":3.6, "height":1}
 _KITCHEN_RECT = {"left":10.3,"bottom":-4.9, "width":1.8, "height":1.6}
 _INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
 _STARTUP_ROOM = _OFFICE_RECT
+_DELIVERY_RESPONSES = [
+    "You know, I'm only doing this until I get discovered... I, want to direct... For now, its back to the bar",
+    "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, back to the bartender",
+    "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
 
 _LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT}
+_dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
+_dai_fps_recip = 1.0 / _dai_fps
 
 # Globals
 _slamtec_on = False
@@ -53,14 +55,23 @@ _motion_flag = False  # set by monitor_motion thread, looking for humans in moti
 _robot_is_moving = False # set by robotMotion thread: True when robot is in motion
 _last_motion_time = 0 # the time.time() motion was last detected
 _ser6 = ""
-_internet = False # True when connected to the internet
-_use_internet = False # If False don't use internet
+_internet = True # True when connected to the internet
+_use_internet = True # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
+_deliveree = ""
+_package = ""
+_spoken_package = ""
+_response_num = random.randint(0,2)
+_all_loaded = False
+_facial_recog = None
+_facial_recog_thread = None
+_my_depthai_thread = None
 
 import parse
 import tts.sapi
+import tts.flags
 import time
 from ctypes import *
 import os
@@ -81,8 +92,9 @@ import winspeech
 from enum import Enum
 import move_oak_d as oakd
 import my_depthai
-import random
 import eyes
+import facial_recognize as fr
+import pickle
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -181,6 +193,7 @@ def where_am_i():
     except:
         return "unknown", 0, False
     location, distance = nearest_location(pose.x, pose.y)
+    print("I am at location = ", location, " distance = ", distance)
     if (distance <= 1.0):
         closeEnough = True
     else:
@@ -256,7 +269,7 @@ def batteryMonitor():
 def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _sdp, _interrupt_action
     global _deliveree, _package, _sub_goal, _call_out_objects
-    global _error_last_goto
+    global _error_last_goto, _response_num, _locations
     sub_goal_cleanup = None
     while _run_flag:
         if _goal == "" or _action_flag:
@@ -272,6 +285,10 @@ def handleGotoLocation():
             coords = _locations.get(_goal)
             _sdp.home()
         elif _goal == "deliver" and _locations.get(_goal) is None:
+            # Hack for multiple person delivery, do not bother looking for a person
+            pose = _sdp.pose()
+            _locations[_goal] = (pose.x, pose.y, math.radians(pose.yaw)) 
+            continue
             # need to find person in room for delivery
             if not setDeliverToPersonAsGoal():
                 speak("Sorry, I could not find "+ _deliveree)
@@ -296,8 +313,9 @@ def handleGotoLocation():
                     if len(_goal_queue) > 0:
                         _goal = _goal_queue.pop(0)
                     continue
-                if _goal != sub_goal_cleanup:
-                    speak("I'm going to the " + _goal)
+                if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
+                    None
+                    #speak("I'm going to the " + _goal)
             elif _goal == "deliver":
                 speak("hello " + _deliveree)
             # else:
@@ -403,22 +421,36 @@ def handleGotoLocation():
         if not sub_goal_just_found:
             # reaching this point, the robot first moved, then stopped - so check where it is now
             location, distance, closeEnough = where_am_i()
-
             # and now check to see if it reached the goal
-            if (location == _goal and closeEnough):
+            if (_goal == "deliver" or location == _goal and closeEnough):
                 if _goal == "deliver":
-                    speak(_deliveree + ", I have a " + _package + " for you.")
+                    # aim down to tray
+                    if _package is not None:
+                        if _package =="bottle":
+                            aim_oakd(yaw=90, pitch=120) # best angle for bottle
+                        elif _package == "cup":
+                            aim_oakd(yaw=90, pitch=105) # best angle for can (detected as cup)
+
+                    eyes.set(0,0)
+                    eyes.setAngleOffset(-70, -40)                    
+                    speak(_deliveree + ", I have some " + _spoken_package + " for you.")
                     taken = waitForObjectToBeTaken(_package)
                     if taken:
-                        speak("You're Welcome. Enjoy.")
+                        speak("Great, and you're welcome. ")
+                        speak(_DELIVERY_RESPONSES[_response_num])
+                        _response_num = (_response_num + 1) % len(_DELIVERY_RESPONSES)
                     else:
-                        speak("Sorry, don't you want the " + _package + "?")
+                        speak("Well, I hope you got your drinks. I'm headed back to the bar.")
+                        #speak("Sorry, don't you want the " + _package + "?")
                     _deliveree = None
                 elif _goal == sub_goal_cleanup:
                     speak("I found the " + _goal)
                     oakd.allHome()
+                elif _goal == "bar":
+                    speak("Hey barkeep! I'm back for more punishment. Hit me up.")
                 elif _goal != "person":
-                    speak("I've arrived.")
+                    None
+                    #speak("I've arrived.")
             else:
                 _error_last_goto = True
                 if _goal == "deliver":
@@ -483,13 +515,13 @@ def time_update():
 
 ###############################################################
 # Speech Related
-            
-def speak(phrase):
+
+def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
     global _last_phrase, _voice
 
     try:
         print(phrase)
-        _voice.say(phrase)
+        _voice.say(phrase, flag)
     except Exception:
         print("Speak has timed out.")
         pass
@@ -546,7 +578,7 @@ def loadMap():
 def saveMap():
     global _sdp
     print("saving map")
-    res = _sdp.saveSlamtecMap(b'HCR-MyHouse.stcm')
+    res = _sdp.saveSlamtecMap(b'MyHouse.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
     return res
@@ -619,7 +651,7 @@ def searchForPerson(clockwise):
     oldyaw = _sdp.pose().yaw + 360
     yaw = oldyaw
     sweep = 0
-    nextPause = 45
+    nextPause = 20
     recheck_person = False
     while (sweep < 380 and not _interrupt_action):
         _sdp.right()# if clockwise else _sdp.left()
@@ -638,15 +670,15 @@ def searchForPerson(clockwise):
         oldyaw = yaw
         if sweep >= nextPause:
             _sdp.cancelMoveAction()
-            time.sleep(1)
+            time.sleep(0.3)
             found, ps = checkForPerson()
             if found:
                 break
-            nextPause += 45
+            nextPause += 20
     if recheck_person:
         print("rechecking person")
         _sdp.cancelMoveAction()
-        time.sleep(1)
+        time.sleep(0.3)
         for j in range(1,5):
             for i in range(1,5):
                 found, ps = checkForPerson()
@@ -683,8 +715,8 @@ def checkForObject(obj):
                     break
         except:
             None
-            time.sleep(0.0556)
-        time.sleep(0.0556)
+            time.sleep(_dai_fps_recip)
+        time.sleep(_dai_fps_recip)
     return False, None
 
 def checkForPerson():
@@ -702,17 +734,17 @@ def checkForPerson():
                     break
         except:
             None
-            time.sleep(0.0556)
-        time.sleep(0.0556)
+            time.sleep(_dai_fps_recip)
+        time.sleep(_dai_fps_recip)
     return False, ps
 
 def setLocationOfObj(obj, p, cam_yaw=0):
     global _locations
-    p.z -= 1.0 # come up to the object within certain distance
+    p.z -= 1 # come up to the object within certain distance
     pose = _sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
     yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
-    print("set location of ", obj, " at distance ", p.z + 0.75, " meters at ", cam_yaw + p.theta, "degrees")
+    print("set location of ", obj, " at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
     _locations[obj] = (xt, yt)
 
 def setFoundObjAsGoal(obj, cam_yaw=0):
@@ -723,17 +755,38 @@ def setFoundObjAsGoal(obj, cam_yaw=0):
         return True
     return False
 
-def setDeliverToPersonAsGoal():
+def findObjAndSetGoal(obj, goal, cam_yaw=0):
     global _locations, _sdp, _interrupt_action
-    ps = searchForPerson(random.randint(0,1))
+    found, p = checkForObject(obj)
+    if found:
+        setLocationOfObj(goal, p, cam_yaw)
+        return True
+    return False
+
+def setDeliverToPersonAsGoal():
+    global _locations, _sdp, _interrupt_action, _goal
+
+    if findObjAndSetGoal("person", "deliver"):
+        print("immediately got a lock on the person")
+        time.sleep(0.1)
+        return True
+    result = sweepToFindObjAndSetGoal("person", "deliver", 4)
     if _interrupt_action:
         _interrupt_action = False
         return False
-    if len(ps):
-        # take first person for now, later check gender/age match
-        p = ps[0]
-        setLocationOfObj("deliver", p)
+    if result:
+        print("sweep got a lock on the person")
         return True
+    else:
+        ps = searchForPerson(random.randint(0,1))
+        if _interrupt_action:
+            _interrupt_action = False
+            return False
+        if len(ps):
+            # take first person for now, later check gender/age match
+            p = ps[0]
+            setLocationOfObj("deliver", p)
+            return True        
     return False
     
 _possObjObstacles = [
@@ -742,13 +795,15 @@ _possObjObstacles = [
 ]
 
 _possObjOnTray = [
-    "fork", "orange", "knife", "spoon", "carrot", "broccoli", "remote", "toothbrush", "bowl",
-    "hot dog", "book", "bottle", "banana", "cell phone", "wine glass", "apple", "donut", 
-    "tie", "sandwich", "scissors", "keyboard", "baseball", "cup"
+#    "fork", "orange", "knife", "spoon", "carrot", "broccoli", "remote", "toothbrush", "bowl",
+#    "hot dog", "book", "bottle", "banana", "cell phone", "wine glass", "apple", "donut", 
+#    "tie", "sandwich", "scissors", "keyboard", "baseball", "cup"
+"cup", "bottle"
 ]
 
+
 def checkForObjects(objectsToCheck, objDict, numChecks, maxDist=30.0, needCentered=False, 
-                    checkPersons=False, checkObjects=True, maxValueLen=32, idx=0):
+                    checkPersons=False, checkObjects=True, maxValueLen=2*_dai_fps, idx=0):
     lastValueLen = 0
     if len(objDict) > 0:
         lastValueLen = len(objDict[next(iter(objDict))])
@@ -780,22 +835,34 @@ def checkForObjects(objectsToCheck, objDict, numChecks, maxDist=30.0, needCenter
                         objDict[obj.label][idx] = True
         except:
             None
-            time.sleep(0.0556)
+            time.sleep(_dai_fps_recip)
         idx += 1
-        time.sleep(0.0556)
+        time.sleep(_dai_fps_recip)
     return idx
 
-def checkForSpecificObject(obj, numChecks=16, maxDist=30):
+def checkForSpecificObject(obj, numSecs=2, maxDist=30):
     objDict = {}
-    checkForObjects([obj], objDict, numChecks, maxDist, maxValueLen=numChecks, checkPersons=(obj=="person"))
+    print("check for specific object ", obj)
+    checkForObjects([obj], objDict, numSecs * _dai_fps, maxDist, maxValueLen=numSecs * _dai_fps, checkPersons=(obj=="person"))
     objDict = computePersistance(objDict)
+    print(objDict)
     return True if len(objDict) > 0 and next(iter(objDict.values())) > 0.5 else False
 
-def checkForObjectOnTray(numChecks=16):
+def checkForObjectOnTray(numSecs=2):
     objDict = {}
-    checkForObjects(_possObjOnTray, objDict, numChecks, maxDist=1.5, maxValueLen=numChecks)
+    print("check for object on tray")
+    checkForObjects(_possObjOnTray, objDict, numSecs * _dai_fps, maxDist=2.5, maxValueLen= numSecs * _dai_fps)
     objDict = computePersistance(objDict)
+    print(objDict)
     return next(iter(objDict)) if len(objDict) > 0 and next(iter(objDict.values())) > 0.25 else None
+
+def checkForFace(numSecs=2):
+    faceDict = {}
+    print("check for faces")
+    checkForFaces(faceDict, numSecs * _dai_fps, maxValueLen= numSecs * _dai_fps)
+    faceDict = computePersistance(faceDict)
+    print(faceDict)
+    return next(iter(faceDict)) if len(faceDict) > 0 and next(iter(faceDict.values())) > 0.25 else None
 
 def computePersistance(objDict):
     def by_value(item):
@@ -805,6 +872,37 @@ def computePersistance(objDict):
         persistObjDict[obj] = sum(objDict[obj]) / len(objDict[obj])
     return {k: persistObjDict[k] for k,v in sorted(persistObjDict.items(), reverse=True, key=by_value)}
 
+def checkForFaces(faceDict, numChecks,needCentered=False, 
+                  maxValueLen=2*_dai_fps, idx=0):
+    lastValueLen = 0
+    if len(faceDict) > 0:
+        lastValueLen = len(faceDict[next(iter(faceDict))])
+        if lastValueLen < maxValueLen:
+            idx = lastValueLen
+    for i in range(0, numChecks):
+        if idx > maxValueLen - 1:
+            idx = 0
+        ps = []
+
+        # Assume object will not be seen this time
+        for objValue in faceDict.values():
+            if len(objValue) < maxValueLen:
+                objValue.append(False)
+            else:
+                objValue[idx] = False
+        try:
+            ps = _facial_recog.get_detected_names()
+
+            for face in ps:
+                if not faceDict.get(face):
+                    faceDict[face] = [False] * (min(lastValueLen + i + 1, maxValueLen))
+                faceDict[face][idx] = True
+        except:
+            None
+            time.sleep(_dai_fps_recip)
+        idx += 1
+        time.sleep(_dai_fps_recip)
+    return idx
 
 #test checkForObject code
 # import my_depthai
@@ -823,29 +921,47 @@ def computePersistance(objDict):
 #checkForSpecificObject("person", numChecks=16, maxDist=30)
 
 def waitForObjectToBeTaken(obj):
-    # aim down to right side of tray
-    aim_oakd(yaw=79, pitch=110)
-    eyes.set(0,0)
-    eyes.setAngleOffset(-70, -40)
+    global _all_loaded
 #    time.sleep(2)
-    speak("Please take it.");
-    foundOnRight = checkForSpecificObject(obj, maxDist=0.4)
-    found = foundOnRight
-    timeout = time.monotonic() + 10
-    while found and time.monotonic() < timeout:
-        found = checkForSpecificObject(obj, maxDist=0.4)
-    if not foundOnRight:
-        # check left side of tray
-        aim_oakd(yaw=99)
-        eyes.setAngleOffset(-110, -40)
-        time.sleep(1)
-        foundOnLeft = checkForSpecificObject(obj, maxDist=0.4)
-        found = foundOnLeft
+    a = 0
+    #if obj is None:
+    if 1:
+        speak("Please take them, and then say, 'Orange, all taken.' when you are done.")
+        timeout = time.monotonic() + 45
+        while _all_loaded:
+            a = time.monotonic()
+            if a > timeout:
+                break
+            time.sleep(1)
+        found = _all_loaded
+        _all_loaded = False
+        eyes.setHome()
+    else:
+        # find it first
+        found = checkForSpecificObject(obj, maxDist=2.5)
+        if not found:
+            # move slightly to find object
+            aim_oakd(yaw=80)
+            found = checkForSpecificObject(obj, maxDist=2.5)
+            if not found:
+                aim_oakd(yaw=95)
+                found = checkForSpecificObject(obj, maxDist=2.5)
+        print("Found object to be taken = ", "True" if found else "False")
+        speak("Please take it.")
         timeout = time.monotonic() + 10
         while found and time.monotonic() < timeout:
-            found = checkForSpecificObject(obj, maxDist=0.4)
-    oakd.allHome()
-    eyes.setHome()
+            found = checkForSpecificObject(obj, maxDist=2.5)
+        if not found:
+            # check after moving a little to make sure its gone
+            aim_oakd(yaw=80)
+            eyes.setAngleOffset(-110, -40)
+            time.sleep(1)
+            found = checkForSpecificObject(obj, maxDist=2.5)
+            timeout = time.monotonic() + 10
+            while found and time.monotonic() < timeout:
+                found = checkForSpecificObject(obj, maxDist=2.5)
+        oakd.allHome()
+        eyes.setHome()
     return not found
 
 def waitForObjectOnTray():
@@ -858,15 +974,23 @@ def waitForObjectOnTray():
         return objLabel
 
     # Aim down to left side of tray
-    aim_oakd(yaw=99)
-    eyes.setAngleOffset(-110, -40)
+    #aim_oakd(yaw=99)
+    #eyes.setAngleOffset(-110, -40)
 
+    # aim_oakd(pitch=129) #check for beer (detected as bottle)
+    # timeout = time.monotonic() + 2
+    # while objLabel is None and time.monotonic() < timeout:
+    #     objLabel = checkForObjectOnTray()    
+    
+    aim_oakd(yaw=95)
     timeout = time.monotonic() + 2
     while objLabel is None and time.monotonic() < timeout:
-        objLabel = checkForObjectOnTray()
+        objLabel = checkForObjectOnTray()    
+
+    print("Found object placed on tray = ", "True" if objLabel is not None else "False")
     return objLabel
 
-def sweepToFindObjAndSetAsGoal(obj, sweepCount):
+def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
     global _interrupt_action
     global _goal
     checkPersons = obj == "person"
@@ -883,7 +1007,7 @@ def sweepToFindObjAndSetAsGoal(obj, sweepCount):
             time.sleep(2) 
             if setFoundObjAsGoal(obj, cam_yaw=oakd.getYaw()):
                 print("got a lock on ", obj)
-                _goal = obj
+                _goal = goal
                 oakd.yawHome()
                 # eyes looking to obj or person
                 eyes.set(0,0)
@@ -905,58 +1029,67 @@ def sweepToFindObjAndSetAsGoal(obj, sweepCount):
                 continue
 
 def deliverToPersonInRoom(person, package, room):
-    global _deliveree, _package, _goal, _goal_queue
-    #go to person to pick up item 
-    speak("Ok. I'll come get it.")
-    # aim up to see people better
-    aim_oakd(pitch=80) 
-    eyes.set(0,0)
-    eyes.setAngleOffset(90, -50)
+    global _deliveree, _package, _spoken_package, _goal, _goal_queue, _all_loaded
+    # #go to person to pick up item 
+    # speak("Ok. I'll come get it.")
+    # # aim up to see people better
+    # aim_oakd(pitch=80) 
+    # eyes.set(0,0)
+    # eyes.setAngleOffset(90, -50)
 
-    if setFoundObjAsGoal("person"): 
-        print("got a lock on the person")
-        _goal = "person"
-        while _goal == "person":
-            time.sleep(1)
-    elif sweepToFindObjAndSetAsGoal("person", 4):
-        while _goal == "person":
-            time.sleep(1)
-    else:
-        print("cound not find person to get package from")
-        return
-        # ps = searchForPerson(True)
-        # if len(ps):
-        #     p = ps[0]
-        #     setLocationOfObj("deliver", p)
-        # else:
-        #     speak("I could not find you to get the item for delivery.")
-        #     return
+    # if setFoundObjAsGoal("person"): 
+    #     print("got a lock on the person")
+    #     _goal = "person"
+    #     while _goal == "person":  # hack - wait until person is reached
+    #         time.sleep(1)
+    # elif sweepToFindObjAndSetGoal("person", "person", 4):
+    #     while _goal == "person":  # hack - wait until person is reached
+    #         time.sleep(1)
+    # else:
+    #     print("cound not find person to get package from")
+    #     return
+    #     # ps = searchForPerson(True)
+    #     # if len(ps):
+    #     #     p = ps[0]
+    #     #     setLocationOfObj("deliver", p)
+    #     # else:
+    #     #     speak("I could not find you to get the item for delivery.")
+    #     #     return
 
-    if _error_last_goto:
-        print("Could not find person to get package from")
-        return
-    time.sleep(2)
+    # if _error_last_goto:
+    #     print("Could not find person to get package from")
+    #     return
+    # time.sleep(2)
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=110)
+    aim_oakd(yaw=90, pitch=105) # can best pitch
     eyes.set(0,0)
     eyes.setAngleOffset(-70, -40)
     _deliveree = person
     _package = package
+    _spoken_package = package
     loc, dist, closeEnough = where_am_i()
-    speak("Please place the object on my tray.")
-    objLabel = waitForObjectOnTray()
-    if objLabel is not None:
-        _package = objLabel
+    _all_loaded = False
+    speak("Please place the " + _spoken_package + "on my tray and say, 'Orange, all loaded' when done.")
+    timeout = time.monotonic() + 30
+    while not _all_loaded and time.monotonic() < timeout:
+        time.sleep(1)
+    if not _all_loaded:
+        speak("Ok, Fine. Forget it then.")
+        return
+    #objLabel = waitForObjectOnTray()
+    #if objLabel is not None:
+    #    _package = objLabel
     # aim oakd up to for detecting a person
     aim_oakd(yaw=oakd._YAW_HOME_, pitch=80)
     eyes.set(0,0)
     eyes.setAngleOffset(90, -50)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
-    speak("Ok, I will take this " + _package + " to " + _deliveree 
-          + ((" in the " + room) if room is not None else ""))
+    speak("Ok, I will take the " + _spoken_package + " to " + _deliveree 
+          + ((" at " + room) if room is not None else ""))
     # if in another room set the first goal for the room
     if room is not None and (room != loc or not closeEnough):
         _goal_queue.append("deliver")
+        _goal_queue.append("bar") # return to bar
         _goal = room
     else: # in the same room, just deliver to person
         _goal = "deliver"
@@ -1093,7 +1226,7 @@ def listen():
         global _run_flag, _goal, _listen_flag, _last_phrase, _motion_flag
         global _thought, _person, _new_person_flag, _mood, _time
         global _request, _action_flag, _internet, _use_internet
-        global _eyes_flag, _sdp, _hotword, _package, _sub_goal
+        global _eyes_flag, _sdp, _hotword, _sub_goal, _all_loaded, _locations
 
         # convert phrase to lower case for comparison
         phrase = phrase.lower()
@@ -1246,30 +1379,29 @@ def listen():
             _sub_goal = obj
             return HandleResponseResult.Handled
 
-        if "challenge phase" in phrase:
-            if "1" in phrase or "one" in phrase:
-                speak("Ok. I'm doing the challenge phase one.")
-                _sdp.wakeup()
-                time.sleep(6)
-                lps = _sdp.getLaserScan()
-                longest_dist = 0
-                longest_angle = 0
-                for i in range(0, lps.size):
-                    if lps.distance[i] > longest_dist:
-                        longest_dist = lps.distance[i]
-                        longest_angle = lps.angle[i]
+        if "go across the room and come back" in phrase:
+            speak("Ok. I'm going across the room and coming back.")
+            _sdp.wakeup()
+            time.sleep(6)
+            lps = _sdp.getLaserScan()
+            longest_dist = 0
+            longest_angle = 0
+            for i in range(0, lps.size):
+                if lps.distance[i] > longest_dist:
+                    longest_dist = lps.distance[i]
+                    longest_angle = lps.angle[i]
 
-                longest_dist -= 0.75
-                longest_dist = max(longest_dist, 0)
-                print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
-                pose = _sdp.pose()
-                xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
-                yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
-                _locations["custom"] = (xt, yt)
-                _locations["origin"] = (pose.x, pose.y)
-                _goal_queue.append("origin")
-                _goal = "custom"
-                return HandleResponseResult.Handled
+            longest_dist -= 0.75
+            longest_dist = max(longest_dist, 0)
+            print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+            pose = _sdp.pose()
+            xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
+            yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
+            _locations["custom"] = (xt, yt)
+            _locations["origin"] = (pose.x, pose.y)
+            _goal_queue.append("origin")
+            _goal = "custom"
+            return HandleResponseResult.Handled
 
         if phrase == "go recharge" or phrase == "go to dock":
             cancelAction(interrupt = True)
@@ -1547,11 +1679,74 @@ def listen():
         if "clear windows" in phrase:
             cv2.destroyAllWindows()
             return HandleResponseResult.Handled
+
+        if phrase == "all loaded":
+            _all_loaded = True
+            return HandleResponseResult.Handled
         
-        if "bring this" in phrase or "take this" in phrase:
+        if phrase == "all taken":
+            _all_loaded = False
+            return HandleResponseResult.Handled
+        
+        new_name = ""
+        if phrase.startswith("i am"):
+            new_name = phrase.partition("i am")[2]
+        elif phrase.startswith("i'm"):
+            new_name = phrase.partition("i'm")[2]
+        elif phrase.startswith("my name is"):
+            new_name = phrase.partition("my name is")[2]
+        
+        if len(new_name) > 0:
+            oakd.setPitch(70)
+            eyes.setAngleOffset(90, -50)
+            speak("Hello " + new_name + ". It's nice to meet you.")
+            shutdown_my_depthai()
+            speak("Wait while I try to commit your face to memory. Please, only you.")
+            start_facial_recog(new_name=new_name)
+            time.sleep(2)
+            speak("ok. Next time try saying, 'Orange, hello' to check my memory.")
+            shutdown_facial_recog()
+            start_depthai_thread()
+            eyes.setHome()
+            oakd.allHome()
+            return HandleResponseResult.Handled
+
+        if phrase.startswith("hello") or phrase.startswith("hi"):
+            oakd.setPitch(70)
+            eyes.setAngleOffset(90, -50)
+            shutdown_my_depthai()
+            speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+            start_facial_recog()
+            ided = False
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                face = checkForFace(1)   
+                if face is not None:
+                    eyes.setText(face)
+                    speak(face + ", it's nice to see you again.")
+                    ided = True
+                    break
+            shutdown_facial_recog()
+            start_depthai_thread()
+            eyes.setHome()
+            oakd.allHome()
+            if not ided:
+                speak("I don't believe we have met before. Try telling me your name.")
+            return HandleResponseResult.Handled
+        
+        if phrase.startswith("update location of"):
+            loc = phrase[19:]
+            pose = _sdp.pose()
+            _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
+            print("updated location", loc, "to (", pose.x, pose.y, pose.yaw, ")")
+            speak("I updated location " + loc)
+            save_locations()
+            return HandleResponseResult.Handled
+
+        if ("bring" in phrase or "take" in phrase) and ("this" in phrase or "these" in phrase):
             room = None
             person = None
-            package = None
+            package = ""
             words = phrase.split(' ')
             try:
                 words.remove("the")
@@ -1561,8 +1756,13 @@ def listen():
             try:
                 idx_this = words.index("this")
             except:
-                None
-            else:
+                idx_this = -1
+            if idx_this < 0:
+                try:
+                    idx_this = words.index("these")
+                except:
+                    None
+            if idx_this >=0:
                 i = 1
                 while ct > idx_this + i:
                     temp = words[idx_this + i]
@@ -1570,8 +1770,9 @@ def listen():
                         package += temp + " "
                     else:
                         break
+
                     i += 1
-                if package is None:
+                if package == "":
                     package = "something"
             try:
                 idx_to = words.index("to")
@@ -1583,12 +1784,26 @@ def listen():
                     try:
                         idx_in = words.index("in")
                     except:
-                        None
-                    else:
+                        idx_in = -1
+                    if idx_in < 0:
+                        try:
+                            idx_in = words.index("at")
+                        except:
+                            None
+                    if idx_in >=0:
+                        person = " ".join(words[idx_to + 1:idx_in])
                         room = " ".join(words[idx_in+1:]).lower()
             else:
                 return HandleResponseResult.NotHandledUnknown
-            deliverToPersonInRoom(person, package, room)
+            room_words = room.split()
+            if len(room_words) > 1:
+                try:
+                    room = " ".join([room_words[0], str(w2n.word_to_num(room_words[1]))])
+                except:
+                    None             
+
+            # run this in a separate thread so we can take voice answers
+            Thread(target=deliverToPersonInRoom, args=(person, package, room), name="deliverToPersonInRoom").start()
             return HandleResponseResult.Handled
             #if math.abs(p[0].theta) > 2):
             #    turn(p[0].theta)
@@ -1654,7 +1869,7 @@ def listen():
     def sendToGoogleAssistant(phrase):
         global _internet
         if _internet:
-            print("Sending question to google assistant")
+            print("Sending question to google assistant: ", phrase)
             with TextAssistant(lang, device_model_id, device_id, display,
                     grpc_channel, grpc_deadline) as assistant:
                 response_text, response_html = assistant.assist(text_query = phrase)
@@ -1670,6 +1885,10 @@ def listen():
             phrase = listenFromGoogleSpeechRecog(r, sr)
             handled_result = handle_response(phrase, check_hot_word)
             if handled_result == HandleResponseResult.NotHandledUnknown:
+                words = phrase.split()
+                if words[0].lower().startswith(_hotword):
+                    words[0] = ''
+                phrase = " ".join(words)
                 sendToGoogleAssistant(phrase)
         except:
             speak("sorry, i could not do what you wanted.")
@@ -1772,15 +1991,48 @@ def aim_oakd(yaw = None, pitch = None):
 def initialize_speech():
     global _voice
     _voice = tts.sapi.Sapi()
-    #_voice.set_voice("Andy")
-    _voice.voice.Volume = 80
+    _voice.set_voice("Mark") # David, Mark, Eva, or Zira. 
+    _voice.voice.Volume = 100
     _voice.voice.SynchronousSpeakTimeout = 1 # timeout in milliseconds
+
+def start_facial_recog(new_name=""):
+    global _facial_recog, _facial_recog_thread
+    if len(new_name) > 0:
+        _facial_recog = fr.FacialRecognize(add_face=True, debug=False, new_name = new_name)
+    else:
+        _facial_recog = fr.FacialRecognize(debug=False)
+
+    _facial_recog_thread = Thread(target=_facial_recog.run)
+    _facial_recog_thread.start()
+    while not _facial_recog.run_flag:
+        time.sleep(1)
+
+def shutdown_facial_recog():
+    global _facial_recog_thread
+    try:
+        _facial_recog.shutdown()
+        _facial_recog_thread.join()
+    except:
+        None
+    
+def start_depthai_thread():
+    global _my_depthai_thread
+    _my_depthai_thread = Thread(target = my_depthai.startUp, args=(_show_rgb_window, _show_depth_window), name="my_depthai")
+    _my_depthai_thread.start()
+
+def shutdown_my_depthai():
+    global _my_depthai_thread
+    try:
+        my_depthai.shutdown()
+        _my_depthai_thread.join()
+    except:
+        None
 
 ################################################################   
 # This is where data gets initialized from information stored on disk
 # and threads get started
 def initialize_robot():
-    global _moods, _people, _ser6, _internet, _eyes_flag
+    global _moods, _people, _ser6, _internet, _eyes_flag, _facial_recog
     
     # speak("Initializing data from memory.")
     
@@ -1794,7 +2046,7 @@ def initialize_robot():
     
     _internet = True
 
-    Thread(target = my_depthai.startUp, args=(_show_rgb_window, _show_depth_window), name="my_depthai").start()
+    start_depthai_thread()
     
     Thread(target = listen, name = "Listen").start()
     
@@ -1817,7 +2069,7 @@ def initialize_robot():
     #Thread(target = display, name = "Display").start()
 
     if _eyes_flag: # this is needed to start the display and to keep it open
-        Thread(target = eyes.start, name = "Eyes").start()
+        Thread(target = eyes.start, name = "Eyes").start()    
     
 ################################################################
 # This is where data gets saved to disk
@@ -1836,7 +2088,8 @@ def shutdown_robot():
     _run_flag = False
 
     eyes.shutdown()
-    my_depthai.shutdown()
+    shutdown_my_depthai()
+    shutdown_facial_recog()
     oakd.shutdown()
 
     # TBD join threads
@@ -1869,6 +2122,7 @@ def robot():
     except KeyboardInterrupt:
         pretty_print_threads()
 
+    save_locations()
     shutdown_robot()
 
 def connectToSdp():
@@ -1884,6 +2138,15 @@ def init_local_speech_rec():
     # Start an in-process edge recognizer using SAPI.
     winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
     
+def save_locations():
+    with open("locations.pkl", "wb"):
+        pickle.dump(_locations, f)
+
+def load_locations():
+    global _locations
+    with open("locations.pkl", "rb") as f:
+        _locations = pickle.load(f)
+
 def run():
     global _sdp, _slamtec_on
     # Start 32 bit bridge server
@@ -1892,28 +2155,28 @@ def run():
     init_local_speech_rec()
     initialize_speech()
     #init_camera()
+    load_locations()
 
     speak("I'm starting up.")
     oakd.initialize()
 
-    res = connectToSdp()
+    if _execute:
+        res = connectToSdp()
 
-    if (res == 0):
-        _slamtec_on = True
-        print("I'm now connected to Slamtec. Now loading the map.")
-        loadMap()
-        # set not to update map by default.
-        _sdp.setUpdate(False)
-        None
-    else:
-        speak("Something is wrong. I could not connect to Slamtec.")
+        if (res == 0):
+            _slamtec_on = True
+            print("I'm now connected to Slamtec. Now loading the map.")
+            loadMap()
+            # set not to update map by default.
+            _sdp.setUpdate(False)
+            None
+        else:
+            speak("Something is wrong. I could not connect to Slamtec.")
     
-    if _execute:        
         robot()
     else:
         print("Program is in DEBUG mode.")
-        Thread(target = my_depthai.startUp, name="my_depthai").start()
-
-    
+        #initialize_robot()
+         
 if __name__ == '__main__':
     run()

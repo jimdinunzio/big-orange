@@ -16,6 +16,8 @@ _targetAngle = 0
 _targetOffset = 0
 _dims = None
 _eyeAngleOffsetLock = Lock()
+_text = ""
+
 
 def update():
     pass
@@ -72,8 +74,13 @@ def setAngleOffset(targetAngle=None, targetOffset=None):
         if targetOffset is not None:
             _targetOffset = targetOffset
 
+def setText(text, time=5):
+    global _text, _text_end_time
+    _text = text
+    _text_end_time = pygame.time.get_ticks() + time * 1000
+
 def start():
-    global _going, _dims, _angle, _offset
+    global _going, _dims, _angle, _offset, _text, _text_end_time
     _going = True
 
     pygame.init()
@@ -101,6 +108,10 @@ def start():
     clock = pygame.time.Clock()
     time = pygame.time
     time_to_blink = next_blink_time()
+
+    _text = ""
+    if pygame.font:
+        font = pygame.font.Font(None, 255)
 
     # Main Loop
     try:
@@ -134,17 +145,24 @@ def start():
             else:
                 _offset = _targetOffset
 
-            draw_eyes(screen, _angle, _offset)
-
-            #blink
-            if time.get_ticks() > time_to_blink:
-                pygame.draw.rect(screen, (0,0,0), (0, 0, _dims[0], _dims[1]/2))
-                pygame.display.flip()
-                time.wait(40)
-                pygame.draw.rect(screen, (0,0,0), (0, _dims[1]/2, _dims[0], _dims[1] / 2))
-                pygame.display.flip()
-                time.wait(300)
-                time_to_blink = next_blink_time()
+            if len(_text) > 0:
+                if font:
+                    text = font.render(_text, 1, (255, 255, 255))
+                    textpos = text.get_rect(centerx=background.get_width()/2, centery=background.get_height()/2)
+                    screen.blit(text, textpos)
+                    if pygame.time.get_ticks() > _text_end_time:
+                        _text = ""
+            else:
+                draw_eyes(screen, _angle, _offset)
+                #blink
+                if time.get_ticks() > time_to_blink:
+                    pygame.draw.rect(screen, (0,0,0), (0, 0, _dims[0], _dims[1]/2))
+                    pygame.display.flip()
+                    time.wait(40)
+                    pygame.draw.rect(screen, (0,0,0), (0, _dims[1]/2, _dims[0], _dims[1] / 2))
+                    pygame.display.flip()
+                    time.wait(300)
+                    time_to_blink = next_blink_time()
 
             pygame.display.flip()
     except KeyboardInterrupt:
