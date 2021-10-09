@@ -1,6 +1,3 @@
-[submodule "depthai-core"]
-	path = depthai-core
-	url = H:\\Users\\Jim\\Documents\\git\\depthai-core
 [submodule "winspeech"]
 	path = winspeech
 	url = https://github.com/jimdinunzio/winspeech
