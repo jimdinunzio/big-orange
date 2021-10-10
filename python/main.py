@@ -287,17 +287,19 @@ def handleGotoLocation():
             coords = _locations.get(_goal)
             _sdp.home()
         elif _goal == "deliver" and _locations.get(_goal) is None:
-            # Hack for multiple person delivery, do not bother looking for a person
-            pose = _sdp.pose()
-            _locations[_goal] = (pose.x, pose.y, math.radians(pose.yaw)) 
-            continue
-            # need to find person in room for delivery
-            if not setDeliverToPersonAsGoal():
-                speak("Sorry, I could not find "+ _deliveree)
-                _goal = ""
-                _deliveree = ""
-                _goal_queue.clear()
-            continue
+            mult_people = "," in _deliveree
+            # For multiple person delivery, do not bother looking for a person
+            if mult_people:
+                pose = _sdp.pose()
+                _locations[_goal] = (pose.x, pose.y, math.radians(pose.yaw)) 
+                continue
+            else: # need to find a single person in room for delivery
+                if not setDeliverToPersonAsGoal():
+                    speak("Sorry, I could not find "+ _deliveree)
+                    _goal = ""
+                    _deliveree = ""
+                    _goal_queue.clear()
+                continue
         else: # expect a goal in the list of locations 
             coords = _locations.get(_goal)
             if coords is None:
@@ -316,8 +318,7 @@ def handleGotoLocation():
                         _goal = _goal_queue.pop(0)
                     continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
-                    None
-                    #speak("I'm going to the " + _goal)
+                    speak("I'm going to the " + _goal)
             elif _goal == "deliver":
                 speak("hello " + _deliveree)
             # else:
@@ -423,36 +424,25 @@ def handleGotoLocation():
         if not sub_goal_just_found:
             # reaching this point, the robot first moved, then stopped - so check where it is now
             location, distance, closeEnough = where_am_i()
-            # and now check to see if it reached the goal
-            if (_goal == "deliver" or location == _goal and closeEnough):
-                if _goal == "deliver":
-                    # aim down to tray
-                    if _package is not None:
-                        if _package =="bottle":
-                            aim_oakd(yaw=90, pitch=120) # best angle for bottle
-                        elif _package == "cup":
-                            aim_oakd(yaw=90, pitch=105) # best angle for can (detected as cup)
 
-                    eyes.set(0,0)
-                    eyes.setAngleOffset(-70, -40)                    
-                    speak(_deliveree + ", I have some " + _spoken_package + " for you.")
+            # and now check to see if it reached the goal
+            if (location == _goal and closeEnough):
+                if _goal == "deliver":
+                    article = "some" if _package.endswith('s') else "a"
+                    speak(_deliveree + ", I have " + article + " " + _package + " for you.")
                     taken = waitForObjectToBeTaken(_package)
                     if taken:
                         speak("Great, and you're welcome. ")
                         speak(_DELIVERY_RESPONSES[_response_num])
                         _response_num = (_response_num + 1) % len(_DELIVERY_RESPONSES)
                     else:
-                        speak("Well, I hope you got your drinks. I'm headed back to the bar.")
-                        #speak("Sorry, don't you want the " + _package + "?")
+                        speak("Sorry, don't you want the " + _package + "?")
                     _deliveree = None
                 elif _goal == sub_goal_cleanup:
                     speak("I found the " + _goal)
                     oakd.allHome()
-                elif _goal == "bar":
-                    speak("Hey barkeep! I'm back for more punishment. Hit me up.")
                 elif _goal != "person":
-                    None
-                    #speak("I've arrived.")
+                    speak("I've arrived.")
             else:
                 _error_last_goto = True
                 if _goal == "deliver":
@@ -772,10 +762,13 @@ def setDeliverToPersonAsGoal():
         print("immediately got a lock on the person")
         time.sleep(0.1)
         return True
+    
     result = sweepToFindObjAndSetGoal("person", "deliver", 4)
+    
     if _interrupt_action:
         _interrupt_action = False
         return False
+    
     if result:
         print("sweep got a lock on the person")
         return True
@@ -789,6 +782,7 @@ def setDeliverToPersonAsGoal():
             p = ps[0]
             setLocationOfObj("deliver", p)
             return True        
+    
     return False
     
 _possObjObstacles = [
@@ -797,10 +791,9 @@ _possObjObstacles = [
 ]
 
 _possObjOnTray = [
-#    "fork", "orange", "knife", "spoon", "carrot", "broccoli", "remote", "toothbrush", "bowl",
-#    "hot dog", "book", "bottle", "banana", "cell phone", "wine glass", "apple", "donut", 
-#    "tie", "sandwich", "scissors", "keyboard", "baseball", "cup"
-"cup", "bottle"
+    "fork", "orange", "knife", "spoon", "carrot", "broccoli", "remote", "toothbrush", "bowl",
+    "hot dog", "book", "bottle", "banana", "cell phone", "wine glass", "apple", "donut", 
+    "tie", "sandwich", "scissors", "keyboard", "baseball", "cup"
 ]
 
 
@@ -976,18 +969,19 @@ def waitForObjectOnTray():
         return objLabel
 
     # Aim down to left side of tray
-    #aim_oakd(yaw=99)
-    #eyes.setAngleOffset(-110, -40)
+    aim_oakd(yaw=99)
+    eyes.setAngleOffset(-110, -40)
 
-    # aim_oakd(pitch=129) #check for beer (detected as bottle)
-    # timeout = time.monotonic() + 2
-    # while objLabel is None and time.monotonic() < timeout:
-    #     objLabel = checkForObjectOnTray()    
-    
-    aim_oakd(yaw=95)
+    # look for 2 seconds
     timeout = time.monotonic() + 2
     while objLabel is None and time.monotonic() < timeout:
         objLabel = checkForObjectOnTray()    
+    
+    if objLabel is None: # try moving a little and looking again for 2 seconds
+        aim_oakd(yaw=95)
+        timeout = time.monotonic() + 2
+        while objLabel is None and time.monotonic() < timeout:
+            objLabel = checkForObjectOnTray()    
 
     print("Found object placed on tray = ", "True" if objLabel is not None else "False")
     return objLabel
@@ -1032,66 +1026,73 @@ def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
 
 def deliverToPersonInRoom(person, package, room):
     global _deliveree, _package, _spoken_package, _goal, _goal_queue, _all_loaded
-    # #go to person to pick up item 
-    # speak("Ok. I'll come get it.")
-    # # aim up to see people better
-    # aim_oakd(pitch=80) 
-    # eyes.set(0,0)
-    # eyes.setAngleOffset(90, -50)
+    #go to person to pick up item 
+    speak("Ok. I'll come get it.")
+    # aim up to see people better
+    aim_oakd(pitch=70) 
+    eyes.set(0,0)
+    eyes.setAngleOffset(90, -50)
 
-    # if setFoundObjAsGoal("person"): 
-    #     print("got a lock on the person")
-    #     _goal = "person"
-    #     while _goal == "person":  # hack - wait until person is reached
-    #         time.sleep(1)
-    # elif sweepToFindObjAndSetGoal("person", "person", 4):
-    #     while _goal == "person":  # hack - wait until person is reached
-    #         time.sleep(1)
-    # else:
-    #     print("cound not find person to get package from")
-    #     return
-    #     # ps = searchForPerson(True)
-    #     # if len(ps):
-    #     #     p = ps[0]
-    #     #     setLocationOfObj("deliver", p)
-    #     # else:
-    #     #     speak("I could not find you to get the item for delivery.")
-    #     #     return
+    if setFoundObjAsGoal("person"): 
+        print("got a lock on the person")
+        _goal = "person"
+        while _goal == "person":  # hack - wait until person is reached
+            time.sleep(1)
+    elif sweepToFindObjAndSetGoal("person", "person", 4):
+        while _goal == "person":
+            time.sleep(1)
+    else:
+        speak("I could not find you to get the item for delivery.")
+        print("cound not find person to get package from")
+        return
+    
+    if _error_last_goto:
+        print("Could not find person to get package from")
+        return
 
-    # if _error_last_goto:
-    #     print("Could not find person to get package from")
-    #     return
-    # time.sleep(2)
+    time.sleep(2)
+
     # Look at right side of tray
-    aim_oakd(yaw=90, pitch=105) # can best pitch
+    aim_oakd(yaw=79, pitch=110) # can best pitch
     eyes.set(0,0)
     eyes.setAngleOffset(-70, -40)
     _deliveree = person
     _package = package
     _spoken_package = package
     loc, dist, closeEnough = where_am_i()
-    _all_loaded = False
-    speak("Please place the " + _spoken_package + "on my tray and say, 'Orange, all loaded' when done.")
-    timeout = time.monotonic() + 30
-    while not _all_loaded and time.monotonic() < timeout:
-        time.sleep(1)
-    if not _all_loaded:
-        speak("Ok, Fine. Forget it then.")
-        return
-    #objLabel = waitForObjectOnTray()
-    #if objLabel is not None:
-    #    _package = objLabel
+    
+    # handle multiple object packages with only voice command prompting and no detection by camera
+    mult_objs = _spoken_package.endswith('s')
+    if mult_objs:
+        _all_loaded = False
+        speak("Please place the " + _spoken_package + " on my tray and say, '" + _hotword + ", all loaded' when done.")
+        timeout = time.monotonic() + 30
+        while not _all_loaded and time.monotonic() < timeout:
+            time.sleep(1)
+        if not _all_loaded:
+            speak("Ok, Fine. Forget it then.")
+            return
+    else: # single object to be detected by camera     
+        speak("Please place the " + _spoken_package + " on my tray.")
+        objLabel = waitForObjectOnTray()
+        if objLabel is not None:
+            _package = objLabel
+    
     # aim oakd up to for detecting a person
     aim_oakd(yaw=oakd._YAW_HOME_, pitch=80)
     eyes.set(0,0)
     eyes.setAngleOffset(90, -50)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
-    speak("Ok, I will take the " + _spoken_package + " to " + _deliveree 
-          + ((" at " + room) if room is not None else ""))
+    if mult_objs:
+        speak("Ok, I will take the " + _spoken_package + " to " + _deliveree 
+            + ((" at " + room) if room is not None else ""))
+    else:
+        speak("Ok, I will take this " + _spoken_package + " to " + _deliveree 
+            + ((" in the " + room) if room is not None else ""))
+            
     # if in another room set the first goal for the room
     if room is not None and (room != loc or not closeEnough):
         _goal_queue.append("deliver")
-        _goal_queue.append("bar") # return to bar
         _goal = room
     else: # in the same room, just deliver to person
         _goal = "deliver"
@@ -1805,10 +1806,8 @@ def listen():
                     None             
 
             # run this in a separate thread so we can take voice answers
-            Thread(target=deliverToPersonInRoom, args=(person, package, room), name="deliverToPersonInRoom").start()
+            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room.strip()), name="deliverToPersonInRoom").start()
             return HandleResponseResult.Handled
-            #if math.abs(p[0].theta) > 2):
-            #    turn(p[0].theta)
             
         deg = 0
         temp = phrase # special case requiring parsing
@@ -2143,7 +2142,7 @@ def init_local_speech_rec():
 def save_locations():
     if _locations != _loaded_locations:
         with open("locations.pkl", "wb") as f:
-        pickle.dump(_locations, f)
+            pickle.dump(_locations, f)
 
 def load_locations():
     global _locations, _loaded_locations
