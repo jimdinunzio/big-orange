@@ -8,7 +8,7 @@ import math
 import random
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window = True
 _show_depth_window = False
 _hotword = "orange"
 _google_mode = True
@@ -29,8 +29,8 @@ _KITCHEN_RECT = {"left":10.3,"bottom":-4.9, "width":1.8, "height":1.6}
 _INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
 _STARTUP_ROOM = _OFFICE_RECT
 _DELIVERY_RESPONSES = [
-    "You know, I'm only doing this until I get discovered... I, want to direct... For now, its back to the bar",
-    "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, back to the bartender",
+    "You know, I'm only doing this until I get discovered... I, want to direct... For now, it's on to the next delivery.",
+    "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, deliveries are fun too.",
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
 
 _loaded_locations = {}
@@ -69,6 +69,7 @@ _all_loaded = False
 _facial_recog = None
 _facial_recog_thread = None
 _my_depthai_thread = None
+_listen_thread = None
 
 import parse
 import tts.sapi
@@ -202,6 +203,17 @@ def where_am_i():
         closeEnough = False
     return location, distance, closeEnough
 
+def is_close_to(loc, max_dist=1.0):
+    if _locations.get(loc) is None:
+        return -1
+        
+    try:
+        pose = _sdp.pose()
+    except:
+        return -1
+    dist = distance_A_to_B(pose.x, pose.y, _locations[loc][0], _locations[loc][1])
+    return dist <= max_dist
+
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
 
@@ -310,8 +322,7 @@ def handleGotoLocation():
                     _goal = _goal_queue.pop(0)
                 continue
             if _goal != "custom" and _goal != "deliver" and _goal != "person":
-                location, distance, closeEnough = where_am_i()
-                if _goal == location and distance < 0.50:
+                if is_close_to(_goal, 0.5): 
                     speak("I'm already at the " + _goal)
                     _goal = ""
                     if len(_goal_queue) > 0:
@@ -321,8 +332,8 @@ def handleGotoLocation():
                     speak("I'm going to the " + _goal)
             elif _goal == "deliver":
                 speak("hello " + _deliveree)
-            # else:
-            #     speak("OK.")
+            else:
+                speak("OK.")
             _action_flag = True
             if len(coords) == 3:
                 _sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
@@ -423,10 +434,10 @@ def handleGotoLocation():
 
         if not sub_goal_just_found:
             # reaching this point, the robot first moved, then stopped - so check where it is now
-            location, distance, closeEnough = where_am_i()
+            reached_goal = is_close_to(_goal)
 
             # and now check to see if it reached the goal
-            if (location == _goal and closeEnough):
+            if (_goal == "deliver" or reached_goal):
                 if _goal == "deliver":
                     article = "some" if _package.endswith('s') else "a"
                     speak(_deliveree + ", I have " + article + " " + _package + " for you.")
@@ -917,11 +928,15 @@ def checkForFaces(faceDict, numChecks,needCentered=False,
 
 def waitForObjectToBeTaken(obj):
     global _all_loaded
-#    time.sleep(2)
     a = 0
-    #if obj is None:
-    if 1:
-        speak("Please take them, and then say, 'Orange, all taken.' when you are done.")
+    mult_objs = obj.endswith("s")
+
+    aim_oakd(yaw=79, pitch=105)
+    eyes.set(0,0)
+    eyes.setAngleOffset(-70, -40)
+
+    if mult_objs: # for multiple objects use voice command to indicate when taken
+        speak("Please take them, and then say, '" + _hotword + ", all taken.' when you are done.")
         timeout = time.monotonic() + 45
         while _all_loaded:
             a = time.monotonic()
@@ -931,7 +946,7 @@ def waitForObjectToBeTaken(obj):
         found = _all_loaded
         _all_loaded = False
         eyes.setHome()
-    else:
+    else: # single object to be detected there and gone by camera
         # find it first
         found = checkForSpecificObject(obj, maxDist=2.5)
         if not found:
@@ -1053,7 +1068,7 @@ def deliverToPersonInRoom(person, package, room):
     time.sleep(2)
 
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=110) # can best pitch
+    aim_oakd(yaw=79, pitch=105)
     eyes.set(0,0)
     eyes.setAngleOffset(-70, -40)
     _deliveree = person
@@ -1737,6 +1752,13 @@ def listen():
                 speak("I don't believe we have met before. Try telling me your name.")
             return HandleResponseResult.Handled
         
+        if "list locations" in phrase:
+            speak("ok.")
+            print("Locations I know:")
+            for l in _locations.keys():
+                print(l)
+            return HandleResponseResult.Handled
+
         if phrase.startswith("update location of"):
             loc = phrase[19:]
             pose = _sdp.pose()
@@ -1805,8 +1827,12 @@ def listen():
                 except:
                     None             
 
-            # run this in a separate thread so we can take voice answers
-            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room.strip()), name="deliverToPersonInRoom").start()
+            room = room.strip()
+            if room in _locations:
+                # run this in a separate thread so we can take voice answers
+                Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()
+            else:
+                speak("Sorry, I don't know how to get to " + room + ".")
             return HandleResponseResult.Handled
             
         deg = 0
@@ -2034,6 +2060,7 @@ def shutdown_my_depthai():
 # and threads get started
 def initialize_robot():
     global _moods, _people, _ser6, _internet, _eyes_flag, _facial_recog
+    global _listen_thread
     
     # speak("Initializing data from memory.")
     
@@ -2049,7 +2076,8 @@ def initialize_robot():
 
     start_depthai_thread()
     
-    Thread(target = listen, name = "Listen").start()
+    _listen_thread = Thread(target = listen, name = "Listen")
+    _listen_thread.start()
     
     Thread(target = time_update, name = "Time").start()
         
@@ -2106,6 +2134,8 @@ def shutdown_robot():
    
 #    playsound("C:/Users/bjwei/wav/R2D2.wav")
     #_sdp.disconnect()
+    print("waiting for listening thread to complete.")
+    _listen_thread.join()
     del _sdp
     print("\nDone!")
    
