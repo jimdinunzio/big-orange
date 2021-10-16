@@ -17,7 +17,7 @@ _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
-_eyes_flag = False # should eyes be displayed or not
+_eyes_flag = True # should eyes be displayed or not
 _person = "Jim"
 _new_person_flag = False
 _people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
@@ -98,6 +98,7 @@ import eyes
 import facial_recognize as fr
 import pickle
 from copy import deepcopy
+import speech_recognition as sr
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -345,7 +346,7 @@ def handleGotoLocation():
         if _sub_goal != "":
             checkPersons = _sub_goal == 'person'
             if checkPersons:
-                aim_oakd(pitch=80) # aim up to see people better                
+                aim_oakd(pitch=70) # aim up to see people better                
                 eyes.setAngleOffset(90, -50)
             else:
                 aim_oakd(pitch=110) # aim down towards floor for objects
@@ -638,7 +639,7 @@ def statusReport():
 def searchForPerson(clockwise):
     global _sdp, _action_flag, _interrupt_action
     
-    aim_oakd(pitch=80) # aim up to see people better
+    aim_oakd(pitch=70) # aim up to see people better
     eyes.set(0,0)             
     eyes.setAngleOffset(90, -50)
 
@@ -1112,11 +1113,9 @@ def deliverToPersonInRoom(person, package, room):
     else: # in the same room, just deliver to person
         _goal = "deliver"
         
-    
 ###############################################################
 # Speech recognition using Google over internet connection
 def listen():
-    import speech_recognition as sr
     global _run_flag, _goal
     global _internet, _use_internet, _hotword, _google_mode
     
@@ -1213,6 +1212,32 @@ def listen():
                 print("got error from assistant: "+ str(e))
             return text_response, html_response
     
+    def adj_spch_recog_ambient(r, m):
+        # adjust microphone for ambient noise:
+        # default dynamic thresholding does not work well, so disable it
+        # calibrate with r.adjust_for_ambient_noise(source)
+        # 0 = it hears everything. 4000 = it hears nothing.
+        
+        r.dynamic_energy_threshold = False
+        speak("Calibrating for ambient noise level. A moment of silence please...")
+        with m as source: r.adjust_for_ambient_noise(source)
+        thresh_str = "{:.0f}".format(r.energy_threshold)
+        speak("Min energy threshold to " + thresh_str)
+        speak("Please Say something.")
+        with m as source: audio = r.listen(source)
+        print("Got it! Now to recognize it...")
+        try:
+            # recognize speech using Google Speech Recognition
+            value = r.recognize_google(audio)
+
+            # we need some special handling here to correctly print unicode characters to standard output
+            str = "{}".format(value)
+            speak("You said, " + str)
+        except sr.UnknownValueError:
+            speak("Oops! Didn't catch that")
+        except sr.RequestError as e:
+            str = "{0}".format(e)
+            speak("Uh oh! Couldn't request results from Google Speech Recognition service; " + str)
     
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
     
@@ -1235,8 +1260,15 @@ def listen():
 
         # create a recognizer object
         r = sr.Recognizer()
+
+        # create a microphone object
+        mic = sr.Microphone()
+
+        adj_spch_recog_ambient(r, mic)
+
     else:
         r = None
+        mic = None
         
     speak("Hello, My name is Orange. Pleased to be at your service.")
 
@@ -1566,7 +1598,7 @@ def listen():
             if _eyes_flag == True:
                 return HandleResponseResult.Handled
             _eyes_flag = True
-            Thread(target = eyes.start, name = "Eyes").start()
+            Thread(target = eyes.start, name = "Eyes", daemon=True).start()
             return HandleResponseResult.Handled
         
         if phrase == "close your eyes":
@@ -1715,7 +1747,7 @@ def listen():
             new_name = phrase.partition("my name is")[2]
         
         if len(new_name) > 0:
-            oakd.setPitch(70)
+            oakd.setPitch(70) # pitch up to see person better
             eyes.setAngleOffset(90, -50)
             speak("Hello " + new_name + ". It's nice to meet you.")
             shutdown_my_depthai()
@@ -1730,7 +1762,7 @@ def listen():
             return HandleResponseResult.Handled
 
         if phrase.startswith("hello") or phrase.startswith("hi"):
-            oakd.setPitch(70)
+            oakd.setPitch(70) # pitch up to see person better
             eyes.setAngleOffset(90, -50)
             shutdown_my_depthai()
             speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
@@ -1857,18 +1889,11 @@ def listen():
         
         return HandleResponseResult.NotHandledUnknown # not handled
         
-    def listenFromGoogleSpeechRecog(r, sr):
+    def listenFromGoogleSpeechRecog(r, mic, sr):
         global _goal, _internet
         # obtain audio from the microphone
         try:
-            with sr.Microphone() as source:
-                # adjust microphone for ambient noise:
-                # first, turn off dynamic thresholding,
-                # eg: r.adjust_for_ambient_noise(source)
-                # then, set a volume threshold at 500 where
-                # 0 = it hears everything. 4000 = it hears nothing.
-                r.dynamic_energy_threshold = False
-                r.energy_threshold = 2000 if _goal != "" else 500 
+            with mic as source:
                 print("Say something!")
                 audio = r.listen(source, phrase_time_limit= 2 if _goal != "" else None)
         except Exception as e:
@@ -1909,7 +1934,7 @@ def listen():
 
     def listenFromGoogle(finallyFunc=lambda:None, check_hot_word=True):
         try:
-            phrase = listenFromGoogleSpeechRecog(r, sr)
+            phrase = listenFromGoogleSpeechRecog(r, mic, sr)
             handled_result = handle_response(phrase, check_hot_word)
             if handled_result == HandleResponseResult.NotHandledUnknown:
                 words = phrase.split()
@@ -1940,7 +1965,7 @@ def listen():
             speak("yes?")
             listenFromGoogle(lambda:listener.set_active(True), False)
 
-    def local_speech_recog_cb(phrase, listener, hotword, r, sr):
+    def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr):
         global _internet, _use_internet
         print("I heard: %s" % phrase)
         phrase = phrase.lower()
@@ -1949,7 +1974,7 @@ def listen():
             try:
                 if _use_internet and _internet:
                     speak("Go ahead")
-                    phrase = listenFromGoogleSpeechRecog(r, sr)
+                    phrase = listenFromGoogleSpeechRecog(r, mic, sr)
                     sendToGoogleAssistant(phrase)
                 else:
                     speak("ask google is not available.")
@@ -1977,7 +2002,7 @@ def listen():
                 # to recognize a command subset
                 local_listener = winspeech.listen_for(None, "speech.xml", 
                 "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
-                sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, sr))
+                sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr))
             else: 
                 # use google cloud speech
                 listenFromGoogle()
@@ -2029,7 +2054,7 @@ def start_facial_recog(new_name=""):
     else:
         _facial_recog = fr.FacialRecognize(debug=False)
 
-    _facial_recog_thread = Thread(target=_facial_recog.run)
+    _facial_recog_thread = Thread(target=_facial_recog.run, daemon=True)
     _facial_recog_thread.start()
     while not _facial_recog.run_flag:
         time.sleep(1)
@@ -2044,7 +2069,7 @@ def shutdown_facial_recog():
     
 def start_depthai_thread():
     global _my_depthai_thread
-    _my_depthai_thread = Thread(target = my_depthai.startUp, args=(_show_rgb_window, _show_depth_window), name="my_depthai")
+    _my_depthai_thread = Thread(target = my_depthai.startUp, args=(_show_rgb_window, _show_depth_window),daemon=True, name="my_depthai")
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
@@ -2076,17 +2101,17 @@ def initialize_robot():
 
     start_depthai_thread()
     
-    _listen_thread = Thread(target = listen, name = "Listen")
+    _listen_thread = Thread(target = listen, name = "Listen", daemon=True)
     _listen_thread.start()
     
-    Thread(target = time_update, name = "Time").start()
+    Thread(target = time_update, daemon=True, name = "Time").start()
         
 #    Thread(target = monitor_motion, name = "People Motion Monitor").start()
     
 #    Thread(target = behaviors, name = "Behaviors").start()
     if _slamtec_on:    
-        Thread(target = handleGotoLocation, name = "Handle Goto Location").start()
-        Thread(target = batteryMonitor, name = "Battery monitor").start()
+        Thread(target = handleGotoLocation, daemon=True, name = "Handle Goto Location").start()
+        Thread(target = batteryMonitor, daemon=True, name = "Battery monitor").start()
 #    Thread(target = actions, name = "Actions").start()
     
 #    Thread(target = robotMoving, name = "Is Robot Moving").start()
@@ -2098,7 +2123,7 @@ def initialize_robot():
     #Thread(target = display, name = "Display").start()
 
     if _eyes_flag: # this is needed to start the display and to keep it open
-        Thread(target = eyes.start, name = "Eyes").start()    
+        Thread(target = eyes.start, daemon=True, name = "Eyes").start()    
     
 ################################################################
 # This is where data gets saved to disk
@@ -2135,7 +2160,8 @@ def shutdown_robot():
 #    playsound("C:/Users/bjwei/wav/R2D2.wav")
     #_sdp.disconnect()
     print("waiting for listening thread to complete.")
-    _listen_thread.join()
+    if _listen_thread is not None:
+        _listen_thread.join()
     del _sdp
     print("\nDone!")
    
@@ -2210,6 +2236,27 @@ def run():
     else:
         print("Program is in DEBUG mode.")
         #initialize_robot()
-         
-if __name__ == '__main__':
+
+#import getopt
+
+def main(argv):
+    # try:
+    #     opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
+    # except getopt.GetoptError:
+    #     print 'test.py -i <inputfile> -o <outputfile>'
+    #     sys.exit(2)
+    # for opt, arg in opts:
+    #     if opt == '-h':
+    #         print 'test.py -i <inputfile> -o <outputfile>'
+    #         sys.exit()
+    #     elif opt in ("-i", "--ifile"):
+    #         inputfile = arg
+    #     elif opt in ("-o", "--ofile"):
+    #         outputfile = arg
+    # print 'Input file is "', inputfile
+    # print 'Output file is "', outputfile
+    
     run()
+
+if __name__ == "__main__":
+   main(sys.argv[1:])
