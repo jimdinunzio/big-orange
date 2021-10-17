@@ -18,10 +18,6 @@ _sdp_port = 1445
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = True # should eyes be displayed or not
-_person = "Jim"
-_new_person_flag = False
-_people = {"Evi":5, "Jim":8, "stranger":1, "nobody":0}
-_mood = "happy"
 _moods = {"happy":50, "bored":20, "hungry":10}
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":0.405,"bottom":-0.128, "width":3.6, "height":1}
@@ -33,29 +29,23 @@ _DELIVERY_RESPONSES = [
     "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, deliveries are fun too.",
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
 
-_loaded_locations = {}
 _LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT}
 _dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 
 # Globals
+_loaded_locations = {}
+_mood = "happy"
+_person = "jim"
 _slamtec_on = False
 _goal = ""
 _sub_goal = ""
 _goal_queue = []
 _time = "morning"
-_times = ["morning", "noon", "afternoon", "evening", "night"]
 _last_phrase = "nothing"
 _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
-_request = "" # comes from someone telling the robot to do something
-_thought = "" # comes from the robot thinking that it wants to do something
-_do_something_flag = False
-_motion_flag = False  # set by monitor_motion thread, looking for humans in motion
-_robot_is_moving = False # set by robotMotion thread: True when robot is in motion
-_last_motion_time = 0 # the time.time() motion was last detected
-_ser6 = ""
 _internet = True # True when connected to the internet
 _use_internet = True # If False don't use internet
 _call_out_objects = False # call out objects along route
@@ -145,7 +135,7 @@ def getMoveActionStatus():
 
 ################################################################
 def turn(degrees):
-    global _sdp, _action_flag, _robot_is_moving
+    global _sdp, _action_flag
     if degrees == 0:
         return
     # if already in action, ignore this
@@ -256,21 +246,22 @@ def batteryMonitor():
     while _run_flag:
         try:
             batteryPercent = _sdp.battery()
+            person = _person if _person != "nobody" else "hello anyone"
             if batteryPercent <= 10:
                 if not reported_10:
                     reported_10 = True
-                    speak(_person + ", my battery is exhausted, and I am shutting down now.") 
+                    speak(person + ", my battery is exhausted, and I am shutting down now.") 
                     cancelAction()
                     _run_flag = False
                     os.system("shutdown /s /t 30")
             elif batteryPercent <= 15:
                 if not reported_15:
                     reported_15 = True
-                    speak(_person + ", I need to recharge my battery now or I will have to shut down.")
+                    speak(person + ", I need to recharge my battery now or I will have to shut down.")
             elif batteryPercent <= 25:
                 if not reported_25:
                     reported_25 = True
-                    speak(_person + ", my battery is getting low. I'll have to charge up soon.")
+                    speak(person + ", my battery is getting low. I'll have to charge up soon.")
         except:
             None
         time.sleep(10)
@@ -1273,9 +1264,9 @@ def listen():
     speak("Hello, My name is Orange. Pleased to be at your service.")
 
     def handle_response(phrase, check_hot_word = True):
-        global _run_flag, _goal, _listen_flag, _last_phrase, _motion_flag
-        global _thought, _person, _new_person_flag, _mood, _time
-        global _request, _action_flag, _internet, _use_internet
+        global _run_flag, _goal, _listen_flag, _last_phrase
+        global _person, _mood, _time
+        global _action_flag, _internet, _use_internet
         global _eyes_flag, _sdp, _hotword, _sub_goal, _all_loaded, _locations
 
         # convert phrase to lower case for comparison
@@ -1331,29 +1322,10 @@ def listen():
             speak(_last_phrase)
             return HandleResponseResult.Handled
         
-        if phrase == "this is evelyn":
-            if _person != "Evelyn":
-                _new_person_flag = True
-            _person = "Evelyn"
-            return HandleResponseResult.Handled
-        
-        if phrase == "this is jim":
-            if _person != "Jim":
-                _new_person_flag = True
-            _person = "Jim"
-            return HandleResponseResult.Handled
-
         if phrase == "goodbye":
             answer = "See you later, " + _person
             speak(answer)
-            if _person != "nobody":
-                _new_person_flag = True
             _person = "nobody"
-            return HandleResponseResult.Handled
-
-        if phrase == "who are you with":
-            answer = "I'm with " + _person
-            speak(answer)
             return HandleResponseResult.Handled
 
         if (phrase == "how are you" or
@@ -1631,14 +1603,7 @@ def listen():
             ans = ans + str(_sdp.battery()) + " percent"
             speak(ans)
             return HandleResponseResult.Handled
-            
-        if "motion" in phrase:
-            if _motion_flag:
-                speak("I am detecting motion.")
-            else:
-                speak("I'm not detecting any motion.")
-            return HandleResponseResult.Handled
-    
+                
         if "load map" in phrase:
             speak("Ok. I will load my map.")
             loadMap()
@@ -1774,6 +1739,8 @@ def listen():
                 if face is not None:
                     eyes.setText(face)
                     speak(face + ", it's nice to see you again.")
+                    if _person == "nobody":
+                        _person = face # set person i am with if with nobody
                     ided = True
                     break
             shutdown_facial_recog()
@@ -2084,19 +2051,9 @@ def shutdown_my_depthai():
 # This is where data gets initialized from information stored on disk
 # and threads get started
 def initialize_robot():
-    global _moods, _people, _ser6, _internet, _eyes_flag, _facial_recog
+    global _moods, _internet, _eyes_flag, _facial_recog
     global _listen_thread
-    
-    # speak("Initializing data from memory.")
-    
-    # with open('moods_data_file') as json_file:  
-    #     _moods = json.load(json_file)
 
-    # with open('people_data_file') as json_file:  
-    #     _people = json.load(json_file)
-        
-    # _ser6 = serial.Serial('COM6', 9600, timeout=1.0)
-    
     _internet = True
 
     start_depthai_thread()
@@ -2129,14 +2086,7 @@ def initialize_robot():
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
-    global _run_flag, _moods, _people, _ser6, _sdp
-    
-    # # Save "memories" to disk    
-    # with open('moods_data_file', 'w') as outfile:  
-    #     json.dump(_moods, outfile)
-    
-    # with open('people_data_file', 'w') as outfile:  
-    #     json.dump(_people, outfile)
+    global _run_flag, _moods, _sdp
     
     cancelAction()
     _run_flag = False
@@ -2154,11 +2104,6 @@ def shutdown_robot():
     #    pretty_print_threads()
     #    time.sleep(1)
 
-    # Close the serial port
-#    _ser6.close()
-   
-#    playsound("C:/Users/bjwei/wav/R2D2.wav")
-    #_sdp.disconnect()
     print("waiting for listening thread to complete.")
     if _listen_thread is not None:
         _listen_thread.join()
@@ -2168,7 +2113,7 @@ def shutdown_robot():
 ################################################################
 # This initializes and runs the robot
 def robot():
-    global _run_flag, _ser6
+    global _run_flag
     
     initialize_robot()
     eyes.setAngleOffset(90, -10)
