@@ -34,27 +34,28 @@ ORANGE_COLOR = "orangered3"
 
 import socket
 
-_dummy_google_mode = True
+# dummy stuff for unit testing 
+# _dummy_google_mode = True
 
-def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
-    global _dummy_google_mode
-    if opType == OrangeOpType.TextCommand:
-        return True
-    elif opType == OrangeOpType.BatteryPercent:
-        return 85
-    elif opType == OrangeOpType.LastSpeechHeard:
-        return "how are you "
-    elif opType == OrangeOpType.LastSpeechSpoken:
-        return "I'm feeling good"
-    elif opType == OrangeOpType.IpAddress:
-        return socket.gethostbyname(socket.gethostname())
-    elif opType == OrangeOpType.GoogleSpeech:
-        return _dummy_google_mode
-    elif opType == OrangeOpType.ToggleGoogleSpeech:
-        _dummy_google_mode = not _dummy_google_mode
-        return _dummy_google_mode
-    elif opType == OrangeOpType.InternetStatus:
-        return True
+# def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
+#     global _dummy_google_mode
+#     if opType == OrangeOpType.TextCommand:
+#         return True
+#     elif opType == OrangeOpType.BatteryPercent:
+#         return 85
+#     elif opType == OrangeOpType.LastSpeechHeard:
+#         return "how are you "
+#     elif opType == OrangeOpType.LastSpeechSpoken:
+#         return "I'm feeling good"
+#     elif opType == OrangeOpType.IpAddress:
+#         return socket.gethostbyname(socket.gethostname())
+#     elif opType == OrangeOpType.GoogleSpeech:
+#         return _dummy_google_mode
+#     elif opType == OrangeOpType.ToggleGoogleSpeech:
+#         _dummy_google_mode = not _dummy_google_mode
+#         return _dummy_google_mode
+#     elif opType == OrangeOpType.InternetStatus:
+#         return True
 
 def update():
     pass
@@ -96,6 +97,9 @@ def set(angle=None, offset=None):
 
 def next_blink_time():
     return pygame.time.get_ticks() + 1000 + (random.random()*6000)
+
+def next_control_refresh():
+    return pygame.time.get_ticks() + 2000
 
 def setHome():
     global _targetAngle, _targetOffset
@@ -210,6 +214,7 @@ def start(handle_op_request, ):
     clock = pygame.time.Clock()
     time = pygame.time
     time_to_blink = next_blink_time()
+    time_to_refresh_control = next_control_refresh()
 
     _text_card_text = ""
     if pygame.font:
@@ -307,6 +312,14 @@ def start(handle_op_request, ):
                 else:
                     cmd_box_color = color_passive
 
+                if time.get_ticks() > time_to_refresh_control:
+                    battery_str = str(handle_op_request(OrangeOpType.BatteryPercent)) + "%"
+                    last_speech_heard = handle_op_request(OrangeOpType.LastSpeechHeard)
+                    last_speech_spoken = handle_op_request(OrangeOpType.LastSpeechSpoken)
+                    ip_address = handle_op_request(OrangeOpType.IpAddress)
+                    internet_status = handle_op_request(OrangeOpType.InternetStatus)
+                    time_to_refresh_control = next_control_refresh()
+
                 # draw title 
                 screen.blit(title_text_surface, title_text_pos)
 
@@ -329,31 +342,31 @@ def start(handle_op_request, ):
                 screen.blit(google_mode_button_label_surface, google_mode_label_pos)
                 
                 # draw batt %
-                batt_text_surface = base_font.render(str(handle_op_request(OrangeOpType.BatteryPercent))+ "%", True, "lightgrey")
+                
+                batt_text_surface = base_font.render(battery_str, True, "lightgrey")
                 screen.blit(batt_text_surface, (batt_box_rect.x+10, batt_box_rect.y+5))
                 # draw label
                 screen.blit(batt_box_label_surface, (batt_box_rect.x - batt_box_label_surface.get_width() - 5, batt_box_rect.y + 5))
 
                 # draw last speech heard
-                last_heard_text_surface = base_font.render(handle_op_request(OrangeOpType.LastSpeechHeard), True, "lightgray")
+                last_heard_text_surface = base_font.render(last_speech_heard, True, "lightgray")
                 screen.blit(last_heard_text_surface, (last_heard_box_rect.x+10, last_heard_box_rect.y+5))
                 # draw label
                 screen.blit(last_heard_box_label_surface, (last_heard_box_rect.x - last_heard_box_label_surface.get_width() - 5, last_heard_box_rect.y + 5))
 
                 # draw last speech spoken
-                last_spoken_text_surface = base_font.render(handle_op_request(OrangeOpType.LastSpeechSpoken), True, "lightgray")
+                last_spoken_text_surface = base_font.render(last_speech_spoken, True, "lightgray")
                 screen.blit(last_spoken_text_surface, (last_spoken_box_rect.x+10, last_spoken_box_rect.y+5))
                 # draw label
                 screen.blit(last_spoken_box_label_surface, (last_spoken_box_rect.x - last_spoken_box_label_surface.get_width() - 5, last_spoken_box_rect.y + 5))
 
                 # draw ip address
-                ip_addr_text_surface = base_font.render(handle_op_request(OrangeOpType.IpAddress), True, "lightgray")
+                ip_addr_text_surface = base_font.render(ip_address, True, "lightgray")
                 screen.blit(ip_addr_text_surface, (ip_addr_box_rect.x+10, ip_addr_box_rect.y+5))
                 # draw label
                 screen.blit(ip_addr_box_label_surface, (ip_addr_box_rect.x - ip_addr_box_label_surface.get_width() - 5, ip_addr_box_rect.y + 5))
 
                 # draw internet status
-                internet_status = handle_op_request(OrangeOpType.InternetStatus)
                 internet_text_surface = base_font.render("UP" if internet_status else "DOWN", True, "lightgray")
                 screen.blit(internet_text_surface, (internet_box_rect.x+10, internet_box_rect.y+5))
                 # draw label
