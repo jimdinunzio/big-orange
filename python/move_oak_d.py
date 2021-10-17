@@ -83,16 +83,21 @@ def sweepYawBackAndForth(count):
     global _sweeping
     _sweeping = True
     sweep_count = 0
+    sweep_max = 125
     yawHome()
+    if _pitch <= 100:
+        sweep_min = 25
+    else:
+        sweep_min = 35
     eyes.set(0,0)
     while _sweeping and (count == 0 or sweep_count < count):
-        sweepYaw(_YAW_HOME_, 125)
+        sweepYaw(_YAW_HOME_, sweep_max)
         time.sleep(0.5)
-        sweepYaw(125, _YAW_HOME_)
+        sweepYaw(sweep_max, _YAW_HOME_)
         time.sleep(0.5)
-        sweepYaw(_YAW_HOME_, 55)
+        sweepYaw(_YAW_HOME_, sweep_min)
         time.sleep(0.5)
-        sweepYaw(55, _YAW_HOME_)
+        sweepYaw(sweep_min, _YAW_HOME_)
         time.sleep(0.5)
         sweep_count += 1
     _sweeping = False

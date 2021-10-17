@@ -39,14 +39,18 @@
     			<P>this is</P>
     			<RULEREF NAME="person"/>
     		</P>
+			<P>i am ...</P>
+			<P>i'm ...</P>
+			<P>my name is ...</P>
+			<P>hello</P>
+			<P>hi</P>
 			<P>goodbye</P>
 			<P>who are you with</P>
 			<P>how are you</P>
 			<P>how are you feeling</P>
 			<P>where are you</P>
-			<P>challenge, phase one</P>
 			<P>what time is it</P>
-			<P>challenge phase one</P>
+			<P>go across the room and come back</P>
 			<P>wake up</P>
 			<P>go to sleep</P>
 			<P>
@@ -75,6 +79,11 @@
 				</L>
 			</P>
 			<P>list your threads</P>
+			<P>list locations</P>
+			<P>
+				<P>update location of</P>
+				<RULEREF NAME="location"/>
+			</P>
 			<P>recover localization</P>
 			<P>close your eyes</P>
 			<P>open your eyes</P>
@@ -86,6 +95,7 @@
 				<L>
 					<P>+shut +down</P>
 					<P>+shutdown</P>
+					<P>+restart</P>
 				</L>
 			</P>
 			<P>+shutdown +system</P>
@@ -126,10 +136,16 @@
 					<P>bring</P>
 					<P>take</P>
 				</L>
-    			<P>this to</P>
+				<L>
+    				<P>this to</P>
+					<P>these to</P>
+				</L>
 		    	<RULEREF NAME="person"/>
     			<O>
-        			<P>in the</P>
+					<L>
+        				<P>in the</P>
+						<P>at the</P>
+					</L>
         			<RULEREF NAME="location"/>
         		</O>
 			</P>
