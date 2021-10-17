@@ -2139,7 +2139,7 @@ def handle_op_request(opType : OrangeOpType, arg1=None, arg2=None):
     if opType == OrangeOpType.TextCommand:
         return handle_response_async(arg1, check_hot_word=False)
     elif opType == OrangeOpType.BatteryPercent:
-        return 85 #_sdp.battery()
+        return _sdp.battery()
     elif opType == OrangeOpType.LastSpeechHeard:
         return _last_speech_heard
     elif opType == OrangeOpType.LastSpeechSpoken:
@@ -2151,6 +2151,8 @@ def handle_op_request(opType : OrangeOpType, arg1=None, arg2=None):
     elif opType == OrangeOpType.ToggleGoogleSpeech:
         _google_mode = not _google_mode
         return _google_mode
+    elif opType == OrangeOpType.InternetStatus:
+        return _internet
 
 ################################################################   
 # This is where data gets initialized from information stored on disk

@@ -23,10 +23,38 @@ CMD_TEXT_BOX_LABEL = "Cmd:"
 UI_TITLE_TEXT = "Orange Control"
 BATT_TEXT_BOX_LABEL = "Battery:"
 IP_ADDR_TEXT_BOX_LABEL = "IP Addr:"
+INTERNET_TEXT_BOX_LABEL= "Internet:"
 LAST_SPEECH_HEARD_LABEL = "Last heard:"
 LAST_SPEECH_SPOKEN_LABEL = "Last spoken:"
 EXIT_BUTTON_LABEL = "Exit"
 GOOGLE_MODE_BUTTON_LABEL = "Google Speech"
+HIDE_BUTTON_LABEL = "Hide"
+
+ORANGE_COLOR = "orangered3"
+
+import socket
+
+_dummy_google_mode = True
+
+def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
+    global _dummy_google_mode
+    if opType == OrangeOpType.TextCommand:
+        return True
+    elif opType == OrangeOpType.BatteryPercent:
+        return 85
+    elif opType == OrangeOpType.LastSpeechHeard:
+        return "how are you "
+    elif opType == OrangeOpType.LastSpeechSpoken:
+        return "I'm feeling good"
+    elif opType == OrangeOpType.IpAddress:
+        return socket.gethostbyname(socket.gethostname())
+    elif opType == OrangeOpType.GoogleSpeech:
+        return _dummy_google_mode
+    elif opType == OrangeOpType.ToggleGoogleSpeech:
+        _dummy_google_mode = not _dummy_google_mode
+        return _dummy_google_mode
+    elif opType == OrangeOpType.InternetStatus:
+        return True
 
 def update():
     pass
@@ -117,37 +145,45 @@ def start(handle_op_request, ):
     title_font = pygame.font.Font(None, 60)
 
     # title text
-    title_text_surface = title_font.render(UI_TITLE_TEXT, True, "orange")
+    title_text_surface = title_font.render(UI_TITLE_TEXT, True, ORANGE_COLOR)
     title_text_pos = title_text_surface.get_rect(centerx=background.get_width()/2, centery=33)
 
     cmd_text = ''
     
     # create battery % field
     batt_box_rect = pygame.Rect(350, 100, 50, 32)
-    batt_box_label_surface = base_font.render(BATT_TEXT_BOX_LABEL, True, "orange")
+    batt_box_label_surface = base_font.render(BATT_TEXT_BOX_LABEL, True, ORANGE_COLOR)
 
     # create IP address field
     ip_addr_box_rect = pygame.Rect(350, 150, 100, 32)
-    ip_addr_box_label_surface = base_font.render(IP_ADDR_TEXT_BOX_LABEL, True, "orange")
+    ip_addr_box_label_surface = base_font.render(IP_ADDR_TEXT_BOX_LABEL, True, ORANGE_COLOR)
+
+    # create internet status field
+    internet_box_rect = pygame.Rect(350, 200, 100, 32)
+    internet_box_label_surface = base_font.render(INTERNET_TEXT_BOX_LABEL, True, ORANGE_COLOR)
 
     # create last heard
-    last_heard_box_rect = pygame.Rect(350, 200, 200, 32)
-    last_heard_box_label_surface = base_font.render(LAST_SPEECH_HEARD_LABEL, True, "orange")
+    last_heard_box_rect = pygame.Rect(350, 250, 200, 32)
+    last_heard_box_label_surface = base_font.render(LAST_SPEECH_HEARD_LABEL, True, ORANGE_COLOR)
 
     # create last spoken
-    last_spoken_box_rect = pygame.Rect(350, 250, 200, 32)
-    last_spoken_box_label_surface = base_font.render(LAST_SPEECH_SPOKEN_LABEL, True, "orange")
+    last_spoken_box_rect = pygame.Rect(350, 300, 200, 32)
+    last_spoken_box_label_surface = base_font.render(LAST_SPEECH_SPOKEN_LABEL, True, ORANGE_COLOR)
 
-    # create google mode button
-    google_mode_button_rect = pygame.Rect(20, 380, 180, 50)
-    google_mode_button_label_surface = base_font.render(GOOGLE_MODE_BUTTON_LABEL, True, "orange")
+    # create cmd box rectangle
+    cmd_box_rect = pygame.Rect(350, 350, 300, 32)
 
     # create exit box button
     exit_box_rect = pygame.Rect(20, 20, 150, 100)
-    exit_box_label_surface = button_font.render(EXIT_BUTTON_LABEL, True, "orange")
+    exit_box_label_surface = button_font.render(EXIT_BUTTON_LABEL, True, ORANGE_COLOR)
+
+    # create hide button
+    hide_button_rect = pygame.Rect(_dims[0] - 150 - 20, 20, 150, 100)
+    hide_button_label_surface = button_font.render(HIDE_BUTTON_LABEL, True, ORANGE_COLOR)
     
-    # create cmd box rectangle
-    cmd_box_rect = pygame.Rect(350, 300, 300, 32)
+    # create google mode button
+    google_mode_button_rect = pygame.Rect(20, 380, 180, 50)
+    google_mode_button_label_surface = base_font.render(GOOGLE_MODE_BUTTON_LABEL, True, ORANGE_COLOR)
     
     # color_active stores color(lightskyblue3) which
     # gets active when input box is clicked by user
@@ -164,7 +200,7 @@ def start(handle_op_request, ):
     google_mode_color = button_on_color if google_mode else button_off_color
 
     cmd_box_active = False
-    cmd_box_label_surface = base_font.render(CMD_TEXT_BOX_LABEL, True, "orange")
+    cmd_box_label_surface = base_font.render(CMD_TEXT_BOX_LABEL, True, ORANGE_COLOR)
     
     # Display The Background
     screen.blit(background, (0, 0))
@@ -221,7 +257,9 @@ def start(handle_op_request, ):
                         if exit_box_rect.collidepoint(event.pos):
                             draw_ui_enabled = False
                             draw_eyes_enabled = True
-                        if google_mode_button_rect.collidepoint(event.pos):
+                        elif hide_button_rect.collidepoint(event.pos):
+                            pygame.display.iconify()
+                        elif google_mode_button_rect.collidepoint(event.pos):
                             google_mode = handle_op_request(OrangeOpType.ToggleGoogleSpeech)
                             google_mode_color = button_on_color if google_mode else button_off_color
 
@@ -278,6 +316,12 @@ def start(handle_op_request, ):
                                                                 centery=(exit_box_rect.y + exit_box_rect.height/2))
                 screen.blit(exit_box_label_surface, exit_text_pos)
                 
+                # draw hide button
+                pygame.draw.rect(screen, color_passive, hide_button_rect, 8, 12)
+                hide_button_text_pos = hide_button_label_surface.get_rect(centerx=(hide_button_rect.x + hide_button_rect.width/2), 
+                                                                          centery=(hide_button_rect.y + hide_button_rect.height/2))
+                screen.blit(hide_button_label_surface, hide_button_text_pos)
+                
                 # draw google mode button
                 pygame.draw.rect(screen, google_mode_color, google_mode_button_rect)
                 google_mode_label_pos = google_mode_button_label_surface.get_rect(centerx=(google_mode_button_rect.x + google_mode_button_rect.width/2),
@@ -302,11 +346,18 @@ def start(handle_op_request, ):
                 # draw label
                 screen.blit(last_spoken_box_label_surface, (last_spoken_box_rect.x - last_spoken_box_label_surface.get_width() - 5, last_spoken_box_rect.y + 5))
 
-                # draw last speech spoken
+                # draw ip address
                 ip_addr_text_surface = base_font.render(handle_op_request(OrangeOpType.IpAddress), True, "lightgray")
                 screen.blit(ip_addr_text_surface, (ip_addr_box_rect.x+10, ip_addr_box_rect.y+5))
                 # draw label
                 screen.blit(ip_addr_box_label_surface, (ip_addr_box_rect.x - ip_addr_box_label_surface.get_width() - 5, ip_addr_box_rect.y + 5))
+
+                # draw internet status
+                internet_status = handle_op_request(OrangeOpType.InternetStatus)
+                internet_text_surface = base_font.render("UP" if internet_status else "DOWN", True, "lightgray")
+                screen.blit(internet_text_surface, (internet_box_rect.x+10, internet_box_rect.y+5))
+                # draw label
+                screen.blit(internet_box_label_surface, (internet_box_rect.x - internet_box_label_surface.get_width() - 5, internet_box_rect.y + 5))
 
                 # draw cmd entry label
                 screen.blit(cmd_box_label_surface, (cmd_box_rect.x - cmd_box_label_surface.get_width() - 5, cmd_box_rect.y + 5))
@@ -318,7 +369,7 @@ def start(handle_op_request, ):
                 screen.blit(text_surface, (cmd_box_rect.x+5, cmd_box_rect.y+5))
                 # set width of textfield so that text cannot get
                 # outside of user's text input
-                cmd_box_rect.w = max(100, text_surface.get_width()+10)                
+                cmd_box_rect.w = max(300, text_surface.get_width()+10)                
 
             pygame.display.flip()
     except KeyboardInterrupt:

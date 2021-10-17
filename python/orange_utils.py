@@ -12,4 +12,5 @@ class OrangeOpType(Enum):
     IpAddress = 5
     GoogleSpeech = 6
     ToggleGoogleSpeech = 7
+    InternetStatus = 8
     
