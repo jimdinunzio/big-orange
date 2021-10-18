@@ -11,9 +11,9 @@ from threading import Lock
 # Constants
 _show_rgb_window = True
 _show_depth_window = False
+_default_map_name = 'my house'
 _hotword = "orange"
 _google_mode = True
-_map_filename_str = b'MyHouse.stcm'
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
 _execute = True # False for debugging, must be True to run as: >python main.py
@@ -35,7 +35,6 @@ _dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 
 # Globals
-_loaded_locations = {}
 _mood = "happy"
 _person = "jim"
 _slamtec_on = False
@@ -69,6 +68,7 @@ _sendToGoogleAssistantFn = None
 _restart_flag = False
 _set_energy_threshold = None
 _last_speech_heard = ""
+_locations = {}
 
 import parse
 import tts.sapi
@@ -175,9 +175,7 @@ def distance_A_to_B(XA, YA, XB, YB):
 #y == _sdp.getY()
 ################################################################
 
-def nearest_location(x, y):
-    global _locations
-    
+def nearest_location(x, y):    
     location = ""
     distance = 1000000
     for loc, coord in _locations.items():
@@ -566,11 +564,11 @@ def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
 ###############################################################
 # Miscellaneous
 
-def loadMap():
+def loadMap(filename):
     global _sdp
     _sdp.wakeup()
-    print("Loading map")
-    res = _sdp.loadSlamtecMap(_map_filename_str)
+    print("Loading map and its locations")
+    res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
     print("Done loading map")
     if (res == 0):
         None
@@ -580,14 +578,16 @@ def loadMap():
         #    speak("I don't appear to be at the map starting location.")
     else:
         speak("Something is wrong. I could not load the map.")
+    load_locations(filename)
     return res
 
-def saveMap():
+def saveMap(filename):
     global _sdp
-    print("saving map")
-    res = _sdp.saveSlamtecMap(b'MyHouse.stcm')
+    print("saving map and its locations")
+    res = _sdp.saveSlamtecMap(str.encode(filename) + b'.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
+    save_locations(filename)
     return res
         
 def show_picture_mat(mat):
@@ -746,7 +746,6 @@ def checkForPerson():
     return False, ps
 
 def setLocationOfObj(obj, p, cam_yaw=0):
-    global _locations
     p.z -= 1 # come up to the object within certain distance
     pose = _sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
@@ -755,7 +754,7 @@ def setLocationOfObj(obj, p, cam_yaw=0):
     _locations[obj] = (xt, yt)
 
 def setFoundObjAsGoal(obj, cam_yaw=0):
-    global _locations, _sdp, _interrupt_action
+    global _sdp, _interrupt_action
     found, p = checkForObject(obj)
     if found:
         setLocationOfObj(obj, p, cam_yaw)
@@ -763,7 +762,7 @@ def setFoundObjAsGoal(obj, cam_yaw=0):
     return False
 
 def findObjAndSetGoal(obj, goal, cam_yaw=0):
-    global _locations, _sdp, _interrupt_action
+    global _sdp, _interrupt_action
     found, p = checkForObject(obj)
     if found:
         setLocationOfObj(goal, p, cam_yaw)
@@ -771,7 +770,7 @@ def findObjAndSetGoal(obj, goal, cam_yaw=0):
     return False
 
 def setDeliverToPersonAsGoal():
-    global _locations, _sdp, _interrupt_action, _goal
+    global _sdp, _interrupt_action, _goal
 
     if findObjAndSetGoal("person", "deliver"):
         print("immediately got a lock on the person")
@@ -1152,7 +1151,7 @@ def handle_response(phrase, check_hot_word = True):
     global _run_flag, _goal, _listen_flag, _last_phrase
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
-    global _eyes_flag, _sdp, _hotword, _sub_goal, _all_loaded, _locations
+    global _eyes_flag, _sdp, _hotword, _sub_goal, _all_loaded
 
     # convert phrase to lower case for comparison
     phrase = phrase.lower()
@@ -1502,21 +1501,34 @@ def handle_response(phrase, check_hot_word = True):
         speak(ans)
         return HandleResponseResult.Handled
             
-    if "load map" in phrase:
-        speak("Ok. I will load my map.")
-        loadMap()
+    if phrase.startswith("load map"):
+        name = phrase[9:]
+        if len(name) == 0:
+            name = _default_map_name
+        speak("Ok. I will load map " + name)
+        loadMap(name)
         return HandleResponseResult.Handled
     
-    if "save map" in phrase:
-        speak("Ok. I will save my map.")
-        saveMap()
+    if phrase.startswith("save map"):
+        name = phrase[9:]
+        if len(name) == 0:
+            name = _default_map_name
+        speak("Ok. I will save map " + name)
+        saveMap(name)
         return HandleResponseResult.Handled
     
     if "clear map" in phrase:
         speak("Ok. I will clear my map.")
         _sdp.clearSlamtecMap()
+        # after clearing make sure updating is on
+        _sdp.setUpdate(True)
         return HandleResponseResult.Handled
     
+    if "clear locations" in phrase:
+        speak("Ok. I will clear the locations.")
+        _locations.clear()
+        return HandleResponseResult.Handled
+
     if "map updating" in phrase:
         if "enable" in phrase:
             enable = True
@@ -1656,13 +1668,18 @@ def handle_response(phrase, check_hot_word = True):
             print(l)
         return HandleResponseResult.Handled
 
+    if phrase.startswith("delete location"):
+        loc = phrase[16:]
+        speak("Ok. I will delete location " + loc)
+        _locations.pop(loc)
+        return HandleResponseResult.Handled
+
     if phrase.startswith("update location of"):
         loc = phrase[19:]
         pose = _sdp.pose()
         _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
         print("updated location", loc, "to (", pose.x, pose.y, pose.yaw, ")")
         speak("I updated location " + loc)
-        save_locations()
         return HandleResponseResult.Handled
 
     if phrase.startswith("et = "):
@@ -1937,6 +1954,7 @@ def listen():
             with mic as source:
                 print("Say something!")
                 audio = r.listen(source, phrase_time_limit= 2 if _goal != "" else None)
+                print("Your speech ended or timed out.")
         except Exception as e:
             print(e)
             return ""
@@ -2232,7 +2250,6 @@ def robot():
     except KeyboardInterrupt:
         pretty_print_threads()
 
-    save_locations()
     shutdown_robot()
 
 def connectToSdp():
@@ -2248,16 +2265,14 @@ def init_local_speech_rec():
     # Start an in-process edge recognizer using SAPI.
     winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
     
-def save_locations():
-    if _locations != _loaded_locations:
-        with open("locations.pkl", "wb") as f:
-            pickle.dump(_locations, f)
+def save_locations(name):
+    with open(name + ".pkl", "wb") as f:
+        pickle.dump(_locations, f)
 
-def load_locations():
-    global _locations, _loaded_locations
-    with open("locations.pkl", "rb") as f:
-        _loaded_locations = pickle.load(f)
-    _locations = deepcopy(_loaded_locations)
+def load_locations(name):
+    global _locations
+    with open(name + ".pkl", "rb") as f:
+        _locations = pickle.load(f)
 
 def run():
     global _sdp, _slamtec_on
@@ -2267,7 +2282,6 @@ def run():
     init_local_speech_rec()
     initialize_speech()
     #init_camera()
-    load_locations()
 
     speak("I'm starting up.")
     oakd.initialize()
@@ -2277,10 +2291,8 @@ def run():
 
         if (res == 0):
             _slamtec_on = True
-            print("I'm now connected to Slamtec. Now loading the map.")
-            loadMap()
-            # set not to update map by default.
-            _sdp.setUpdate(False)
+            # set to update map by default.
+            _sdp.setUpdate(True)
             None
         else:
             speak("Something is wrong. I could not connect to Slamtec.")

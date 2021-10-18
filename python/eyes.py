@@ -127,7 +127,7 @@ def start(handle_op_request, ):
     google_mode = handle_op_request(OrangeOpType.GoogleSpeech)
 
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), RESIZABLE)
     _dims = screen.get_size()
 #    pygame.display.set_caption('Orange Eyes')
 
@@ -214,7 +214,7 @@ def start(handle_op_request, ):
     clock = pygame.time.Clock()
     time = pygame.time
     time_to_blink = next_blink_time()
-    time_to_refresh_control = next_control_refresh()
+    time_to_refresh_control = 0
 
     _text_card_text = ""
     if pygame.font:
@@ -227,7 +227,7 @@ def start(handle_op_request, ):
     # Main Loop
     try:
         while _going:
-            clock.tick(30)
+            clock.tick(16)
 
             # Handle Input Events
             for event in pygame.event.get():
@@ -250,6 +250,10 @@ def start(handle_op_request, ):
                                 cmd_text = ""
                             else:
                                 cmd_text += event.unicode
+                elif event.type == pygame.ACTIVEEVENT:
+                    if event.state == 1:
+                        if event.gain == 1:
+                            screen = pygame.display.set_mode((WIDTH,HEIGHT), RESIZABLE)
                 elif event.type == MOUSEBUTTONDOWN:
                     if draw_eyes_enabled:
                         draw_eyes_enabled = False
@@ -263,7 +267,7 @@ def start(handle_op_request, ):
                             draw_ui_enabled = False
                             draw_eyes_enabled = True
                         elif hide_button_rect.collidepoint(event.pos):
-                            pygame.display.iconify()
+                            screen = pygame.display.set_mode((WIDTH,HEIGHT-20), RESIZABLE)
                         elif google_mode_button_rect.collidepoint(event.pos):
                             google_mode = handle_op_request(OrangeOpType.ToggleGoogleSpeech)
                             google_mode_color = button_on_color if google_mode else button_off_color
