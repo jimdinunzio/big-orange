@@ -29,33 +29,41 @@ LAST_SPEECH_SPOKEN_LABEL = "Last spoken:"
 EXIT_BUTTON_LABEL = "Exit"
 GOOGLE_MODE_BUTTON_LABEL = "Google Speech"
 HIDE_BUTTON_LABEL = "Hide"
+LOCAL_QUAL_LABEL = "Localization Qual:"
+BOARD_TEMP_LABEL = "Board Temp.:"
 
 ORANGE_COLOR = "orangered3"
 
 import socket
 
 # dummy stuff for unit testing 
-# _dummy_google_mode = True
+_dummy_google_mode = True
 
-# def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
-#     global _dummy_google_mode
-#     if opType == OrangeOpType.TextCommand:
-#         return True
-#     elif opType == OrangeOpType.BatteryPercent:
-#         return 85
-#     elif opType == OrangeOpType.LastSpeechHeard:
-#         return "how are you "
-#     elif opType == OrangeOpType.LastSpeechSpoken:
-#         return "I'm feeling good"
-#     elif opType == OrangeOpType.IpAddress:
-#         return socket.gethostbyname(socket.gethostname())
-#     elif opType == OrangeOpType.GoogleSpeech:
-#         return _dummy_google_mode
-#     elif opType == OrangeOpType.ToggleGoogleSpeech:
-#         _dummy_google_mode = not _dummy_google_mode
-#         return _dummy_google_mode
-#     elif opType == OrangeOpType.InternetStatus:
-#         return True
+def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
+    global _dummy_google_mode
+    if opType == OrangeOpType.TextCommand:
+        return True
+    elif opType == OrangeOpType.BatteryPercent:
+        return 85
+    elif opType == OrangeOpType.LastSpeechHeard:
+        return "how are you "
+    elif opType == OrangeOpType.LastSpeechSpoken:
+        return "I'm feeling good"
+    elif opType == OrangeOpType.IpAddress:
+        return socket.gethostbyname(socket.gethostname())
+    elif opType == OrangeOpType.GoogleSpeech:
+        return _dummy_google_mode
+    elif opType == OrangeOpType.ToggleGoogleSpeech:
+        _dummy_google_mode = not _dummy_google_mode
+        return _dummy_google_mode
+    elif opType == OrangeOpType.InternetStatus:
+        return True
+    elif opType == OrangeOpType.BatteryIsCharging:
+        return True
+    elif opType == OrangeOpType.BoardTemperature:
+        return 46
+    elif opType == OrangeOpType.LocalizationQuality:
+        return 66
 
 def update():
     pass
@@ -158,9 +166,16 @@ def start(handle_op_request, ):
     batt_box_rect = pygame.Rect(350, 100, 50, 32)
     batt_box_label_surface = base_font.render(BATT_TEXT_BOX_LABEL, True, ORANGE_COLOR)
 
+    board_temp_box_rect = pygame.Rect(750, 100, 50, 32)
+    board_temp_label_surface = base_font.render(BOARD_TEMP_LABEL, True, ORANGE_COLOR)
+
     # create IP address field
     ip_addr_box_rect = pygame.Rect(350, 150, 100, 32)
     ip_addr_box_label_surface = base_font.render(IP_ADDR_TEXT_BOX_LABEL, True, ORANGE_COLOR)
+    
+    # create localization quality
+    local_qual_box_rect = pygame.Rect(750, 150, 100, 32)
+    local_qual_box_label_surface = base_font.render(LOCAL_QUAL_LABEL, True, ORANGE_COLOR)
 
     # create internet status field
     internet_box_rect = pygame.Rect(350, 200, 100, 32)
@@ -318,10 +333,14 @@ def start(handle_op_request, ):
 
                 if time.get_ticks() > time_to_refresh_control:
                     battery_str = str(handle_op_request(OrangeOpType.BatteryPercent)) + "%"
+                    if handle_op_request(OrangeOpType.BatteryIsCharging):
+                        battery_str += " [Charging]"
                     last_speech_heard = handle_op_request(OrangeOpType.LastSpeechHeard)
                     last_speech_spoken = handle_op_request(OrangeOpType.LastSpeechSpoken)
                     ip_address = handle_op_request(OrangeOpType.IpAddress)
                     internet_status = handle_op_request(OrangeOpType.InternetStatus)
+                    board_temp_str = str(handle_op_request(OrangeOpType.BoardTemperature)) + "C"
+                    local_qual_str = str(handle_op_request(OrangeOpType.LocalizationQuality)) + "%"
                     time_to_refresh_control = next_control_refresh()
 
                 # draw title 
@@ -346,11 +365,16 @@ def start(handle_op_request, ):
                 screen.blit(google_mode_button_label_surface, google_mode_label_pos)
                 
                 # draw batt %
-                
                 batt_text_surface = base_font.render(battery_str, True, "lightgrey")
                 screen.blit(batt_text_surface, (batt_box_rect.x+10, batt_box_rect.y+5))
                 # draw label
                 screen.blit(batt_box_label_surface, (batt_box_rect.x - batt_box_label_surface.get_width() - 5, batt_box_rect.y + 5))
+                
+                # draw board temp next to batt
+                board_temp_text_surface = base_font.render(board_temp_str, True, "lightgray")
+                screen.blit(board_temp_text_surface, (board_temp_box_rect.x + 10, board_temp_box_rect.y+5))
+                # draw label
+                screen.blit(board_temp_label_surface, (board_temp_box_rect.x - board_temp_label_surface.get_width() - 5, board_temp_box_rect.y + 5))
 
                 # draw last speech heard
                 last_heard_text_surface = base_font.render(last_speech_heard, True, "lightgray")
@@ -386,7 +410,13 @@ def start(handle_op_request, ):
                 screen.blit(text_surface, (cmd_box_rect.x+5, cmd_box_rect.y+5))
                 # set width of textfield so that text cannot get
                 # outside of user's text input
-                cmd_box_rect.w = max(300, text_surface.get_width()+10)                
+                cmd_box_rect.w = max(300, text_surface.get_width()+10)    
+
+                # draw localization quality
+                local_text_surface = base_font.render(local_qual_str, True, "lightgray")
+                screen.blit(local_text_surface, (local_qual_box_rect.x+10, local_qual_box_rect.y+5)) 
+                #draw label
+                screen.blit(local_qual_box_label_surface, (local_qual_box_rect.x - local_qual_box_label_surface.get_width() - 5, local_qual_box_rect.y + 5))           
 
             pygame.display.flip()
     except KeyboardInterrupt:

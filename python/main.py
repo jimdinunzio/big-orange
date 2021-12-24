@@ -249,9 +249,9 @@ def testgoto(str):
     _goal = str
 
 def batteryMonitor():
-    global _sdp, _run_flag, _person
+    global _sdp, _run_flag, _person, _goal
     reported_25 = False
-    reported_15 = False
+    reported_18 = False
     reported_10 = False
     while _run_flag:
         try:
@@ -264,10 +264,11 @@ def batteryMonitor():
                     cancelAction()
                     _run_flag = False
                     os.system("shutdown /s /t 30")
-            elif batteryPercent <= 15:
-                if not reported_15:
-                    reported_15 = True
-                    speak(person + ", I need to recharge my battery now or I will have to shut down.")
+            elif batteryPercent <= 18:
+                if not reported_18:
+                    reported_18 = True
+                    speak(person + ", I need to recharge my battery. I am going to the recharge station.")
+                    _goal = "recharge"
             elif batteryPercent <= 25:
                 if not reported_25:
                     reported_25 = True
@@ -2171,7 +2172,13 @@ def handle_op_request(opType : OrangeOpType, arg1=None, arg2=None):
         return _google_mode
     elif opType == OrangeOpType.InternetStatus:
         return _internet
-
+    elif opType == OrangeOpType.BatteryIsCharging:
+        return _sdp.getBatteryIsCharging()
+    elif opType == OrangeOpType.BoardTemperature:
+        return _sdp.getBoardTemperature()
+    elif opType == OrangeOpType.LocalizationQuality:
+        return _sdp.getLocalizationQuality()
+        
 ################################################################   
 # This is where data gets initialized from information stored on disk
 # and threads get started

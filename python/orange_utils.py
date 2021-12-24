@@ -13,4 +13,7 @@ class OrangeOpType(Enum):
     GoogleSpeech = 6
     ToggleGoogleSpeech = 7
     InternetStatus = 8
+    BatteryIsCharging = 9
+    BoardTemperature = 10
+    LocalizationQuality = 11
     
