@@ -7,15 +7,14 @@ Created on Sun Jun  7 17:39:44 2020
 import math
 import random
 from threading import Lock
+import sdp_comm
 
 # Constants
-_show_rgb_window = True
+_show_rgb_window = False
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
-_google_mode = True
-_sdp_ip_address = b"192.168.11.1"
-_sdp_port = 1445
+_google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = True # should eyes be displayed or not
@@ -23,6 +22,7 @@ _moods = {"happy":50, "bored":20, "hungry":10}
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":0.405,"bottom":-0.128, "width":3.6, "height":1}
 _KITCHEN_RECT = {"left":10.3,"bottom":-4.9, "width":1.8, "height":1.6}
+_DINING_AREA_RECT =  {"left":3.91,"bottom":-5.03, "width":2.61, "height":2.18}
 _INIT_RECT =  {"left":-0.5,"bottom":-0.5, "width":1.0, "height":1.0}
 _STARTUP_ROOM = _OFFICE_RECT
 _DELIVERY_RESPONSES = [
@@ -30,7 +30,7 @@ _DELIVERY_RESPONSES = [
     "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, deliveries are fun too.",
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
 
-_LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT}
+_LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT, "dining area": _DINING_AREA_RECT}
 _dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 
@@ -47,7 +47,7 @@ _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
 _internet = True # True when connected to the internet
-_use_internet = True # If False don't use internet
+_use_internet = False # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
@@ -69,6 +69,7 @@ _restart_flag = False
 _set_energy_threshold = None
 _last_speech_heard = ""
 _locations = {}
+_mdai = None
 
 import parse
 import tts.sapi
@@ -96,7 +97,6 @@ import my_depthai
 import eyes
 import facial_recognize as fr
 import pickle
-from copy import deepcopy
 import speech_recognition as sr
 import socket
 
@@ -144,6 +144,22 @@ def getMoveActionStatus():
     elif status == ActionStatus.Stopped:
         print("action has been cancelled.")
     return status
+
+def move_imm(sdp, vel):
+    if vel > 0:
+        sdp.forward()
+    elif vel < 0:
+        sdp.back()
+#    else:
+#        sdp.cancelMoveAction()
+
+def turn_imm(sdp, vel):
+    if vel > 0:
+        sdp.left()
+    elif vel < 0:
+        sdp.right()
+#    else:
+#        sdp.cancelMoveAction()
 
 ################################################################
 def turn(degrees):
@@ -248,34 +264,33 @@ def testgoto(str):
     global _goal
     _goal = str
 
+_reported_25 = False
+_reported_18 = False
+_reported_15 = False
+
 def batteryMonitor():
-    global _sdp, _run_flag, _person, _goal
-    reported_25 = False
-    reported_18 = False
-    reported_10 = False
-    while _run_flag:
-        try:
-            batteryPercent = _sdp.battery()
-            person = _person if _person != "nobody" else "hello anyone"
-            if batteryPercent <= 10:
-                if not reported_10:
-                    reported_10 = True
-                    speak(person + ", my battery is exhausted, and I am shutting down now.") 
-                    cancelAction()
-                    _run_flag = False
-                    os.system("shutdown /s /t 30")
-            elif batteryPercent <= 18:
-                if not reported_18:
-                    reported_18 = True
-                    speak(person + ", I need to recharge my battery. I am going to the recharge station.")
-                    _goal = "recharge"
-            elif batteryPercent <= 25:
-                if not reported_25:
-                    reported_25 = True
-                    speak(person + ", my battery is getting low. I'll have to charge up soon.")
-        except:
-            None
-        time.sleep(10)
+    global _sdp, _run_flag, _person, _goal, _reported_25, _reported_18, _reported_15
+    try:
+        batteryPercent = _sdp.battery()
+        person = _person if _person != "nobody" else "hello anyone"
+        if batteryPercent <= 15:
+            if not _reported_15:
+                _reported_15 = True
+                speak(person + ", my battery is exhausted, and I am shutting down now.") 
+                cancelAction()
+                _run_flag = False
+                os.system("shutdown /s /t 30")
+        elif batteryPercent <= 18:
+            if not _reported_18:
+                _reported_18 = True
+                speak(person + ", I need to recharge my battery. I am going to the recharge station.")
+                _goal = "recharge"
+        elif batteryPercent <= 25:
+            if not _reported_25:
+                _reported_25 = True
+                speak(person + ", my battery is getting low. I'll have to charge up soon.")
+    except:
+        None
     
 ################################################################
 # This is where goto actions are initiated and get carried out.
@@ -287,6 +302,10 @@ def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _sdp, _interrupt_action
     global _deliveree, _package, _sub_goal, _call_out_objects
     global _error_last_goto, _response_num, _locations
+
+    sdp = MyClient()
+    sdp_comm.connectToSdp(sdp)
+
     sub_goal_cleanup = None
     while _run_flag:
         if _goal == "" or _action_flag:
@@ -300,12 +319,12 @@ def handleGotoLocation():
         if _goal == "recharge":
             speak("I'm going to the recharge station")
             coords = _locations.get(_goal)
-            _sdp.home()
+            sdp.home()
         elif _goal == "deliver" and _locations.get(_goal) is None:
             mult_people = "," in _deliveree
             # For multiple person delivery, do not bother looking for a person
             if mult_people:
-                pose = _sdp.pose()
+                pose = sdp.pose()
                 _locations[_goal] = (pose.x, pose.y, math.radians(pose.yaw)) 
                 continue
             else: # need to find a single person in room for delivery
@@ -339,9 +358,9 @@ def handleGotoLocation():
                 speak("OK.")
             _action_flag = True
             if len(coords) == 3:
-                _sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
+                sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
             else:
-                _sdp.moveToFloat(coords[0], coords[1])
+                sdp.moveToFloat(coords[0], coords[1])
 
         _interrupt_action = False
         sleepTime = 0.5 if (_sub_goal == "" or _call_out_objects) else 0
@@ -349,10 +368,10 @@ def handleGotoLocation():
             checkPersons = _sub_goal == 'person'
             if checkPersons:
                 aim_oakd(pitch=70) # aim up to see people better                
-                eyes.setAngleOffset(90, -50)
+                eyes.setTargetPitchYaw(-70, 0)
             else:
                 aim_oakd(pitch=110) # aim down towards floor for objects
-                eyes.setAngleOffset(90, 50)
+                eyes.setTargetPitchYaw(70, 0)
         else:
             checkPersons = _goal != "deliver" # avoid saying there's a person in the way going to a person
         checkObjects = not checkPersons        
@@ -366,7 +385,7 @@ def handleGotoLocation():
             speak("I see a " + _sub_goal)
             oakd.yawHome()
             eyes.setHome()
-            _sdp.setSpeed(_user_set_speed) #restore speed after finding obj
+            sdp.setSpeed(_user_set_speed) #restore speed after finding obj
 
         if _sub_goal != "":
             if setFoundObjAsGoal(_sub_goal):
@@ -396,7 +415,7 @@ def handleGotoLocation():
 
                 if len(objDict) > 0 and objDict[_sub_goal] > 0.05:
                     print("spotted", _sub_goal, ", stopping to get a look")
-                    _sdp.cancelMoveAction()
+                    sdp.cancelMoveAction()
                     oakd.stopSweepingBackAndForth()
                     time.sleep(2)
                     if setFoundObjAsGoal(_sub_goal, cam_yaw=oakd.getYaw()):
@@ -417,7 +436,7 @@ def handleGotoLocation():
                         if sub_goal_just_found:
                             break    
                         #speak("I'll keep going.")
-                        _sdp.moveToFloat(coords[0], coords[1])
+                        sdp.moveToFloat(coords[0], coords[1])
 
             maStatus = getMoveActionStatus()
             if maStatus == ActionStatus.Stopped or \
@@ -467,7 +486,7 @@ def handleGotoLocation():
                     speak("Sorry, I didn't make it to where you wanted.")
             if _sub_goal != "":
                 speak("and I never found a "+ _sub_goal)
-                _sdp.setSpeed(_user_set_speed) #restore speed after finding obj
+                sdp.setSpeed(_user_set_speed) #restore speed after finding obj
 
                 
         # finally clear temp goals and _action_flags
@@ -490,6 +509,9 @@ def handleGotoLocation():
             eyes.setHome()
 
         time.sleep(0.5)
+    sdp.disconnect()
+    del sdp
+    sdp = None
         
 ################################################################
 # Pretty print all currently active robot threads
@@ -570,15 +592,15 @@ def loadMap(filename):
     _sdp.wakeup()
     print("Loading map and its locations")
     res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
-    print("Done loading map")
     if (res == 0):
-        None
+        speak("Map and locations are loaded.")
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
         # if result == False:
         #    speak("I don't appear to be at the map starting location.")
     else:
         speak("Something is wrong. I could not load the map.")
+    print("Done loading map")
     load_locations(filename)
     return res
 
@@ -644,8 +666,7 @@ def searchForPerson(clockwise):
     global _sdp, _action_flag, _interrupt_action
     
     aim_oakd(pitch=70) # aim up to see people better
-    eyes.set(0,0)             
-    eyes.setAngleOffset(90, -50)
+    eyes.setTargetPitchYaw(-70, 0)
 
     ps = []
     # First see if person is already in view and if so return
@@ -709,9 +730,9 @@ def checkForObject(obj):
     for i in range(0,18):
         try:
             if obj == "person":
-                ps = my_depthai.getPersonDetections()
+                ps = _mdai.getPersonDetections()
             else:
-                ps = my_depthai.getObjectDetections()
+                ps = _mdai.getObjectDetections()
             if len(ps) > 0:
                 for a in ps:
                     if obj == a.label:
@@ -732,7 +753,7 @@ def checkForPerson():
     p = None
     for i in range(1,5):
         try:
-            ps = my_depthai.getPersonDetections()
+            ps = _mdai.getPersonDetections()
             if len(ps) > 0:
                 p = ps[0]
                 # If bbox ctr of detection is away from edge then stop
@@ -832,9 +853,9 @@ def checkForObjects(objectsToCheck, objDict, numChecks, maxDist=30.0, needCenter
                 objValue[idx] = False
         try:
             if checkObjects:
-                ps = my_depthai.getObjectDetections()
+                ps = _mdai.getObjectDetections()
             if checkPersons:
-                ps += my_depthai.getPersonDetections()
+                ps += _mdai.getPersonDetections()
 
             # If object is seen within required distance, then record it.
             for obj in ps:
@@ -918,7 +939,8 @@ def checkForFaces(faceDict, numChecks,needCentered=False,
 # import my_depthai
 # import time
 # from threading import Thread
-# t = Thread(target = my_depthai.startUp, args=(True,)).start()
+# mdai = my_depthai.MyDepthAI()
+# t = Thread(target = mdai.startUp, args=(True,)).start()
 
 # objDict = {} # dictionary of objects identifications
 # idx=0
@@ -935,9 +957,8 @@ def waitForObjectToBeTaken(obj):
     a = 0
     mult_objs = obj.endswith("s")
 
-    aim_oakd(yaw=79, pitch=105)
-    eyes.set(0,0)
-    eyes.setAngleOffset(-70, -40)
+    aim_oakd(yaw=79, pitch=oakd._PITCH_LIMITS[1])
+    eyes.setTargetPitchYaw(70, -40)
 
     if mult_objs: # for multiple objects use voice command to indicate when taken
         speak("Please take them, and then say, '" + _hotword + ", all taken.' when you are done.")
@@ -968,7 +989,7 @@ def waitForObjectToBeTaken(obj):
         if not found:
             # check after moving a little to make sure its gone
             aim_oakd(yaw=80)
-            eyes.setAngleOffset(-110, -40)
+            eyes.setTargetPitchYaw(70, -30)
             time.sleep(1)
             found = checkForSpecificObject(obj, maxDist=2.5)
             timeout = time.monotonic() + 10
@@ -989,7 +1010,7 @@ def waitForObjectOnTray():
 
     # Aim down to left side of tray
     aim_oakd(yaw=99)
-    eyes.setAngleOffset(-110, -40)
+    eyes.setTargetPitchYaw(70, -40)
 
     # look for 2 seconds
     timeout = time.monotonic() + 2
@@ -1025,8 +1046,7 @@ def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
                 _goal = goal
                 oakd.yawHome()
                 # eyes looking to obj or person
-                eyes.set(0,0)
-                eyes.setAngleOffset(90, -50 if checkPersons else 50)
+                eyes.setTargetPitchYaw(50 if checkPersons else -50)
                 return True
             else: # obj not found after stopping
                 if lookingAgain:
@@ -1049,8 +1069,7 @@ def deliverToPersonInRoom(person, package, room):
     speak("Ok. I'll come get it.")
     # aim up to see people better
     aim_oakd(pitch=70) 
-    eyes.set(0,0)
-    eyes.setAngleOffset(90, -50)
+    eyes.setTargetPitchYaw(-70, 0)
 
     if setFoundObjAsGoal("person"): 
         print("got a lock on the person")
@@ -1072,9 +1091,8 @@ def deliverToPersonInRoom(person, package, room):
     time.sleep(2)
 
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=105)
-    eyes.set(0,0)
-    eyes.setAngleOffset(-70, -40)
+    aim_oakd(yaw=79, pitch=oakd._PITCH_LIMITS[1])
+    eyes.setTargetPitchYaw(70, -40)
     _deliveree = person
     _package = package
     _spoken_package = package
@@ -1099,8 +1117,7 @@ def deliverToPersonInRoom(person, package, room):
     
     # aim oakd up to for detecting a person
     aim_oakd(yaw=oakd._YAW_HOME_, pitch=80)
-    eyes.set(0,0)
-    eyes.setAngleOffset(90, -50)
+    eyes.setTargetPitchYaw(-70,0)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     if mult_objs:
         speak("Ok, I will take the " + _spoken_package + " to " + _deliveree 
@@ -1125,13 +1142,13 @@ def handling_response():
     with _handling_resp_lock:
         return _handling_resp or _handle_resp_thread is not None and _handle_resp_thread.is_alive()
 
-def handle_response_sync(phrase, check_hot_word = True, assist = True):
+def handle_response_sync(sdp, phrase, check_hot_word = True, assist = True):
     if handling_response():
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
     try:
-        handled_result = handle_response(phrase, check_hot_word)
+        handled_result = handle_response(sdp, phrase, check_hot_word)
         if handled_result == HandleResponseResult.NotHandledUnknown and assist:
             words = phrase.split()
             if words[0].lower().startswith(_hotword):
@@ -1141,18 +1158,18 @@ def handle_response_sync(phrase, check_hot_word = True, assist = True):
     finally:
         set_handling_response(False)
 
-def handle_response_async(phrase, check_hot_word = True):
+def handle_response_async(sdp, phrase, check_hot_word = True):
     # issue the command in its own thread
-    _handle_resp_thread = Thread(target = handle_response_sync, args=(phrase, check_hot_word), name = "handle_response_async")
+    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, check_hot_word), name = "handle_response_async")
     _handle_resp_thread.start()
 
 ###############################################################
 # Command Handler
-def handle_response(phrase, check_hot_word = True):
+def handle_response(sdp, phrase, check_hot_word = True):
     global _run_flag, _goal, _listen_flag, _last_phrase
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
-    global _eyes_flag, _sdp, _hotword, _sub_goal, _all_loaded
+    global _eyes_flag, _hotword, _sub_goal, _all_loaded
 
     # convert phrase to lower case for comparison
     phrase = phrase.lower()
@@ -1261,7 +1278,7 @@ def handle_response(phrase, check_hot_word = True):
         loc = loc.strip()
         inThisRoom = loc == "room" or loc ==''
         if inThisRoom:
-            _sdp.wakeup()
+            sdp.wakeup()
         response = "Ok. I'll search for " + obj_p 
         if len(loc):
             response += " in the " + loc
@@ -1269,7 +1286,7 @@ def handle_response(phrase, check_hot_word = True):
 
         if inThisRoom:
             time.sleep(3)
-            lps = _sdp.getLaserScan()
+            lps = sdp.getLaserScan()
             longest_dist = 0
             longest_angle = 0
             for i in range(0, lps.size):
@@ -1280,11 +1297,11 @@ def handle_response(phrase, check_hot_word = True):
             longest_dist -= 0.75
             longest_dist = max(longest_dist, 0)
             print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
-            pose = _sdp.pose()
+            pose = sdp.pose()
             xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
             yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
             _locations["custom"] = (xt, yt)
-            _sdp.setSpeed(1)
+            sdp.setSpeed(1)
             _goal = "custom"
         else:
             _goal = loc
@@ -1293,9 +1310,9 @@ def handle_response(phrase, check_hot_word = True):
 
     if "go across the room and come back" in phrase:
         speak("Ok. I'm going across the room and coming back.")
-        _sdp.wakeup()
+        sdp.wakeup()
         time.sleep(6)
-        lps = _sdp.getLaserScan()
+        lps = sdp.getLaserScan()
         longest_dist = 0
         longest_angle = 0
         for i in range(0, lps.size):
@@ -1306,7 +1323,7 @@ def handle_response(phrase, check_hot_word = True):
         longest_dist -= 0.75
         longest_dist = max(longest_dist, 0)
         print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
-        pose = _sdp.pose()
+        pose = sdp.pose()
         xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
         yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
         _locations["custom"] = (xt, yt)
@@ -1405,7 +1422,7 @@ def handle_response(phrase, check_hot_word = True):
             return HandleResponseResult.NotHandledUnknown
         
         #if unit not mentioned assume meters
-        pose = _sdp.pose()
+        pose = sdp.pose()
         xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
         yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
         _locations["custom"] = (xt, yt)
@@ -1413,7 +1430,7 @@ def handle_response(phrase, check_hot_word = True):
         return HandleResponseResult.Handled
     
     if phrase == "wake up":
-        _sdp.wakeup()
+        sdp.wakeup()
         return HandleResponseResult.Handled
 
     if phrase == "go to sleep":
@@ -1498,7 +1515,7 @@ def handle_response(phrase, check_hot_word = True):
             
     if "battery" in phrase or "voltage" in phrase:
         ans = "My battery is currently at "
-        ans = ans + str(_sdp.battery()) + " percent"
+        ans = ans + str(sdp.battery()) + " percent"
         speak(ans)
         return HandleResponseResult.Handled
             
@@ -1520,9 +1537,9 @@ def handle_response(phrase, check_hot_word = True):
     
     if "clear map" in phrase:
         speak("Ok. I will clear my map.")
-        _sdp.clearSlamtecMap()
+        sdp.clearSlamtecMap()
         # after clearing make sure updating is on
-        _sdp.setUpdate(True)
+        sdp.setUpdate(True)
         return HandleResponseResult.Handled
     
     if "clear locations" in phrase:
@@ -1539,7 +1556,7 @@ def handle_response(phrase, check_hot_word = True):
             speak("Ok. I will disable map updating.")
         else:
             return HandleResponseResult.Handled                
-        _sdp.setUpdate(enable)
+        sdp.setUpdate(enable)
         return HandleResponseResult.Handled
     
     if "take a picture" in phrase:
@@ -1563,7 +1580,7 @@ def handle_response(phrase, check_hot_word = True):
             return HandleResponseResult.Handled
         _user_set_speed = speed
         speak("Ok. I'm setting the speed.")
-        if speed != _sdp.setSpeed(speed):
+        if speed != sdp.setSpeed(speed):
             speak("Sorry, I could not change my speed this time.")
         return HandleResponseResult.Handled
     
@@ -1613,7 +1630,30 @@ def handle_response(phrase, check_hot_word = True):
     if phrase == "all taken":
         _all_loaded = False
         return HandleResponseResult.Handled
-    
+
+    if phrase == "follow me":
+        if _follow_thread is None:
+            speak("Ok. I will follow you.")
+            start_following()
+        else:
+            speak("I am already following you.")
+        return HandleResponseResult.Handled
+
+    if phrase == "stop following me":
+        speak("Ok. I will stop following you.")
+        stop_following()
+        return HandleResponseResult.Handled
+
+    if phrase == "track me":
+        speak("Ok. I will track you.")
+        start_tracking()
+        return HandleResponseResult.Handled
+
+    if phrase == "stop tracking":
+        speak("Ok. I will stop tracking you.")
+        stop_tracking()
+        return HandleResponseResult.Handled
+
     new_name = ""
     if phrase.startswith("i am"):
         new_name = phrase.partition("i am")[2]
@@ -1624,7 +1664,7 @@ def handle_response(phrase, check_hot_word = True):
     
     if len(new_name) > 0:
         oakd.setPitch(70) # pitch up to see person better
-        eyes.setAngleOffset(90, -50)
+        eyes.setTargetPitchYaw(-70, 0)
         speak("Hello " + new_name + ". It's nice to meet you.")
         shutdown_my_depthai()
         speak("Wait while I try to commit your face to memory. Please, only you.")
@@ -1639,7 +1679,7 @@ def handle_response(phrase, check_hot_word = True):
 
     if phrase.startswith("hello") or phrase.startswith("hi"):
         oakd.setPitch(70) # pitch up to see person better
-        eyes.setAngleOffset(90, -50)
+        eyes.setTargetPitchYaw(-70, 0)
         shutdown_my_depthai()
         speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
         start_facial_recog()
@@ -1677,7 +1717,7 @@ def handle_response(phrase, check_hot_word = True):
 
     if phrase.startswith("update location of"):
         loc = phrase[19:]
-        pose = _sdp.pose()
+        pose = sdp.pose()
         _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
         print("updated location", loc, "to (", pose.x, pose.y, pose.yaw, ")")
         speak("I updated location " + loc)
@@ -1743,19 +1783,23 @@ def handle_response(phrase, check_hot_word = True):
                     room = " ".join(words[idx_in+1:]).lower()
         else:
             return HandleResponseResult.NotHandledUnknown
-        room_words = room.split()
-        if len(room_words) > 1:
-            try:
-                room = " ".join([room_words[0], str(w2n.word_to_num(room_words[1]))])
-            except:
-                None             
+        if room is not None:
+            room_words = room.split()
+            if len(room_words) > 1:
+                try:
+                    room = " ".join([room_words[0], str(w2n.word_to_num(room_words[1]))])
+                except:
+                    None             
 
-        room = room.strip()
-        if room in _locations:
-            # run this in a separate thread so we can take voice answers
-            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()
-        else:
-            speak("Sorry, I don't know how to get to " + room + ".")
+            room = room.strip()
+        
+            if room in _locations:
+                # run this in a separate thread so we can take voice answers
+                Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()
+            else:
+                speak("Sorry, I don't know how to get to " + room + ".")
+        else: # room is None i.e. same room
+            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()            
         return HandleResponseResult.Handled
         
     deg = 0
@@ -1786,6 +1830,9 @@ def handle_response(phrase, check_hot_word = True):
 def listen():
     global _run_flag, _goal, _last_speech_heard
     global _internet, _use_internet, _hotword, _google_mode
+    
+    sdp = MyClient()
+    sdp_comm.connectToSdp(sdp)
     
     ###########################################################
     # Text input to Google Assistant for web based queries
@@ -1996,23 +2043,23 @@ def listen():
     global _sendToGoogleAssistantFn
     _sendToGoogleAssistantFn = sendToGoogleAssistant
 
-    def listenFromGoogle(finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
             phrase = listenFromGoogleSpeechRecog(r, mic, sr)
-            handle_response_sync(phrase, check_hot_word)
+            handle_response_sync(sdp, phrase, check_hot_word)
         except:
             speak("sorry, i could not do what you wanted.")
         finally:
             finallyFunc()
 
-    def local_hotword_recog_cb(phrase, listener, hotword, r, sr):
+    def local_hotword_recog_cb(sdp, phrase, listener, hotword, r, sr):
         phrase = phrase.lower()
         print("I heard: %s" % phrase)
         if phrase == "stop" or "what's your name" in phrase or "what is your name" in phrase \
             or "who are you" in phrase:
             listener.set_active(False)
             try:
-                handle_response_sync(phrase, assist = False)
+                handle_response_sync(sdp, phrase, assist = False)
             except:
                 speak("sorry, i could not do what you wanted.")
             finally:
@@ -2021,9 +2068,9 @@ def listen():
         if hotword in phrase:
             listener.set_active(False)
             speak("yes?")
-            listenFromGoogle(lambda:listener.set_active(True), False)
+            listenFromGoogle(sdp, lambda:listener.set_active(True), False)
 
-    def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr):
+    def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp):
         global _internet, _use_internet, _last_speech_heard
         print("I heard: %s" % phrase)
         _last_speech_heard = phrase
@@ -2041,7 +2088,7 @@ def listen():
                 listener.set_active(True)
             return
 #        try:
-        handled_result = handle_response_sync(phrase, assist = False)
+        handled_result = handle_response_sync(sdp, phrase, assist = False)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             speak("I am not sure how to help with that.")
         elif handled_result == HandleResponseResult.NotHandledNoHotWord:
@@ -2061,22 +2108,28 @@ def listen():
                 # to recognize a command subset
                 local_listener = winspeech.listen_for(None, "speech.xml", 
                 "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
-                sr=sr: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr))
+                sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
             else: 
                 # use google cloud speech
-                listenFromGoogle()
+                listenFromGoogle(sdp)
 
                 # winspeech to detect hotword or stop and then invoke google 
                 # cloud speech
                 # print("detecting hotword")
                 # local_listener = winspeech.listen_for(None, "hotword.xml", 
                 # "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
-                # sr=sr: local_hotword_recog_cb(phrase, listener, hotword, r, sr))
+                # sr=sr: local_hotword_recog_cb(sdp, phrase, listener, hotword, r, sr))
         except Exception as e:
             print(e)
 
         while _run_flag and local_listener is not None:
             time.sleep(2)
+    
+    # if no longer running, stop listening 
+    winspeech.stop_listening()
+    sdp.disconnect()
+    del sdp
+    sdp = None
 
 def recoverLocalization(rect):
     result = _sdp.recoverLocalization(rect["left"], 
@@ -2126,15 +2179,17 @@ def shutdown_facial_recog():
     except:
         None
     
-def start_depthai_thread():
-    global _my_depthai_thread
-    _my_depthai_thread = Thread(target = my_depthai.startUp, args=(_show_rgb_window, _show_depth_window),daemon=True, name="my_depthai")
+def start_depthai_thread(model="tinyYolo", use_tracker=False):
+    global _my_depthai_thread, _mdai
+    _mdai = my_depthai.MyDepthAI(model, use_tracker)
+
+    _my_depthai_thread = Thread(target = _mdai.startUp, args=(_show_rgb_window, _show_depth_window),daemon=True, name="mdai")
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
     global _my_depthai_thread
     try:
-        my_depthai.shutdown()
+        _mdai.shutdown()
         _my_depthai_thread.join()
     except:
         None
@@ -2151,14 +2206,95 @@ def shutdown_eyes_thread():
     except:
         None
 
+def start_tracking():
+    # shutdown current depth ai model
+    shutdown_my_depthai()
+    # start up the mobilenet with tracker. Yolo doesn't work as well.
+    start_depthai_thread(model="mobileNet", use_tracker=True)    
+    oakd.start_tracking(_mdai, trackTurnBase=True)
+
+def stop_tracking():
+    oakd.stop_tracking()
+    shutdown_my_depthai()
+    # restore default depth ai model
+    start_depthai_thread()
+
+_follow_thread = None
+_following = False
+_last_goal_pos = (0,0)
+
+def follow_me():
+    global _following, _last_goal_pos
+    print("Follow Me thread starting")
+    _following = True
+
+    # must establish a separate client and server and connection to SDP because msl loadlib is not thread safe
+    sdp = MyClient()
+    sdp_comm.connectToSdp(sdp)
+
+    start_tracking()
+    last_track_update = 0
+    backup = 0
+    backup_cnt = 0
+    while _following:
+        if time.monotonic() - last_track_update > 3.0:
+            print("follow update")
+            ts = oakd.get_track_status()
+            if ts.tracking:
+                ts.object.z -= 1.0 # come up to the object within certain distance
+                robot_pose = sdp.pose()
+                heading = math.radians(robot_pose.yaw + oakd.getYaw() + ts.object.theta)
+                xt = robot_pose.x + ts.object.z * math.cos(heading)
+                yt = robot_pose.y + ts.object.z * math.sin(heading)
+                if distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
+                    print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + oakd.getYaw() + ts.object.theta))
+                    oakd.set_track_turn_base(False)
+                    if ts.object.z > 0:
+                        sdp.moveToFloat(xt, yt)
+                    elif ts.object.z < 0: # too close, back up
+                        sdp.cancelMoveAction()
+                        print("too close, backing up")
+                        backup = 5
+                    _last_goal_pos = (xt, yt)
+                else:
+                    oakd.set_track_turn_base(True)
+            last_track_update = time.monotonic()
+        if backup > 0:
+            backup_cnt += 1
+            if backup_cnt >= 2:
+                backup_cnt = 0
+                move_imm(sdp, -1)
+                backup -= 1
+        time.sleep(0.1)
+    print("Follow Me thread ending")
+    stop_tracking()
+    sdp.disconnect()
+
+def start_following():
+    global _follow_thread
+    if _follow_thread is None:
+        _follow_thread = Thread(target=follow_me)
+        _follow_thread.start()
+    else:
+        print("Error - trying to start following when already following.")
+
+def stop_following():
+    global _follow_thread, _following
+    _following = False
+    if _follow_thread is not None:
+        _follow_thread.join()
+        _follow_thread = None
+    else:
+        print("Error - trying to stop following, but not currently following.")
+
 from orange_utils import *
 
-def handle_op_request(opType : OrangeOpType, arg1=None, arg2=None):
+def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
     global _google_mode, _last_speech_heard
     if opType == OrangeOpType.TextCommand:
-        return handle_response_async(arg1, check_hot_word=False)
+        return handle_response_async(sdp, arg1, check_hot_word=False)
     elif opType == OrangeOpType.BatteryPercent:
-        return _sdp.battery()
+        return sdp.battery()
     elif opType == OrangeOpType.LastSpeechHeard:
         return _last_speech_heard
     elif opType == OrangeOpType.LastSpeechSpoken:
@@ -2173,11 +2309,11 @@ def handle_op_request(opType : OrangeOpType, arg1=None, arg2=None):
     elif opType == OrangeOpType.InternetStatus:
         return _internet
     elif opType == OrangeOpType.BatteryIsCharging:
-        return _sdp.getBatteryIsCharging()
+        return sdp.getBatteryIsCharging()
     elif opType == OrangeOpType.BoardTemperature:
-        return _sdp.getBoardTemperature()
+        return sdp.getBoardTemperature()
     elif opType == OrangeOpType.LocalizationQuality:
-        return _sdp.getLocalizationQuality()
+        return sdp.getLocalizationQuality()
         
 ################################################################   
 # This is where data gets initialized from information stored on disk
@@ -2200,7 +2336,7 @@ def initialize_robot():
 #    Thread(target = behaviors, name = "Behaviors").start()
     if _slamtec_on:    
         Thread(target = handleGotoLocation, daemon=True, name = "Handle Goto Location").start()
-        Thread(target = batteryMonitor, daemon=True, name = "Battery monitor").start()
+
 #    Thread(target = actions, name = "Actions").start()
     
 #    Thread(target = robotMoving, name = "Is Robot Moving").start()
@@ -2222,23 +2358,26 @@ def shutdown_robot():
     cancelAction()
     _run_flag = False
 
+    print("shutting down eyes")
     eyes.shutdown()
+    print("shutting down depthai")
     shutdown_my_depthai()
+    print("shutting doen facial recog")
     shutdown_facial_recog()
+    print("shutting down move oakd")
     oakd.shutdown()
 
     # TBD join threads
     
     # Close all open threads
-    while (threading.active_count() > 1):
-        print("\nClosing... ")
-        pretty_print_threads()
-        time.sleep(1)
-
+    print("\nWaiting for non daemon threads to finish.")
+    threading._shutdown()
+    
     #print("waiting for listening thread to complete.")
     #if _listen_thread is not None:
     #    _listen_thread.join()
     del _sdp
+    _sdp = None
     print("\nDone!")
    
 ################################################################
@@ -2249,24 +2388,21 @@ def robot():
     _restart_flag = False
 
     initialize_robot()
-    eyes.setAngleOffset(90, -10)
+    eyes.setTargetPitchYaw(-10, 0)
+    _sdp.setSpeed(_user_set_speed)
 
+    last_battery_check = 0
     try:
         while _run_flag:
+            if time.monotonic() - last_battery_check >= 10:
+                batteryMonitor()
+                last_battery_check = time.monotonic()
             time.sleep(1)
     except KeyboardInterrupt:
         pretty_print_threads()
 
     shutdown_robot()
 
-def connectToSdp():
-    errStr = create_string_buffer(255)
-    res = _sdp.connectSlamtec(_sdp_ip_address, _sdp_port, errStr.raw, 255)
-    if res == 1 :
-        print("Could not connect to SlamTec, time out.")#, errStr.value)
-    elif res == 2:
-        print("Could not connect to SlamTec, connection fail.")#, errStr.value)
-    return res
 
 def init_local_speech_rec():
     # Start an in-process edge recognizer using SAPI.
@@ -2294,12 +2430,13 @@ def run():
     oakd.initialize()
 
     if _execute:
-        res = connectToSdp()
+        res = sdp_comm.connectToSdp(_sdp)
 
         if (res == 0):
             _slamtec_on = True
-            # set to update map by default.
-            _sdp.setUpdate(True)
+            loadMap(_default_map_name)
+            # set not to update map by default.
+            _sdp.setUpdate(False)
             None
         else:
             speak("Something is wrong. I could not connect to Slamtec.")

@@ -11,8 +11,6 @@ from msl.loadlib import Server32
 from ctypes import *
 from enum import Enum
 
-MAX_ATTEMPTS = 3
-
 class LASER_POINTS(Structure):
 	"""Structure to hold laser points"""
 	_fields_ = [("size", c_int),
@@ -66,9 +64,9 @@ class ActionStatus(Enum):
 class MyServer(Server32):
     """A wrapper around a 32-bit C++ library, 'SlamtecDll.dll', that has functions to control the robot."""
 
-    def __init__(self, host, port, quiet, **kwargs):
+    def __init__(self, host, port, **kwargs):
         # Load the 'cpp_lib32' shared-library file using ctypes.CDLL.
-        super(MyServer, self).__init__('SlamtecDll.dll', 'cdll', host, port, quiet)
+        super(MyServer, self).__init__('SlamtecDll.dll', 'cdll', host, port)
         print("A Server was created.")
         #Set up C function input and output types
 
@@ -95,6 +93,7 @@ class MyServer(Server32):
         self.lib.getLaserScan.restype = LASER_POINTS
         self.lib.freeIt.argtypes = c_void_p,
         self.lib.freeIt.restype = None
+        self.lib.getBatteryIsCharging.restype = c_bool
 
     def connectSlamtec(self, ip_address, port, errStr, errStrLen):
         # The Server32 class has a 'lib' property that is a reference to the ctypes.CDLL object.
@@ -102,36 +101,17 @@ class MyServer(Server32):
         return retval
 
     def disconnect(self):
-        try:
-            self.lib.disconnect();
-        except:
-            None
+        self.lib.disconnect();
     
     def forward(self):
         self.lib.forward()
 
     def left(self):
-        attempt = 1
-        while attempt <= MAX_ATTEMPTS:
-            try:
-                self.lib.left()
-            except:
-                attempt += 1
-                time.sleep(0.1)
-            else:
-                break
-
+        self.lib.left()
+    
     def right(self):
-        attempt = 1
-        while attempt <= MAX_ATTEMPTS:
-            try:
-                self.lib.right()
-            except:
-                attempt += 1
-                time.sleep(0.1)
-            else:
-                break
-            
+        self.lib.right()
+
     def back(self):
         self.lib.back()
 
@@ -177,6 +157,15 @@ class MyServer(Server32):
     
     def battery(self):
         return self.lib.battery()
+
+    def getBatteryIsCharging(self):
+        return self.lib.getBatteryIsCharging()
+
+    def getBoardTemperature(self):
+        return self.lib.getBoardTemperature()
+
+    def getLocalizationQuality(self):
+        return self.lib.getLocalizationQuality()
     
     def odometry(self):
         return self.lib.odometry()

@@ -5,19 +5,22 @@ import math
 import random
 from threading import Lock, Thread
 from orange_utils import OrangeOpType
+import my_sdp_client
+import sdp_comm
 
 WIDTH = 1024
 HEIGHT = 600
-_PUPIL_MOVE_RATE = 20
 
 _going = False
-_angle = 0
-_offset = 0
-_targetAngle = 0
-_targetOffset = 0
+_pupil_x_off = 0
+_pupil_y_off = 0
+_target_pupil_x_off = 0
+_target_pupil_y_off = 0
 _dims = None
-_eyeAngleOffsetLock = Lock()
+_pupil_lock = Lock()
 _text_card_text = ""
+_pupil_x_move_rate = 0
+_pupil_y_move_rate = 0
 
 CMD_TEXT_BOX_LABEL = "Cmd:"
 UI_TITLE_TEXT = "Orange Control"
@@ -68,7 +71,24 @@ def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
 def update():
     pass
 
-def draw_eyes(screen, pupil_angle=0, pupil_offset=0):
+def pupil_x(yaw):
+    return 70 * math.sin(math.radians(yaw))
+
+def pupil_y(pitch):
+    return 70 * math.sin(math.radians(pitch))
+
+def draw_eyes(screen, pupil_x_off=0, pupil_y_off=0):
+    def draw_eye(eye_x, eye_y, pitch, yaw):
+        pupil_x = int(eye_x + pupil_x_off)
+        pupil_y = int(eye_y + pupil_y_off)
+
+        pygame.draw.circle(screen, (255, 255, 255), (eye_x, eye_y), 150)
+        pygame.draw.circle(screen, (0, 0, 100), (pupil_x, pupil_y), 50)
+    
+    draw_eye(_dims[0] / 3 - 40, _dims[1]/ 2, pupil_x_off, pupil_y_off)
+    draw_eye(2*_dims[0] / 3 + 40, _dims[1]/ 2, pupil_x_off, pupil_y_off)
+
+def draw_eyes_old(screen, pupil_angle=0, pupil_offset=0):
 #    screen.fill((0, 0, 0))
     pupil_angle = math.radians(pupil_angle)
     def draw_eye(eye_x, eye_y, pupil_angle, pupil_offset):
@@ -93,15 +113,16 @@ def shutdown():
     global _going
     _going = False
 
-def set(angle=None, offset=None):
-    global _angle, _offset, _targetAngle, _targetOffset
-    with _eyeAngleOffsetLock:
-        if angle is not None:
-            _angle = angle
-            _targetAngle = angle
-        if offset is not None:
-            _offset = offset
-            _targetOffset = offset
+# sets pitch and yaw immediately with no transition
+def setPitchYaw(pitch=None, yaw=None):
+    global _pupil_x_off, _pupil_y_off, _target_pupil_y_off, _target_pupil_x_off
+    with _pupil_lock:
+        if pitch is not None:
+            _pupil_y_off = pupil_y(pitch)
+            _target_pupil_y_off = _pupil_y_off
+        if yaw is not None:
+            _pupil_x_off = pupil_x(yaw)
+            _target_pupil_x_off = _pupil_x_off
 
 def next_blink_time():
     return pygame.time.get_ticks() + 1000 + (random.random()*6000)
@@ -109,30 +130,57 @@ def next_blink_time():
 def next_control_refresh():
     return pygame.time.get_ticks() + 2000
 
-def setHome():
-    global _targetAngle, _targetOffset
-    with _eyeAngleOffsetLock:
-        _targetAngle = 0
-        _targetOffset = 0
+################################################################
+# function to calculate the distance between 2 points (XA YA) and (XB YB)
+def distance_A_to_B(XA, YA, XB, YB):
+    dist = math.sqrt((XB - XA)**2 + (YB - YA)**2)
+    return dist
 
-def setAngleOffset(targetAngle=None, targetOffset=None):
-    global _targetAngle, _targetOffset
-    with _eyeAngleOffsetLock:
-        if targetAngle is not None:
-            _targetAngle = targetAngle
-        if targetOffset is not None:
-            _targetOffset = targetOffset
+def setHome():
+    setTargetPitchYaw(0,0)
+
+MOVE_PIXELS_PER_FRAME = 75.0
+
+# sets pitch and yaw with transition
+def setTargetPitchYaw(targetPitch=None, targetYaw=None):
+    global _target_pupil_y_off, _target_pupil_x_off, _pupil_y_move_rate, _pupil_x_move_rate
+    with _pupil_lock:
+        if targetPitch is not None:
+            _target_pupil_y_off = pupil_y(targetPitch)
+        else:
+            _target_pupil_y_off = _pupil_y_off
+        if targetYaw is not None:
+            _target_pupil_x_off = pupil_x(targetYaw)
+        else:
+            _target_pupil_x_off = _pupil_x_off
+        
+        move_frames = distance_A_to_B(_pupil_x_off, _pupil_y_off, _target_pupil_x_off, _target_pupil_y_off) / MOVE_PIXELS_PER_FRAME
+        if move_frames > 0:
+            _pupil_y_move_rate = (_target_pupil_y_off - _pupil_y_off) / move_frames
+            _pupil_x_move_rate = (_target_pupil_x_off - _pupil_x_off) / move_frames
+        else:
+            _pupil_y_move_rate = 0
+            _pupil_x_move_rate = 0
 
 def setText(text, time=5):
     global _text_card_text, _text_card_text_end_time
     _text_card_text = text
     _text_card_text_end_time = pygame.time.get_ticks() + time * 1000
 
-def start(handle_op_request, ):
-    global _going, _dims, _angle, _offset, _text, _text_card_text_end_time
+def start(handle_op_request, connect_sdp=True):
+    global _going, _dims, _pupil_x_off, _pupil_y_off, _text, _text_card_text_end_time
+    global _pupil_x_move_rate, _pupil_y_move_rate
+    
     _going = True
 
-    google_mode = handle_op_request(OrangeOpType.GoogleSpeech)
+    if connect_sdp:
+        sdp = my_sdp_client.MyClient()
+        connected = sdp_comm.connectToSdp(sdp) == 0
+    else:
+        sdp = None
+        connected = False
+
+    google_mode = handle_op_request(sdp, OrangeOpType.GoogleSpeech)
 
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT), RESIZABLE)
@@ -159,7 +207,7 @@ def start(handle_op_request, ):
     # title text
     title_text_surface = title_font.render(UI_TITLE_TEXT, True, ORANGE_COLOR)
     title_text_pos = title_text_surface.get_rect(centerx=background.get_width()/2, centery=33)
-
+ 
     cmd_text = ''
     
     # create battery % field
@@ -234,8 +282,7 @@ def start(handle_op_request, ):
     _text_card_text = ""
     if pygame.font:
         text_card_font = pygame.font.Font(None, 255)
-
-                
+  
     draw_eyes_enabled = True
     draw_ui_enabled = False
 
@@ -261,7 +308,7 @@ def start(handle_op_request, ):
                     else:
                         if cmd_box_active:
                             if event.key == pygame.K_RETURN:
-                                handle_op_request(OrangeOpType.TextCommand, cmd_text)
+                                handle_op_request(sdp, OrangeOpType.TextCommand, cmd_text)
                                 cmd_text = ""
                             else:
                                 cmd_text += event.unicode
@@ -284,7 +331,7 @@ def start(handle_op_request, ):
                         elif hide_button_rect.collidepoint(event.pos):
                             screen = pygame.display.set_mode((WIDTH,HEIGHT-20), RESIZABLE)
                         elif google_mode_button_rect.collidepoint(event.pos):
-                            google_mode = handle_op_request(OrangeOpType.ToggleGoogleSpeech)
+                            google_mode = handle_op_request(sdp, OrangeOpType.ToggleGoogleSpeech)
                             google_mode_color = button_on_color if google_mode else button_off_color
 
             #allsprites.update()
@@ -292,20 +339,18 @@ def start(handle_op_request, ):
             # Draw Everything
             screen.blit(background, (0, 0))
             #allsprites.draw(screen)
-            with _eyeAngleOffsetLock:
-                targetAngle = _targetAngle
-                targetOffset = _targetOffset
 
-            angleDiff = _targetAngle - _angle
-            offsetDiff = _targetOffset - _offset
-            if _offset != 0 and abs(angleDiff) >= _PUPIL_MOVE_RATE:
-                _angle += math.copysign(_PUPIL_MOVE_RATE, angleDiff)
+            if abs(_target_pupil_x_off - _pupil_x_off) >= abs(_pupil_x_move_rate):
+                _pupil_x_off += _pupil_x_move_rate
             else:
-                _angle = _targetAngle
-            if abs(offsetDiff) >= _PUPIL_MOVE_RATE:
-                _offset += math.copysign(_PUPIL_MOVE_RATE, offsetDiff)
+                _pupil_x_off = _target_pupil_x_off
+                _pupil_x_move_rate = 0
+
+            if abs(_target_pupil_y_off - _pupil_y_off) >= abs(_pupil_y_move_rate):
+                _pupil_y_off += _pupil_y_move_rate
             else:
-                _offset = _targetOffset
+                _pupil_y_off = _target_pupil_y_off
+                _pupil_y_move_rate = 0
 
             if len(_text_card_text) > 0:
                 if text_card_font:
@@ -315,9 +360,9 @@ def start(handle_op_request, ):
                     if pygame.time.get_ticks() > _text_card_text_end_time:
                         _text_card_text = ""
             elif draw_eyes_enabled:
-                draw_eyes(screen, _angle, _offset)
-                #blink
-                if time.get_ticks() > time_to_blink:
+                draw_eyes(screen, _pupil_x_off, _pupil_y_off)
+                #blink but not when moving the pupils
+                if time.get_ticks() > time_to_blink and _pupil_y_move_rate == 0 and _pupil_x_move_rate == 0:
                     pygame.draw.rect(screen, (0,0,0), (0, 0, _dims[0], _dims[1]/2))
                     pygame.display.flip()
                     time.wait(40)
@@ -332,15 +377,15 @@ def start(handle_op_request, ):
                     cmd_box_color = color_passive
 
                 if time.get_ticks() > time_to_refresh_control:
-                    battery_str = str(handle_op_request(OrangeOpType.BatteryPercent)) + "%"
-                    if handle_op_request(OrangeOpType.BatteryIsCharging):
+                    battery_str = str(handle_op_request(sdp,OrangeOpType.BatteryPercent)) + "%"
+                    if handle_op_request(sdp, OrangeOpType.BatteryIsCharging):
                         battery_str += " [Charging]"
-                    last_speech_heard = handle_op_request(OrangeOpType.LastSpeechHeard)
-                    last_speech_spoken = handle_op_request(OrangeOpType.LastSpeechSpoken)
-                    ip_address = handle_op_request(OrangeOpType.IpAddress)
-                    internet_status = handle_op_request(OrangeOpType.InternetStatus)
-                    board_temp_str = str(handle_op_request(OrangeOpType.BoardTemperature)) + "C"
-                    local_qual_str = str(handle_op_request(OrangeOpType.LocalizationQuality)) + "%"
+                    last_speech_heard = handle_op_request(sdp, OrangeOpType.LastSpeechHeard)
+                    last_speech_spoken = handle_op_request(sdp, OrangeOpType.LastSpeechSpoken)
+                    ip_address = handle_op_request(sdp, OrangeOpType.IpAddress)
+                    internet_status = handle_op_request(sdp, OrangeOpType.InternetStatus)
+                    board_temp_str = str(handle_op_request(sdp, OrangeOpType.BoardTemperature)) + "C"
+                    local_qual_str = str(handle_op_request(sdp, OrangeOpType.LocalizationQuality)) + "%"
                     time_to_refresh_control = next_control_refresh()
 
                 # draw title 
@@ -421,5 +466,10 @@ def start(handle_op_request, ):
             pygame.display.flip()
     except KeyboardInterrupt:
         None
+
+    if sdp is not None:
+        sdp.disconnect()
+        del sdp
+        sdp = None
 
     pygame.quit()
