@@ -35,10 +35,11 @@ labelMap = [
     "teddy bear",     "hair drier", "toothbrush"
 ]
 
+use_tracker = True
 syncNN = True
 
 # Get argument first
-nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
+nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 if len(sys.argv) > 1:
     nnBlobPath = sys.argv[1]
 
@@ -59,14 +60,13 @@ stereo = pipeline.createStereoDepth()
 
 xoutRgb = pipeline.createXLinkOut()
 xoutNN = pipeline.createXLinkOut()
-xoutBoundingBoxDepthMapping = pipeline.createXLinkOut()
+#xoutBoundingBoxDepthMapping = pipeline.createXLinkOut()
 xoutDepth = pipeline.createXLinkOut()
 
 xoutRgb.setStreamName("rgb")
 xoutNN.setStreamName("detections")
-xoutBoundingBoxDepthMapping.setStreamName("boundingBoxDepthMapping")
+#xoutBoundingBoxDepthMapping.setStreamName("boundingBoxDepthMapping")
 xoutDepth.setStreamName("depth")
-
 
 colorCam.setPreviewSize(416, 416)
 colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -80,6 +80,8 @@ monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
 
 # setting node configs
 stereo.setConfidenceThreshold(255)
+
+#stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
 spatialDetectionNetwork.setBlobPath(nnBlobPath)
 spatialDetectionNetwork.setConfidenceThreshold(0.5)
@@ -100,17 +102,38 @@ monoLeft.out.link(stereo.left)
 monoRight.out.link(stereo.right)
 
 colorCam.preview.link(spatialDetectionNetwork.input)
-if syncNN:
-    spatialDetectionNetwork.passthrough.link(xoutRgb.input)
-else:
-    colorCam.preview.link(xoutRgb.input)
 
-spatialDetectionNetwork.out.link(xoutNN.input)
-spatialDetectionNetwork.boundingBoxMapping.link(xoutBoundingBoxDepthMapping.input)
+#spatialDetectionNetwork.boundingBoxMapping.link(xoutBoundingBoxDepthMapping.input)
 
 stereo.depth.link(spatialDetectionNetwork.inputDepth)
 spatialDetectionNetwork.passthroughDepth.link(xoutDepth.input)
 
+if use_tracker:
+    # Create object tracker
+    objectTracker = pipeline.createObjectTracker()
+    # track only person
+    objectTracker.setDetectionLabelsToTrack([0])
+    # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS, SHORT_TERM_IMAGELESS, SHORT_TERM_KCF
+    objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_COLOR_HISTOGRAM)
+    # take the smallest ID when new object is tracked, possible options: SMALLEST_ID, UNIQUE_ID
+    objectTracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.UNIQUE_ID)
+    # rgb
+    if syncNN:
+        objectTracker.passthroughTrackerFrame.link(xoutRgb.input)
+    else:
+        colorCam.preview.link(xoutRgb.input)
+    # Its input
+    spatialDetectionNetwork.passthrough.link(objectTracker.inputTrackerFrame)
+    spatialDetectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
+    spatialDetectionNetwork.out.link(objectTracker.inputDetections)
+    objectTracker.out.link(xoutNN.input)
+else:
+    if syncNN:
+        spatialDetectionNetwork.passthrough.link(xoutRgb.input)
+    else:
+        colorCam.preview.link(xoutRgb.input)
+    spatialDetectionNetwork.out.link(xoutNN.input)
+    
 detection_lock = Lock()
 
 detection_lock.acquire()
@@ -119,7 +142,7 @@ _objectDetections = []
 detection_lock.release()
 
 class MyDetection(object):
-    def __init__(self, label, x, y, z, bboxCtr, confidence):
+    def __init__(self, label, x, y, z, bboxCtr, confidence, id, status):
         if label == "sports ball":
             self.label = "baseball"
         else:
@@ -130,6 +153,8 @@ class MyDetection(object):
         self.theta = math.degrees(-math.asin(x/z) if z != 0.0 else 0)
         self.bboxCtr = bboxCtr
         self.confidence = confidence
+        self.id = id
+        self.status = status
     
 def shutdown():
     global _run_flag
@@ -161,13 +186,15 @@ def startUp(showRgbWindow=False, showDepthWindow=False):
             with dai.Device(pipeline, device_info) as device:
             
                 # Output queues will be used to get the rgb frames and nn data from the outputs defined above
-                previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+                if showRgbWindow:
+                    previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
                 detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
-                xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
-                depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
+                #xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
+                if showDepthWindow:
+                    depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
             
                 frame = None
-                detections = []
+                tracklets = []
             
                 startTime = time.monotonic()
                 counter = 0
@@ -175,9 +202,11 @@ def startUp(showRgbWindow=False, showDepthWindow=False):
                 color = (255, 255, 255)
             
                 while _run_flag:
-                    inPreview = previewQueue.get()
+                    if showRgbWindow:
+                        inPreview = previewQueue.get()
                     inNN = detectionNNQueue.get()
-                    depth = depthQueue.get()
+                    if showDepthWindow:
+                        depth = depthQueue.get()
             
                     counter+=1
                     current_time = time.monotonic()
@@ -185,78 +214,87 @@ def startUp(showRgbWindow=False, showDepthWindow=False):
                         fps = counter / (current_time - startTime)
                         counter = 0
                         startTime = current_time
-            
-                    frame = inPreview.getCvFrame()
+                                
+                    tracklets = inNN.tracklets
                     
                     if showDepthWindow:
                         depthFrame = depth.getFrame()
                         depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
                         depthFrameColor = cv2.equalizeHist(depthFrameColor)
                         depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
-                    detections = inNN.detections
-                    if len(detections) != 0:
-                        boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
-                        #roiDatas = boundingBoxMapping.getConfigData()            
-                        # for roiData in roiDatas:
-                        #     roi = roiData.roi
-                        #     roi = roi.denormalize(depthFrameColor.shape[1], depthFrameColor.shape[0])
-                        #     topLeft = roi.topLeft()
-                        #     bottomRight = roi.bottomRight()
-                        #     xmin = int(topLeft.x)
-                        #     ymin = int(topLeft.y)
-                        #     xmax = int(bottomRight.x)
-                        #     ymax = int(bottomRight.y)
-                        #     cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+                        #if len(detections) != 0:
+                            #boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
+                            #roiDatas = boundingBoxMapping.getConfigData()            
+                            # for roiData in roiDatas:
+                            #     roi = roiData.roi
+                            #     roi = roi.denormalize(depthFrameColor.shape[1], depthFrameColor.shape[0])
+                            #     topLeft = roi.topLeft()
+                            #     bottomRight = roi.bottomRight()
+                            #     xmin = int(topLeft.x)
+                            #     ymin = int(topLeft.y)
+                            #     xmax = int(bottomRight.x)
+                            #     ymax = int(bottomRight.y)
+                            #     cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+
             
                     # If the frame is available, draw bounding boxes on it and show the frame
-                    height = frame.shape[0]
-                    width  = frame.shape[1]
+                    if showRgbWindow:
+                        frame = inPreview.getCvFrame()                    
+                        height = frame.shape[0]
+                        width  = frame.shape[1]
+                        
                     with detection_lock:
                         _personDetections = []
                         _objectDetections = []
-                        for detection in detections:                
-                            # Denormalize bounding box
-                            if showRgbWindow:
-                                x1 = int(detection.xmin * width)
-                                x2 = int(detection.xmax * width)
-                                y1 = int(detection.ymin * height)
-                                y2 = int(detection.ymax * height)
+                        for tracklet in tracklets:                
                             try:
-                                label = labelMap[detection.label]
+                                label = labelMap[tracklet.label]
                             except:
-                                label = detection.label
+                                label = tracklet.label
                                 
                             str_label = str(label)
                             if str_label == "person":
                                 _personDetections.append(MyDetection(str_label,
-                                                                     detection.spatialCoordinates.x, 
-                                                                     detection.spatialCoordinates.y,
-                                                                     detection.spatialCoordinates.z,
-                                                                     [(detection.xmax + detection.xmin) / 2.0,
-                                                                      (detection.ymax + detection.ymin) / 2.0],
-                                                                     detection.confidence))
-                                #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
-                                #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                                                                     tracklet.spatialCoordinates.x, 
+                                                                     tracklet.spatialCoordinates.y,
+                                                                     tracklet.spatialCoordinates.z,
+                                                                     [(tracklet.srcImgDetection.xmax + tracklet.srcImgDetection.xmin) / 2.0,
+                                                                      (tracklet.srcImgDetection.ymax + tracklet.srcImgDetection.ymin) / 2.0],
+                                                                     tracklet.srcImgDetection.confidence,
+                                                                     tracklet.id,
+                                                                     tracklet.status))
+                                #if showRgbWindow:
+                                    #theta = -math.degrees(math.asin(tracklet.spatialCoordinates.x/tracklet.spatialCoordinates.z))
+                                    #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
         
                             else:
                                 _objectDetections.append(MyDetection(str_label,
-                                                                     detection.spatialCoordinates.x, 
-                                                                     detection.spatialCoordinates.y,
-                                                                     detection.spatialCoordinates.z,
-                                                                     [(detection.xmax + detection.xmin) / 2.0,
-                                                                      (detection.ymax + detection.ymin) / 2.0],
-                                                                     detection.confidence))
+                                                                     tracklet.spatialCoordinates.x, 
+                                                                     tracklet.spatialCoordinates.y,
+                                                                     tracklet.spatialCoordinates.z,
+                                                                     [(tracklet.srcImgDetection.xmax + tracklet.srcImgDetection.xmin) / 2.0,
+                                                                      (tracklet.srcImgDetection.ymax + tracklet.srcImgDetection.ymin) / 2.0],
+                                                                     tracklet.srcImgDetection.confidence,
+                                                                     tracklet.id,
+                                                                     tracklet.status))
                             if label == "sports ball":
                                 l = "baseball"
                             else:
                                 l = label
                             
                             if showRgbWindow:
+                                # Denormalize bounding box
+                                x1 = int(tracklet.srcImgDetection.xmin * width)
+                                x2 = int(tracklet.srcImgDetection.xmax * width)
+                                y1 = int(tracklet.srcImgDetection.ymin * height)
+                                y2 = int(tracklet.srcImgDetection.ymax * height)
                                 cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, "{:.2f}".format(tracklet.srcImgDetection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"X: {int(tracklet.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"Y: {int(tracklet.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"Z: {int(tracklet.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                cv2.putText(frame, f"ID: {[tracklet.id]}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+                                cv2.putText(frame, tracklet.status.name, (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)                            
                                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
                     
                     if showRgbWindow:                    
