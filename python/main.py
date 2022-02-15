@@ -1587,20 +1587,21 @@ def handle_response(sdp, phrase, check_hot_word = True):
     if "you see" in phrase:
         results = detect.detect_objects(top_count=3)
         print(results)
-        res_count = len(results) 
-        if res_count > 0 and results[0].percent >= 40:
-            reply_str = "I see a " + results[0].label
-            if res_count == 2 and results[1].percent >= 40:
-                reply_str += " and a " + results[1].label
-            elif res_count > 2:
-                for i in range(1, res_count - 1):
-                    if results[i].percent >= 40:
-                        reply_str += ", a " +results[i].label
-                if results[res_count - 1].percent >= 40:
-                    reply_str += " and a " + results[res_count - 1].label
-        else:
-            reply_str = "I don't see anything I recognize."
-        speak(reply_str)
+        if results is not None:
+            res_count = len(results) 
+            if res_count > 0 and results[0].percent >= 40:
+                reply_str = "I see a " + results[0].label
+                if res_count == 2 and results[1].percent >= 40:
+                    reply_str += " and a " + results[1].label
+                elif res_count > 2:
+                    for i in range(1, res_count - 1):
+                        if results[i].percent >= 40:
+                            reply_str += ", a " +results[i].label
+                    if results[res_count - 1].percent >= 40:
+                        reply_str += " and a " + results[res_count - 1].label
+            else:
+                reply_str = "I don't see anything I recognize."
+            speak(reply_str)
         return HandleResponseResult.Handled
     
     if "identify this" in phrase:
@@ -2238,26 +2239,29 @@ def follow_me():
     backup_cnt = 0
     while _following:
         if time.monotonic() - last_track_update > 3.0:
-            print("follow update")
             ts = oakd.get_track_status()
-            if ts.tracking:
-                ts.object.z -= 1.0 # come up to the object within certain distance
+            if ts.tracking == oakd.TrackingResult.Tracked:
+                ts.object.z -= 1.2 # come up to the object within certain distance
                 robot_pose = sdp.pose()
                 heading = math.radians(robot_pose.yaw + oakd.getYaw() + ts.object.theta)
                 xt = robot_pose.x + ts.object.z * math.cos(heading)
                 yt = robot_pose.y + ts.object.z * math.sin(heading)
-                if distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
-                    print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + oakd.getYaw() + ts.object.theta))
+                if ts.object.z > 0.25 or distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
+                    #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + oakd.getYaw() + ts.object.theta))
                     oakd.set_track_turn_base(False)
                     if ts.object.z > 0:
-                        sdp.moveToFloat(xt, yt)
+                        sdp.moveToFloatWithYaw(xt, yt, heading)
                     elif ts.object.z < 0: # too close, back up
                         sdp.cancelMoveAction()
-                        print("too close, backing up")
+                        #print("too close, backing up")
                         backup = 5
                     _last_goal_pos = (xt, yt)
                 else:
                     oakd.set_track_turn_base(True)
+            # elif _sdp.getMoveActionStatus() != ActionStatus.Running and ts.tracking == oakd.TrackingResult.Lost:
+            #     speak("Sorry, I lost you.")
+            #     # tracking id will be a new one at this point so reset the tracker to take the closet person
+            #     oakd.clearLastTrackedObj()
             last_track_update = time.monotonic()
         if backup > 0:
             backup_cnt += 1

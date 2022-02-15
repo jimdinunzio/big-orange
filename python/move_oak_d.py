@@ -267,10 +267,20 @@ _track_turn_base = True
 _track_base_time = time.monotonic()
 _track_base_turn_count = 0
 
+class TrackingResult(Enum):
+    """Enumerated type for tracking result"""
+    def __init__(self, number):
+        self._as_parameter__ = number
+
+    Tracked = 0
+    Not_Tracked = 1
+    Lost = 2
+
+
 class TrackStatus(object):
-    def __init__(self, object=None, tracking=False):
+    def __init__(self, object=None, trackingRes=TrackingResult.Not_Tracked):
         self.object = object
-        self.tracking = tracking
+        self.tracking = trackingRes
 
 _track_status = TrackStatus()
 _track_status_lock = Lock()
@@ -317,14 +327,21 @@ def get_track_status():
     with _track_status_lock:
         return deepcopy(_track_status)
     
-def publish_tracked(detection):
+def clearLastTrackedObj():
+    global _last_tracked_object
+    _last_tracked_object = None
+
+def publish_tracked(detection, wasLost=False):
     global _tracked_duration
     with _track_status_lock:
         if detection != None:    
             _track_status.object = detection
-            _track_status.tracking = True
+            _track_status.tracking = TrackingResult.Tracked
+        elif wasLost:
+            _track_status.tracking = TrackingResult.Lost
         else:
-            _track_status.tracking = False
+            _track_status.tracking = TrackingResult.Not_Tracked
+        
     # Duration tracked/not tracked
     _tracked_duration = time.monotonic() - _detected_time
 
