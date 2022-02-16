@@ -285,15 +285,8 @@ class TrackStatus(object):
 _track_status = TrackStatus()
 _track_status_lock = Lock()
 
-def turn_imm(vel):
-    if vel > 0:
-        _oakd_sdp.left()
-    elif vel < 0:
-        _oakd_sdp.right()
-
 def update_base_pose_tracking():
     global _track_base_track_pan_ave, _track_base_track_vel, _track_base_time
-    global _track_base_turn_count
 
     pan = getYaw()
     if _track_base_track_pan_ave == None:
@@ -301,27 +294,15 @@ def update_base_pose_tracking():
     else:
         _track_base_track_pan_ave = _track_base_track_pan_ave*0.5 + pan*0.5
 
-    if abs(getYaw()) > 35.0:
-        _track_base_track_vel = math.copysign(0.1, _track_base_track_pan_ave)
-        if _track_base_turn_count == 0:
-            _track_base_turn_count = 8
+    if abs(getYaw()) > 30.0:
+        _track_base_track_vel = math.copysign(0.05, _track_base_track_pan_ave)
     else:
         if _track_base_track_vel == 0.0:
             return
         _track_base_track_vel = 0.0
     
-    # call every 200ms to keep turning slowly
     if _track_base_track_vel != 0.0:
-         if time.monotonic() - _track_base_time >= 0.200 and _track_base_turn_count > 0:
-            if _track_base_turn_count > 3:
-                turn_imm(_track_base_track_vel)
-            _track_base_turn_count -= 1
-            #print("updating base turn to ", _track_base_track_vel)
-            _track_base_time = time.monotonic()
-    else: # _track_base_track_vel == 0.0 
-        #print("stopping base turn")
-        _track_base_turn_count = 0
-        turn_imm(0.0) #stop
+        _oakd_sdp.rotate(_track_base_track_vel)
 
 def get_track_status():
     with _track_status_lock:
@@ -349,7 +330,7 @@ def update_tracking(detections):
     global _last_tracked_object, _last_detected_time, _detected_time
     tracked_object = None
     publish = False
-    
+
     if detections != None:
         for det in detections:
             if det.label != "person" or \
@@ -360,20 +341,20 @@ def update_tracking(detections):
             if _last_tracked_object != None and \
                 _last_tracked_object.id == det.id:
 
-                # Currently tracked object is still detected
-                tracked_object = _last_tracked_object = det
-                _last_detected_time = time.monotonic()
-                publish = True
-                break
+                    # Currently tracked object is still detected
+                    tracked_object = _last_tracked_object = det
+                    _last_detected_time = time.monotonic()
+                    publish = True
+                    break
                 
-            # Select the closest person
+                # Select the closest person
             if tracked_object == None or tracked_object.z > det.z:
                 tracked_object = det
 
     # Delay a bit before switching away to different person
     if _last_tracked_object == None or \
         (time.monotonic() - _last_detected_time > 1.0):
-
+        
         # Reset the start time of tracking/not tracking if
         # transitioning from not tracking to tracking or
         # vice versa (but not on each timeout while not
@@ -381,8 +362,8 @@ def update_tracking(detections):
         if _last_tracked_object != None:
             _detected_time = time.monotonic()
 
-        _last_tracked_object = tracked_object
-        _last_detected_time = time.monotonic()
+            _last_tracked_object = tracked_object
+            _last_detected_time = time.monotonic()
         publish = True
         #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
 
@@ -419,10 +400,17 @@ def tracker_thread(mdai, mode):
     _oakd_sdp = my_sdp_client.MyClient()
     sdp_comm.connectToSdp(_oakd_sdp)
 
+    _oakd_sdp.wakeup()
+    last_wakeup = time.monotonic()
+
     track_cnt = 0
     if mode == TrackerMode.TrackScan:
         startSweepingBackAndForth(count=3, speed=1)
     while _tracking_run:
+        # keep lidar spinning for quick movement response
+        if time.monotonic() - last_wakeup > 50:
+            _oakd_sdp.wakeup()
+            last_wakeup = time.monotonic()
         detections = mdai.getPersonDetections()
         tracked_object = update_tracking(detections)
         if mode == TrackerMode.TrackScan:

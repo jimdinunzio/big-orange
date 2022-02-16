@@ -10,7 +10,7 @@ from threading import Lock
 import sdp_comm
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
@@ -2248,6 +2248,7 @@ def follow_me():
                 yt = robot_pose.y + ts.object.z * math.sin(heading)
                 if ts.object.z > 0.25 or distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
                     #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + oakd.getYaw() + ts.object.theta))
+                    # disallow base turning when setting a nav target
                     oakd.set_track_turn_base(False)
                     if ts.object.z > 0:
                         sdp.moveToFloatWithYaw(xt, yt, heading)
