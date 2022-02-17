@@ -330,7 +330,7 @@ class MyDepthAI:
                         if showDepthWindow:
                             cv2.imshow("depth", depthFrameColor)
                         
-                        cv2.waitKey(50)
+                        cv2.waitKey(45)
                     
                     cv2.destroyAllWindows()
             except Exception as e:

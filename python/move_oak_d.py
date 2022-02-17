@@ -196,9 +196,9 @@ def servo_update(axis, obj):
         #print('Axis: %s, Object to track: [xmin: %f, xmax: %f, ymin: %f]' % (axis, obj.xmin, obj.xmax, obj.ymin))
 
         if axis == ServoAxis.Yaw:
-            yaw_obj_ave = yaw_obj_ave * 0.2 + obj.bboxCtr[0] * 0.8
+            yaw_obj_ave = yaw_obj_ave * .1 + obj.bboxCtr[0] * .9
             diff = 0.5 - yaw_obj_ave
-            adj = diff * 10.0
+            adj = diff * 7.5
             if abs(adj) < 1.0:
                 adj = 0.0
             setYaw(_yaw + adj, 0)
@@ -209,9 +209,9 @@ def servo_update(axis, obj):
             yaw_auto_center_time = time.monotonic()
 
         else: # axis == ServoAxis.Pitch
-            pitch_obj_ave = pitch_obj_ave * 0.5 + obj.ymin * 0.5
+            pitch_obj_ave = pitch_obj_ave * 0.1 + obj.ymin * 0.9
             diff = pitch_obj_ave - 0.25
-            adj = diff * 10.0
+            adj = diff * 7.5
             if abs(adj) < 1.0:
                 adj = 0.0
             setPitch(_pitch + adj, 0)
@@ -421,14 +421,11 @@ def tracker_thread(mdai, mode):
                 stopSweepingBackAndForth()
                 mode = TrackerMode.Track
         elif mode == TrackerMode.Track:
-            track_cnt += 1
-            if track_cnt >= 2:
-                track_cnt = 0
-                servo_update(ServoAxis.Yaw, tracked_object)
-                servo_update(ServoAxis.Pitch, tracked_object)
+            servo_update(ServoAxis.Yaw, tracked_object)
+            servo_update(ServoAxis.Pitch, tracked_object)
 
-                if _track_turn_base:
-                    update_base_pose_tracking()
+            if _track_turn_base:
+                update_base_pose_tracking()
 
         if tracked_object == None:
             _last_detected_time == None
