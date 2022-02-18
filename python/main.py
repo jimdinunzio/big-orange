@@ -14,7 +14,7 @@ _show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
-_google_mode = False
+_google_mode = True
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = True # should eyes be displayed or not
@@ -47,7 +47,7 @@ _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
 _internet = True # True when connected to the internet
-_use_internet = False # If False don't use internet
+_use_internet = True # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
@@ -1931,30 +1931,16 @@ def listen():
     def adj_spch_recog_ambient(r, m):
         # adjust microphone for ambient noise:
         # default dynamic thresholding does not work well, so disable it
+        # the reason is that it only can sense reduction in noise and set the threshold lower.
+        # it cannot set the threshold higher because if it hears something higher, then it assumes that is
+        # speech and breaks out of the adjustment code to process the speech.
         # calibrate with r.adjust_for_ambient_noise(source)
         # 0 = it hears everything. 4000 = it hears nothing.
         
         r.dynamic_energy_threshold = False
-        speak("Calibrating for ambient noise level. A moment of silence please...")
-        with m as source: r.adjust_for_ambient_noise(source)
+        with m as source: r.adjust_for_ambient_noise(source, duration=0.5)
         r.energy_threshold = max(300, r.energy_threshold)
-        thresh_str = "{:.0f}".format(r.energy_threshold)
-        speak("Min energy threshold to " + thresh_str)
-        speak("Please Say something.")
-        with m as source: audio = r.listen(source)
-        print("Got it! Now to recognize it...")
-        try:
-            # recognize speech using Google Speech Recognition
-            value = r.recognize_google(audio)
-
-            # we need some special handling here to correctly print unicode characters to standard output
-            str = "{}".format(value)
-            speak("You said, " + str)
-        except sr.UnknownValueError:
-            speak("Oops! Didn't catch that")
-        except sr.RequestError as e:
-            str = "{0}".format(e)
-            speak("Uh oh! Couldn't request results from Google Speech Recognition service; " + str)
+        print("listener energy threshold set to: ", r.energy_threshold)
 
     # beginning of actual Listen() code - <clean this up!>
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
@@ -2002,7 +1988,7 @@ def listen():
         try:
             with mic as source:
                 print("Say something!")
-                audio = r.listen(source, phrase_time_limit= 2 if _goal != "" else None)
+                audio = r.listen(source, phrase_time_limit = 7)
                 print("Your speech ended or timed out.")
         except Exception as e:
             print(e)
@@ -2047,6 +2033,9 @@ def listen():
     def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
             phrase = listenFromGoogleSpeechRecog(r, mic, sr)
+            # slip in an ambient noise level adjustment here because some speech may have just 
+            # ended or a timeout occurred.
+            adj_spch_recog_ambient(r, mic)
             handle_response_sync(sdp, phrase, check_hot_word)
         except:
             speak("sorry, i could not do what you wanted.")
