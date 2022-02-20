@@ -1123,6 +1123,21 @@ def deliverToPersonInRoom(person, package, room):
     else: # in the same room, just deliver to person
         _goal = "deliver"
 
+def come_here():
+    global _goal
+    ps = searchForPerson(random.randint(0,1))
+    if len(ps) > 0:
+        z = 9999.0
+        # find closest person
+        for p in ps:
+            if p.z < z:
+                z = p.z
+
+        setLocationOfObj("person", p)
+        _goal = "person"
+    else:
+        speak("sorry, i could not find you.")
+
 def set_handling_response(value):
     global _handling_resp
     with _handling_resp_lock:
@@ -1645,7 +1660,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
         start_tracking()
         return HandleResponseResult.Handled
 
-    if phrase == "stop tracking":
+    if phrase == "stop tracking me":
         speak("Ok. I will stop tracking you.")
         stop_tracking()
         return HandleResponseResult.Handled
@@ -1721,18 +1736,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
 
     if phrase.startswith("come here"):
         speak("Ok.")
-        ps = searchForPerson(random.randint(0,1))
-        if len(ps) > 0:
-            z = 9999.0
-            # find closest person
-            for p in ps:
-                if p.z < z:
-                    z = p.z
-
-            setLocationOfObj("person", p)
-            _goal = "person"
-        else:
-            speak("sorry, i could not find you.")
+        Thread(target = come_here).start()
         return HandleResponseResult.Handled
 
     if phrase.startswith("et = "):
@@ -1999,7 +2003,7 @@ def listen():
         try:
             with mic as source:
                 print("Say something!")
-                audio = r.listen(source, phrase_time_limit = 7)
+                audio = r.listen(source, timeout=5, phrase_time_limit = 7)
                 print("Your speech ended or timed out.")
         except Exception as e:
             print(e)

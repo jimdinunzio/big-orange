@@ -196,7 +196,7 @@ def servo_update(axis, obj):
         #print('Axis: %s, Object to track: [xmin: %f, xmax: %f, ymin: %f]' % (axis, obj.xmin, obj.xmax, obj.ymin))
 
         if axis == ServoAxis.Yaw:
-            yaw_obj_ave = yaw_obj_ave * .1 + obj.bboxCtr[0] * .9
+            yaw_obj_ave = yaw_obj_ave * 0.1 + obj.bboxCtr[0] * 0.9
             diff = 0.5 - yaw_obj_ave
             adj = diff * 7.5
             if abs(adj) < 1.0:
