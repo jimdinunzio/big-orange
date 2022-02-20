@@ -32,7 +32,7 @@ _DELIVERY_RESPONSES = [
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
 
 _LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT, "dining area": _DINING_AREA_RECT}
-_dai_fps = 17 # depthai approx. FPS (adjust lower to conserve CPU usage)
+_dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 
 # Globals
@@ -663,7 +663,7 @@ def statusReport():
     
     
 # rotate 360 and stop if a person is spotted
-def searchForPerson(clockwise):
+def searchForPerson(clockwise = True):
     global _sdp, _action_flag, _interrupt_action
     
     aim_oakd(pitch=70) # aim up to see people better
@@ -681,11 +681,9 @@ def searchForPerson(clockwise):
     oldyaw = _sdp.pose().yaw + 360
     yaw = oldyaw
     sweep = 0
-    nextPause = 20
     recheck_person = False
     while (sweep < 380 and not _interrupt_action):
-        _sdp.right()# if clockwise else _sdp.left()
-        time.sleep(0.1)
+        _sdp.rotate(0.1 if clockwise else -0.1)
         found, ps = checkForPerson()
         if found:
             recheck_person = True
@@ -698,13 +696,8 @@ def searchForPerson(clockwise):
         #print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
 
         oldyaw = yaw
-        if sweep >= nextPause:
-            _sdp.cancelMoveAction()
-            time.sleep(0.3)
-            found, ps = checkForPerson()
-            if found:
-                break
-            nextPause += 20
+        time.sleep(0.05)
+
     if recheck_person:
         print("rechecking person")
         _sdp.cancelMoveAction()
@@ -752,20 +745,16 @@ def checkForObject(obj):
 def checkForPerson():
     ps = None
     p = None
-    for i in range(1,5):
-        try:
-            ps = _mdai.getPersonDetections()
-            if len(ps) > 0:
-                p = ps[0]
-                # If bbox ctr of detection is away from edge then stop
-                if p.bboxCtr[0] >= 0 and p.bboxCtr[0] <= 1:
-                    print("Person at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
-                    return True, ps
-                    break
-        except:
-            None
-            time.sleep(_dai_fps_recip)
-        time.sleep(_dai_fps_recip)
+    try:
+        ps = _mdai.getPersonDetections()
+        if len(ps) > 0:
+            p = ps[0]
+            # If bbox ctr of detection is away from edge then stop
+            if p.bboxCtr[0] >= 0 and p.bboxCtr[0] <= 1:
+                print("Person at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
+                return True, ps
+    except:
+        None
     return False, ps
 
 def setLocationOfObj(obj, p, cam_yaw=0):
@@ -1143,19 +1132,22 @@ def handling_response():
     with _handling_resp_lock:
         return _handling_resp or _handle_resp_thread is not None and _handle_resp_thread.is_alive()
 
-def handle_response_sync(sdp, phrase, check_hot_word = True, assist = True):
+def handle_response_sync(sdp, phrase, check_hot_word = True, assist = False):
     if handling_response():
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
     try:
         handled_result = handle_response(sdp, phrase, check_hot_word)
-        if handled_result == HandleResponseResult.NotHandledUnknown and assist:
-            words = phrase.split()
-            if words[0].lower().startswith(_hotword):
-                words[0] = ''
-            phrase = " ".join(words)
-            _sendToGoogleAssistantFn(phrase)
+        if handled_result == HandleResponseResult.NotHandledUnknown:
+            if assist:
+                words = phrase.split()
+                if words[0].lower().startswith(_hotword):
+                    words[0] = ''
+                phrase = " ".join(words)
+                _sendToGoogleAssistantFn(phrase)
+            else:
+                speak("Sorry, I don't know about that.")
     finally:
         set_handling_response(False)
 
@@ -1531,7 +1523,9 @@ def handle_response(sdp, phrase, check_hot_word = True):
     if phrase.startswith("save map"):
         name = phrase[9:]
         if len(name) == 0:
-            name = _default_map_name
+            speak("please include the name of the map")
+            return HandleResponseResult.Handled
+            #name = _default_map_name
         speak("Ok. I will save map " + name)
         saveMap(name)
         return HandleResponseResult.Handled
@@ -1723,6 +1717,22 @@ def handle_response(sdp, phrase, check_hot_word = True):
         _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
         print("updated location", loc, "to (", pose.x, pose.y, pose.yaw, ")")
         speak("I updated location " + loc)
+        return HandleResponseResult.Handled
+
+    if phrase.startswith("come here"):
+        speak("Ok.")
+        ps = searchForPerson(random.randint(0,1))
+        if len(ps) > 0:
+            z = 9999.0
+            # find closest person
+            for p in ps:
+                if p.z < z:
+                    z = p.z
+
+            setLocationOfObj("person", p)
+            _goal = "person"
+        else:
+            speak("sorry, i could not find you.")
         return HandleResponseResult.Handled
 
     if phrase.startswith("et = "):
@@ -2437,14 +2447,14 @@ def run():
     speak("I'm starting up.")
     oakd.initialize()
 
-    if _execute:
-        res = sdp_comm.connectToSdp(_sdp)
+    res = sdp_comm.connectToSdp(_sdp)
 
+    if _execute:
         if (res == 0):
             _slamtec_on = True
-            loadMap(_default_map_name)
+            #loadMap(_default_map_name)
             # set not to update map by default.
-            _sdp.setUpdate(False)
+            _sdp.setUpdate(True)
             None
         else:
             speak("Something is wrong. I could not connect to Slamtec.")
