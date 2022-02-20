@@ -27,6 +27,7 @@ UI_TITLE_TEXT = "Orange Control"
 BATT_TEXT_BOX_LABEL = "Battery:"
 IP_ADDR_TEXT_BOX_LABEL = "IP Addr:"
 INTERNET_TEXT_BOX_LABEL= "Internet:"
+WIFI_INFO_LABEL = "SSID:"
 LAST_SPEECH_HEARD_LABEL = "Last heard:"
 LAST_SPEECH_SPOKEN_LABEL = "Last spoken:"
 EXIT_BUTTON_LABEL = "Exit"
@@ -42,7 +43,7 @@ import socket
 # dummy stuff for unit testing 
 _dummy_google_mode = True
 
-def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
+def dummy_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
     global _dummy_google_mode
     if opType == OrangeOpType.TextCommand:
         return True
@@ -67,6 +68,8 @@ def dummy_op_request(opType : OrangeOpType, arg1=None, arg2=None):
         return 46
     elif opType == OrangeOpType.LocalizationQuality:
         return 66
+    elif opType == OrangeOpType.WifiSsidAndStrength:
+        return "My Wifi", "95%"
 
 def update():
     pass
@@ -229,16 +232,20 @@ def start(handle_op_request, connect_sdp=True):
     internet_box_rect = pygame.Rect(350, 200, 100, 32)
     internet_box_label_surface = base_font.render(INTERNET_TEXT_BOX_LABEL, True, ORANGE_COLOR)
 
+    # create wifi info 
+    wifi_info_box_rect = pygame.Rect(350, 250, 100, 32)
+    wifi_info_box_label_surface = base_font.render(WIFI_INFO_LABEL, True, ORANGE_COLOR)
+
     # create last heard
-    last_heard_box_rect = pygame.Rect(350, 250, 200, 32)
+    last_heard_box_rect = pygame.Rect(350, 300, 200, 32)
     last_heard_box_label_surface = base_font.render(LAST_SPEECH_HEARD_LABEL, True, ORANGE_COLOR)
 
     # create last spoken
-    last_spoken_box_rect = pygame.Rect(350, 300, 200, 32)
+    last_spoken_box_rect = pygame.Rect(350, 350, 200, 32)
     last_spoken_box_label_surface = base_font.render(LAST_SPEECH_SPOKEN_LABEL, True, ORANGE_COLOR)
 
     # create cmd box rectangle
-    cmd_box_rect = pygame.Rect(350, 350, 300, 32)
+    cmd_box_rect = pygame.Rect(350, 400, 300, 32)
 
     # create exit box button
     exit_box_rect = pygame.Rect(20, 20, 150, 100)
@@ -386,6 +393,7 @@ def start(handle_op_request, connect_sdp=True):
                     internet_status = handle_op_request(sdp, OrangeOpType.InternetStatus)
                     board_temp_str = str(handle_op_request(sdp, OrangeOpType.BoardTemperature)) + "C"
                     local_qual_str = str(handle_op_request(sdp, OrangeOpType.LocalizationQuality)) + "%"
+                    ssid, wifi_strength = handle_op_request(sdp, OrangeOpType.WifiSsidAndStrength)
                     time_to_refresh_control = next_control_refresh()
 
                 # draw title 
@@ -444,6 +452,12 @@ def start(handle_op_request, connect_sdp=True):
                 screen.blit(internet_text_surface, (internet_box_rect.x+10, internet_box_rect.y+5))
                 # draw label
                 screen.blit(internet_box_label_surface, (internet_box_rect.x - internet_box_label_surface.get_width() - 5, internet_box_rect.y + 5))
+
+                # draw wifi info
+                wifi_info_text_surface = base_font.render(ssid + "  (" + wifi_strength + ")", True, "lightgray")
+                screen.blit(wifi_info_text_surface, (wifi_info_box_rect.x+10, wifi_info_box_rect.y+5))
+                # draw label
+                screen.blit(wifi_info_box_label_surface, (wifi_info_box_rect.x - wifi_info_box_label_surface.get_width() - 5, wifi_info_box_rect.y + 5))
 
                 # draw cmd entry label
                 screen.blit(cmd_box_label_surface, (cmd_box_rect.x - cmd_box_label_surface.get_width() - 5, cmd_box_rect.y + 5))

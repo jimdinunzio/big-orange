@@ -16,4 +16,5 @@ class OrangeOpType(Enum):
     BatteryIsCharging = 9
     BoardTemperature = 10
     LocalizationQuality = 11
+    WifiSsidAndStrength = 12
     

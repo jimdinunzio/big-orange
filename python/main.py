@@ -8,6 +8,7 @@ import math
 import random
 from threading import Lock
 import sdp_comm
+import subprocess
 
 # Constants
 _show_rgb_window = True
@@ -2308,6 +2309,19 @@ def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
         return sdp.getBoardTemperature()
     elif opType == OrangeOpType.LocalizationQuality:
         return sdp.getLocalizationQuality()
+    elif opType == OrangeOpType.WifiSsidAndStrength:
+        current_network = subprocess.check_output(["netsh", "wlan", "show", "interfaces"], text=True).split('\n')
+        connected_ssid = ""
+        signal = ""
+        ssid_line = [x for x in current_network if 'SSID' in x and 'BSSID' not in x]
+        if ssid_line:
+            ssid_list = ssid_line[0].split(':')
+            connected_ssid = ssid_list[1].strip()
+        sig_line = [x for x in current_network if 'Signal' in x]
+        if sig_line:
+            signal = sig_line[0].split(':')
+            signal = signal[1].strip()
+        return connected_ssid, signal
         
 ################################################################   
 # This is where data gets initialized from information stored on disk
