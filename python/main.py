@@ -663,8 +663,8 @@ def statusReport():
     
     
 # rotate 360 and stop if a person is spotted
-def searchForPerson(clockwise = True):
-    global _sdp, _action_flag, _interrupt_action
+def searchForPerson(sdp, clockwise = True):
+    global _action_flag, _interrupt_action
     
     aim_oakd(pitch=70) # aim up to see people better
     eyes.setTargetPitchYaw(-70, 0)
@@ -678,17 +678,17 @@ def searchForPerson(clockwise = True):
     # if no person in view, then slowly rotate 360 degrees and check every so often
     _action_flag = True
     
-    oldyaw = _sdp.pose().yaw + 360
+    oldyaw = sdp.pose().yaw + 360
     yaw = oldyaw
     sweep = 0
     recheck_person = False
     while (sweep < 380 and not _interrupt_action):
-        _sdp.rotate(0.1 if clockwise else -0.1)
+        sdp.rotate(0.1 if clockwise else -0.1)
         found, ps = checkForPerson()
         if found:
             recheck_person = True
             break
-        yaw = _sdp.pose().yaw + 360
+        yaw = sdp.pose().yaw + 360
         covered = abs(yaw - oldyaw)
         if covered > 180:
             covered = 360 - covered
@@ -700,7 +700,7 @@ def searchForPerson(clockwise = True):
 
     if recheck_person:
         print("rechecking person")
-        _sdp.cancelMoveAction()
+        sdp.cancelMoveAction()
         time.sleep(0.3)
         for j in range(1,5):
             for i in range(1,5):
@@ -710,8 +710,8 @@ def searchForPerson(clockwise = True):
             if not found:
                 # go back other way
                 deg = -5 if j % 2 == 0 else 5
-                _sdp.rotate(math.radians(deg))
-                _sdp.waitUntilMoveActionDone()
+                sdp.rotate(math.radians(deg))
+                sdp.waitUntilMoveActionDone()
             else:
                 break
             
@@ -757,19 +757,19 @@ def checkForPerson():
         None
     return False, ps
 
-def setLocationOfObj(obj, p, cam_yaw=0):
+def setLocationOfObj(sdp, obj, p, cam_yaw=0):
     p.z -= 1 # come up to the object within certain distance
-    pose = _sdp.pose()
+    pose = sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
     yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
     print("set location of ", obj, " at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
-    _locations[obj] = (xt, yt)
+    _locations[obj] = (xt, yt, math.radians(pose.yaw + cam_yaw + p.theta))
 
 def setFoundObjAsGoal(obj, cam_yaw=0):
     global _sdp, _interrupt_action
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(obj, p, cam_yaw)
+        setLocationOfObj(_sdp, obj, p, cam_yaw)
         return True
     return False
 
@@ -777,7 +777,7 @@ def findObjAndSetGoal(obj, goal, cam_yaw=0):
     global _sdp, _interrupt_action
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(goal, p, cam_yaw)
+        setLocationOfObj(_sdp, goal, p, cam_yaw)
         return True
     return False
 
@@ -799,14 +799,14 @@ def setDeliverToPersonAsGoal():
         print("sweep got a lock on the person")
         return True
     else:
-        ps = searchForPerson(random.randint(0,1))
+        ps = searchForPerson(_sdp,random.randint(0,1))
         if _interrupt_action:
             _interrupt_action = False
             return False
         if len(ps):
             # take first person for now, later check gender/age match
             p = ps[0]
-            setLocationOfObj("deliver", p)
+            setLocationOfObj(_sdp, "deliver", p)
             return True        
     
     return False
@@ -1125,7 +1125,11 @@ def deliverToPersonInRoom(person, package, room):
 
 def come_here():
     global _goal
-    ps = searchForPerson(random.randint(0,1))
+
+    sdp = MyClient()
+    sdp_comm.connectToSdp(sdp)
+
+    ps = searchForPerson(sdp, random.randint(0,1))
     if len(ps) > 0:
         z = 9999.0
         # find closest person
@@ -1133,10 +1137,13 @@ def come_here():
             if p.z < z:
                 z = p.z
 
-        setLocationOfObj("person", p)
+        setLocationOfObj(sdp, "person", p)
         _goal = "person"
     else:
-        speak("sorry, i could not find you.")
+        if _interrupt_action:
+            _interrupt_action = False
+        else:
+            speak("sorry, i could not find you.")
 
 def set_handling_response(value):
     global _handling_resp
@@ -1739,6 +1746,14 @@ def handle_response(sdp, phrase, check_hot_word = True):
         Thread(target = come_here).start()
         return HandleResponseResult.Handled
 
+    if "local speech" in phrase:
+        switch_to_local_speech()
+        return HandleResponseResult.Handled
+
+    if "cloud speech" in phrase:
+        switch_to_cloud_speech()
+        return HandleResponseResult.Handled
+
     if phrase.startswith("et = "):
         global _set_energy_threshold
         if _set_energy_threshold is not None:
@@ -1953,9 +1968,11 @@ def listen():
         # 0 = it hears everything. 4000 = it hears nothing.
         
         r.dynamic_energy_threshold = False
-        with m as source: r.adjust_for_ambient_noise(source, duration=0.5)
-        r.energy_threshold = max(300, r.energy_threshold)
-        print("listener energy threshold set to: ", r.energy_threshold)
+        try:
+            with m as source: r.adjust_for_ambient_noise(source, duration=1)
+        except:
+            None
+        r.energy_threshold = max(100, r.energy_threshold)
 
     # beginning of actual Listen() code - <clean this up!>
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
@@ -1998,7 +2015,7 @@ def listen():
     speak("Hello, My name is Orange. Pleased to be at your service.")
         
     def listenFromGoogleSpeechRecog(r, mic, sr):
-        global _last_speech_heard, _internet
+        global _last_speech_heard, _internet, _google_mode
         # obtain audio from the microphone
         try:
             with mic as source:
@@ -2022,6 +2039,9 @@ def listen():
         except sr.RequestError:
             phrase = ""
             _internet = False
+            # turn off google mode (cloud speech) if no internet so that local speech will stay active
+            # it can be manually turned back on via command
+            _google_mode = False
             speak("I lost my internet connection.")            
         except:
             phrase = ""
@@ -2127,7 +2147,7 @@ def listen():
         except Exception as e:
             print(e)
 
-        while _run_flag and local_listener is not None:
+        while _run_flag and local_listener is not None and not _google_mode:
             time.sleep(2)
     
     # if no longer running, stop listening 
@@ -2296,10 +2316,23 @@ def stop_following():
     else:
         print("Error - trying to stop following, but not currently following.")
 
+def switch_to_local_speech():
+    global  _google_mode
+    _google_mode = False
+    speak("Ok.")
+
+def switch_to_cloud_speech():
+    global  _google_mode
+    if not _internet or not _use_internet:
+        speak("I cannot connect to cloud speech.")
+    else:
+        _google_mode = True
+        speak("Ok.")
+    
 from orange_utils import *
 
 def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
-    global _google_mode, _last_speech_heard
+    global _last_speech_heard
     if opType == OrangeOpType.TextCommand:
         return handle_response_async(sdp, arg1, check_hot_word=False)
     elif opType == OrangeOpType.BatteryPercent:
@@ -2313,7 +2346,10 @@ def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
     elif opType == OrangeOpType.GoogleSpeech:
         return _google_mode
     elif opType == OrangeOpType.ToggleGoogleSpeech:
-        _google_mode = not _google_mode
+        if _google_mode:
+            switch_to_local_speech()
+        else:
+            switch_to_cloud_speech()
         return _google_mode
     elif opType == OrangeOpType.InternetStatus:
         return _internet
