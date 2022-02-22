@@ -15,7 +15,7 @@ _show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
-_google_mode = True
+_google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = True # should eyes be displayed or not
@@ -71,6 +71,7 @@ _set_energy_threshold = None
 _last_speech_heard = ""
 _locations = {}
 _mdai = None
+_move_oak_d = None
 
 import parse
 import tts.sapi
@@ -93,7 +94,7 @@ import ai_vision.detect as detect
 import ai_vision.classify as classify
 import winspeech
 from enum import Enum
-import move_oak_d as oakd
+import move_oak_d
 import my_depthai
 import eyes
 import facial_recognize as fr
@@ -384,7 +385,7 @@ def handleGotoLocation():
             print("got a lock on ", _sub_goal)
             _goal_queue.append(_sub_goal)
             speak("I see a " + _sub_goal)
-            oakd.yawHome()
+            _move_oak_d.yawHome()
             eyes.setHome()
             sdp.setSpeed(_user_set_speed) #restore speed after finding obj
 
@@ -394,7 +395,7 @@ def handleGotoLocation():
                 sub_goal_just_found = True
                 sub_goal_cleanup = _sub_goal
             else:
-                oakd.startSweepingBackAndForth()
+                _move_oak_d.startSweepingBackAndForth()
         while(_run_flag and _interrupt_action == False and not sub_goal_just_found):
 #            try:
             if _sub_goal == "":
@@ -417,9 +418,9 @@ def handleGotoLocation():
                 if len(objDict) > 0 and objDict[_sub_goal] > 0.05:
                     print("spotted", _sub_goal, ", stopping to get a look")
                     sdp.cancelMoveAction()
-                    oakd.stopSweepingBackAndForth()
+                    _move_oak_d.stopSweepingBackAndForth()
                     time.sleep(2)
-                    if setFoundObjAsGoal(_sub_goal, cam_yaw=oakd.getYaw()):
+                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw()):
                         gotLock()
                         sub_goal_just_found = True
                         sub_goal_cleanup = _sub_goal
@@ -427,9 +428,9 @@ def handleGotoLocation():
                     else:
                         print("saw", _sub_goal, "but lost track of it")
                         #speak("I thought I saw a " + _sub_goal + ". I'll look again.")
-                        oakd.startSweepingBackAndForth(1)
-                        while oakd.isSweeping():
-                            if setFoundObjAsGoal(_sub_goal, cam_yaw=oakd.getYaw()):
+                        _move_oak_d.startSweepingBackAndForth(1)
+                        while _move_oak_d.isSweeping():
+                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw()):
                                 gotLock()
                                 sub_goal_just_found = True
                                 sub_goal_cleanup = _sub_goal
@@ -450,8 +451,8 @@ def handleGotoLocation():
         
         if _interrupt_action == True:
             _interrupt_action = False
-            oakd.stopSweepingBackAndForth()
-            oakd.allHome()
+            _move_oak_d.stopSweepingBackAndForth()
+            _move_oak_d.allHome()
             eyes.setHome()
             _goal_queue.clear()
 
@@ -474,7 +475,7 @@ def handleGotoLocation():
                     _deliveree = None
                 elif _goal == sub_goal_cleanup:
                     speak("I found the " + _goal)
-                    oakd.allHome()
+                    _move_oak_d.allHome()
                 elif _goal != "person":
                     speak("I've arrived.")
             else:
@@ -502,11 +503,11 @@ def handleGotoLocation():
         _action_flag = False # you've arrived somewhere, so no further action
         _goal = ""
         _sub_goal = ""
-        oakd.stopSweepingBackAndForth()
+        _move_oak_d.stopSweepingBackAndForth()
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
         else:
-            oakd.allHome()
+            _move_oak_d.allHome()
             eyes.setHome()
 
         time.sleep(0.5)
@@ -947,7 +948,7 @@ def waitForObjectToBeTaken(obj):
     a = 0
     mult_objs = obj.endswith("s")
 
-    aim_oakd(yaw=79, pitch=oakd._PITCH_LIMITS[1])
+    aim_oakd(yaw=79, pitch=move_oak_d._PITCH_LIMITS[1])
     eyes.setTargetPitchYaw(70, -40)
 
     if mult_objs: # for multiple objects use voice command to indicate when taken
@@ -985,7 +986,7 @@ def waitForObjectToBeTaken(obj):
             timeout = time.monotonic() + 10
             while found and time.monotonic() < timeout:
                 found = checkForSpecificObject(obj, maxDist=2.5)
-        oakd.allHome()
+        _move_oak_d.allHome()
         eyes.setHome()
     return not found
 
@@ -1021,35 +1022,35 @@ def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
     global _goal
     checkPersons = obj == "person"
     checkObjects = not checkPersons
-    oakd.startSweepingBackAndForth(sweepCount)
+    _move_oak_d.startSweepingBackAndForth(sweepCount)
     lookingAgain = False
-    while (not _interrupt_action) and oakd.isSweeping():
+    while (not _interrupt_action) and _move_oak_d.isSweeping():
         objDict = {}
         checkForObjects([obj], objDict, 9, checkPersons=checkPersons, checkObjects=checkObjects, maxValueLen=9)
         objDict = computePersistance(objDict)
         if len(objDict) > 0 and objDict[obj] > 0.05:
             print("spotted", obj, ", stopping to get a look")
-            oakd.stopSweepingBackAndForth()
+            _move_oak_d.stopSweepingBackAndForth()
             time.sleep(2) 
-            if setFoundObjAsGoal(obj, cam_yaw=oakd.getYaw()):
+            if setFoundObjAsGoal(obj, cam_yaw=_move_oak_d.getYaw()):
                 print("got a lock on ", obj)
                 _goal = goal
-                oakd.yawHome()
+                _move_oak_d.yawHome()
                 # eyes looking to obj or person
                 eyes.setTargetPitchYaw(50 if checkPersons else -50)
                 return True
             else: # obj not found after stopping
                 if lookingAgain:
-                    if oakd.isSweeping():
+                    if _move_oak_d.isSweeping():
                         continue
                     else: # failed to find it
-                        oakd.stopSweepingBackAndForth()
+                        _move_oak_d.stopSweepingBackAndForth()
                         lookingAgain = False
-                        oakd.allHome()
+                        _move_oak_d.allHome()
                         eyes.setHome()
                         return False
                 print("saw", obj, "but lost track of it")
-                oakd.startSweepingBackAndForth(2)
+                _move_oak_d.startSweepingBackAndForth(2)
                 lookingAgain = True
                 continue
 
@@ -1081,7 +1082,7 @@ def deliverToPersonInRoom(person, package, room):
     time.sleep(2)
 
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=oakd._PITCH_LIMITS[1])
+    aim_oakd(yaw=79, pitch=move_oak_d._PITCH_LIMITS[1])
     eyes.setTargetPitchYaw(70, -40)
     _deliveree = person
     _package = package
@@ -1106,7 +1107,7 @@ def deliverToPersonInRoom(person, package, room):
             _package = objLabel
     
     # aim oakd up to for detecting a person
-    aim_oakd(yaw=oakd._YAW_HOME_, pitch=80)
+    aim_oakd(yaw=move_oak_d._YAW_HOME_, pitch=80)
     eyes.setTargetPitchYaw(-70,0)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     if mult_objs:
@@ -1681,7 +1682,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
         new_name = phrase.partition("my name is")[2]
     
     if len(new_name) > 0:
-        oakd.setPitch(70) # pitch up to see person better
+        _move_oak_d.setPitch(70) # pitch up to see person better
         eyes.setTargetPitchYaw(-70, 0)
         speak("Hello " + new_name + ". It's nice to meet you.")
         shutdown_my_depthai()
@@ -1692,11 +1693,11 @@ def handle_response(sdp, phrase, check_hot_word = True):
         shutdown_facial_recog()
         start_depthai_thread()
         eyes.setHome()
-        oakd.allHome()
+        _move_oak_d.allHome()
         return HandleResponseResult.Handled
 
     if phrase.startswith("hello") or phrase.startswith("hi"):
-        oakd.setPitch(70) # pitch up to see person better
+        _move_oak_d.setPitch(70) # pitch up to see person better
         eyes.setTargetPitchYaw(-70, 0)
         shutdown_my_depthai()
         speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
@@ -1715,7 +1716,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
         shutdown_facial_recog()
         start_depthai_thread()
         eyes.setHome()
-        oakd.allHome()
+        _move_oak_d.allHome()
         if not ided:
             speak("I don't believe we have met before. Try telling me your name.")
         return HandleResponseResult.Handled
@@ -2173,9 +2174,9 @@ def recoverLocalization(rect):
 
 def aim_oakd(yaw = None, pitch = None):
     if yaw is not None:
-        oakd.setYaw(yaw)
+        _move_oak_d.setYaw(yaw)
     if pitch is not None:
-        oakd.setPitch(pitch)
+        _move_oak_d.setPitch(pitch)
 
 def initialize_speech():
     global _voice
@@ -2236,10 +2237,10 @@ def start_tracking():
     shutdown_my_depthai()
     # start up the mobilenet with tracker. Yolo doesn't work as well.
     start_depthai_thread(model="mobileNet", use_tracker=True)    
-    oakd.start_tracking(_mdai, trackTurnBase=True)
+    _move_oak_d.start_tracking(_mdai, trackTurnBase=True)
 
 def stop_tracking():
-    oakd.stop_tracking()
+    _move_oak_d.stop_tracking()
     shutdown_my_depthai()
     # restore default depth ai model
     start_depthai_thread()
@@ -2263,17 +2264,17 @@ def follow_me():
     backup_cnt = 0
     while _following:
         if time.monotonic() - last_track_update > 3.0:
-            ts = oakd.get_track_status()
-            if ts.tracking == oakd.TrackingResult.Tracked:
+            ts = _move_oak_d.get_track_status()
+            if ts.tracking == move_oak_d.TrackingResult.Tracked:
                 ts.object.z -= 1.2 # come up to the object within certain distance
                 robot_pose = sdp.pose()
-                heading = math.radians(robot_pose.yaw + oakd.getYaw() + ts.object.theta)
+                heading = math.radians(robot_pose.yaw + _move_oak_d.getYaw() + ts.object.theta)
                 xt = robot_pose.x + ts.object.z * math.cos(heading)
                 yt = robot_pose.y + ts.object.z * math.sin(heading)
                 if ts.object.z > 0.25 or distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
-                    #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + oakd.getYaw() + ts.object.theta))
+                    #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + _move_oak_d.getYaw() + ts.object.theta))
                     # disallow base turning when setting a nav target
-                    oakd.set_track_turn_base(False)
+                    _move_oak_d.set_track_turn_base(False)
                     if ts.object.z > 0:
                         sdp.moveToFloatWithYaw(xt, yt, heading)
                     elif ts.object.z < 0: # too close, back up
@@ -2282,11 +2283,11 @@ def follow_me():
                         backup = 5
                     _last_goal_pos = (xt, yt)
                 else:
-                    oakd.set_track_turn_base(True)
-            # elif _sdp.getMoveActionStatus() != ActionStatus.Running and ts.tracking == oakd.TrackingResult.Lost:
+                    _move_oak_d.set_track_turn_base(True)
+            # elif _sdp.getMoveActionStatus() != ActionStatus.Running and ts.tracking == move_oak_d.TrackingResult.Lost:
             #     speak("Sorry, I lost you.")
             #     # tracking id will be a new one at this point so reset the tracker to take the closet person
-            #     oakd.clearLastTrackedObj()
+            #     _move_oak_d.clearLastTrackedObj()
             last_track_update = time.monotonic()
         if backup > 0:
             backup_cnt += 1
@@ -2423,7 +2424,7 @@ def shutdown_robot():
     print("shutting doen facial recog")
     shutdown_facial_recog()
     print("shutting down move oakd")
-    oakd.shutdown()
+    _move_oak_d.shutdown()
 
     # TBD join threads
     
@@ -2476,7 +2477,7 @@ def load_locations(name):
         _locations = pickle.load(f)
 
 def run():
-    global _sdp, _slamtec_on
+    global _sdp, _slamtec_on, _move_oak_d
     # Start 32 bit bridge server
     _sdp = MyClient()
 
@@ -2485,7 +2486,8 @@ def run():
     #init_camera()
 
     speak("I'm starting up.")
-    oakd.initialize()
+    _move_oak_d = move_oak_d.MoveOakD()
+    _move_oak_d.initialize()
 
     res = sdp_comm.connectToSdp(_sdp)
 

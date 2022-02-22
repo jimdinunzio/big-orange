@@ -10,22 +10,6 @@ from copy import deepcopy
 import my_sdp_client
 import sdp_comm
 
-_YAW_LIMITS = [0, 180]
-_PITCH_LIMITS = [0, 135]
-
-_YAW_HOME_ = 90
-_PITCH_HOME_ = 100
-
-#print("opening board: " + str(board))
-
-_pitchServo = None
-_yawServo = None
-_board = None
-_yaw = 0
-_pitch = 0
-_min_track_confidence = 0.7
-_oakd_sdp = None
-
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""
     def __init__(self, number):
@@ -43,230 +27,6 @@ class TrackerMode(Enum):
     TrackScan = 1
     Track = 2
 
-def clamp(num, min_value, max_value):
-        num = max(min(num, max_value), min_value)
-        return num
-
-def initialize(yaw=_YAW_HOME_, pitch=_PITCH_HOME_):
-    global _board, _pitchServo, _yawServo
-    _board = Arduino('COM6')
-    iter = util.Iterator(_board)
-    iter.start()
-    _pitchServo = _board.get_pin('d:3:s')
-    _yawServo = _board.get_pin('d:5:s')
-    setPitch(pitch, 0)
-    setYaw(yaw, 0)
-
-def setServo(servo, angle, speed):
-    curr = int(servo.read())
-    intAngle = int(angle)
-    r = range(curr, intAngle, speed if curr < intAngle else -speed)
-    for pos in r:
-        servo.write(pos)
-        time.sleep(0.015)
-
-def getPitch(relToHome=True):
-    if relToHome:
-        return _pitch - _PITCH_HOME_
-    else:
-        return _pitch
-
-def setPitch(angle, speed=1):
-    global _pitch
-    angle = clamp(angle, _PITCH_LIMITS[0], _PITCH_LIMITS[1])
-    _pitch = angle
-    if speed == 0:
-        _pitchServo.write(int(angle))
-    else:
-        setServo(_pitchServo, angle, speed)
-
-def getYaw(relToHome=True):
-    if relToHome:
-        return _yaw - _YAW_HOME_
-    else:
-        return _yaw
-
-def setYaw(angle, speed=1):
-    global _yaw
-    angle = clamp(angle, _YAW_LIMITS[0], _YAW_LIMITS[1])
-    _yaw = angle
-    if speed == 0:
-        _yawServo.write(int(angle))
-    else:
-        setServo(_yawServo, angle, speed)
-
-def yawHome():
-    setYaw(_YAW_HOME_) # straight ahead relative to robot heading
-
-def pitchHome():
-    setPitch(_PITCH_HOME_) # parallel to ground
-    
-def allHome():
-    yawHome()
-    pitchHome()
-
-def isSweeping():
-    return _sweeping
-
-_sweeping = False
-_sweeping_thread = None
-
-def servoToEyeYaw(yaw):
-    return (yaw - 90) * (7.0 / 9.0)
-
-def servoToEyePitch(pitch):
-    return pitch - 100
-
-def startSweepingBackAndForth(count=1, speed=2, min=45, max=135):
-    global _sweeping, _sweeping_thread
-    _sweeping = True
-    _sweeping_thread = Thread(target = sweepYawBackAndForth, args=(count,speed,min,max))
-    _sweeping_thread.start()        
-
-def stopSweepingBackAndForth():
-    global _sweeping, _sweeping_thread
-    _sweeping = False
-    if _sweeping_thread is not None:
-        _sweeping_thread.join()
-        _sweeping_thread = None
-
-def sweepYawBackAndForth(count, speed=2, min=45, max=135):
-    global _sweeping
-    _sweeping = True
-    sweep_count = 0
-    yawHome()
-    time.sleep(1.0)
-    sweep_min = min
-    sweep_max = max
-    eyes.setHome()
-    while _sweeping and (count == 0 or sweep_count < count):
-        sweepYaw(_YAW_HOME_, sweep_max, speed)
-        sweepYaw(sweep_max, _YAW_HOME_, speed)
-        sweepYaw(_YAW_HOME_, sweep_min, speed)
-        sweepYaw(sweep_min, _YAW_HOME_, speed)
-        sweep_count += 1
-    _sweeping = False
-
-def sweepYaw(begin, end, speed):
-    if not _sweeping:
-        return
-    inc = speed if begin <= end else -speed
-    for pos in range(begin, end, inc):
-        setYaw(pos, 0)
-        if eyes._going:
-            eyes.setTargetPitchYaw(targetYaw=servoToEyeYaw(pos))
-        if not _sweeping:
-            return
-        time.sleep(0.05)
-    time.sleep(0.50)
-
-def suspend():
-    _pitchServo.disable_reporting()
-    _yawServo.disable_reporting()
-
-def resume():
-    _pitchServo.enable_reporting()
-    _yawServo.enable_reporting()
-
-pitch_auto_center_time = 0.0
-pitch_target_pos = None
-pitch_move_steps = 1.0
-pitch_obj_ave = 0.0
-
-def pitch_auto_center():
-    global pitch_auto_center_time, pitch_target_pos
-    pitch_auto_center_time = 0.0
-    pitch_target_pos = _PITCH_HOME_
-
-yaw_auto_center_time = 0.0
-yaw_target_pos = None
-yaw_move_steps = 1.0
-yaw_obj_ave = 0.0
-
-def yaw_auto_center():
-    global yaw_auto_center_time, yaw_target_pos
-    yaw_auto_center_time = 0.0
-    yaw_target_pos = _YAW_HOME_
-
-def servo_update(axis, obj):
-    global yaw_move_steps, yaw_target_pos, yaw_auto_center_time, yaw_obj_ave, \
-        pitch_move_steps, pitch_target_pos, pitch_auto_center_time, pitch_obj_ave
-    
-    if obj != None:
-        #print('Axis: %s, Object to track: [xmin: %f, xmax: %f, ymin: %f]' % (axis, obj.xmin, obj.xmax, obj.ymin))
-
-        if axis == ServoAxis.Yaw:
-            yaw_obj_ave = yaw_obj_ave * 0.1 + obj.bboxCtr[0] * 0.9
-            diff = 0.5 - yaw_obj_ave
-            adj = diff * 7.5
-            if abs(adj) < 1.0:
-                adj = 0.0
-            setYaw(_yaw + adj, 0)
-            if eyes._going:
-                eyes.setPitchYaw(yaw=servoToEyeYaw(_yaw + adj))
-
-            yaw_target_pos = None
-            yaw_auto_center_time = time.monotonic()
-
-        else: # axis == ServoAxis.Pitch
-            pitch_obj_ave = pitch_obj_ave * 0.1 + obj.ymin * 0.9
-            diff = pitch_obj_ave - 0.25
-            adj = diff * 7.5
-            if abs(adj) < 1.0:
-                adj = 0.0
-            setPitch(_pitch + adj, 0)
-            if eyes._going:
-                eyes.setPitchYaw(pitch=servoToEyePitch(_pitch + adj))
-            pitch_target_pos = None
-            pitch_auto_center_time = time.monotonic()
-
-    else: # obj == None
-        if axis == ServoAxis.Yaw:
-            if yaw_target_pos != None:
-                diff = yaw_target_pos - _yaw
-                if abs(diff) < yaw_move_steps:
-                    yaw_move_steps = abs(diff)
-                setYaw(_yaw + math.copysign(yaw_move_steps, diff), 0)
-                if _yaw == yaw_target_pos or \
-                        _yaw <= _YAW_LIMITS[0] or \
-                        _yaw >= _YAW_LIMITS[1]:
-                        yaw_target_pos = None
-            else:
-                # If wasn't tracking before,
-                # then return to center after a timeout.
-                if yaw_auto_center_time != 0.0 and time.monotonic() - yaw_auto_center_time > 6.0:
-                    yaw_auto_center_time = 0.0
-                    yaw_target_pos = _YAW_HOME_
-                    yaw_move_steps = 3
-
-        else: # axis == ServoAxis.Pitch
-            if pitch_target_pos != None:
-                diff = pitch_target_pos - _pitch
-                if abs(diff) < pitch_move_steps:
-                    pitch_move_steps = abs(diff)
-                setPitch(_pitch + math.copysign(pitch_move_steps, diff), 0)
-                if _pitch == pitch_target_pos or \
-                        _pitch <= _PITCH_LIMITS[0] or \
-                        _pitch >= _PITCH_LIMITS[1]:
-                        pitch_target_pos = None
-            else:
-                # If wasn't tracking before,
-                # then return to center after a timeout.
-                if pitch_auto_center_time != 0.0 and time.monotonic() - pitch_auto_center_time > 6.0:
-                    pitch_auto_center_time = 0.0
-                    pitch_target_pos = _PITCH_HOME_
-                    pitch_move_steps = 3
-                    
-_last_tracked_object = None
-_last_detected_time = None
-_detected_time = time.monotonic()
-_tracked_duration = 0
-_track_base_track_vel = 0.0
-_track_base_track_pan_ave = None
-_track_turn_base = True
-_track_base_time = time.monotonic()
-_track_base_turn_count = 0
-
 class TrackingResult(Enum):
     """Enumerated type for tracking result"""
     def __init__(self, number):
@@ -276,205 +36,404 @@ class TrackingResult(Enum):
     Not_Tracked = 1
     Lost = 2
 
-
 class TrackStatus(object):
     def __init__(self, object=None, trackingRes=TrackingResult.Not_Tracked):
         self.object = object
         self.tracking = trackingRes
 
-_track_status = TrackStatus()
-_track_status_lock = Lock()
+def clamp(num, min_value, max_value):
+        num = max(min(num, max_value), min_value)
+        return num
 
-def update_base_pose_tracking():
-    global _track_base_track_pan_ave, _track_base_track_vel, _track_base_time
+_YAW_LIMITS = [0, 180]
+_PITCH_LIMITS = [0, 135]
 
-    pan = getYaw()
-    if _track_base_track_pan_ave == None:
-        _track_base_track_pan_ave = pan
-    else:
-        _track_base_track_pan_ave = _track_base_track_pan_ave*0.5 + pan*0.5
+_YAW_HOME_ = 90
+_PITCH_HOME_ = 100
 
-    if abs(getYaw()) > 30.0:
-        _track_base_track_vel = math.copysign(0.05, _track_base_track_pan_ave)
-    else:
-        if _track_base_track_vel == 0.0:
-            return
-        _track_base_track_vel = 0.0
+def servoToEyeYaw(yaw):
+    return (yaw - 90) * (7.0 / 9.0)
+
+def servoToEyePitch(pitch):
+    return pitch - 100
+
+class OakDServo(object):
+    """OakD Servo Class for Pitch and Yaw """
+    def __init__(self, axis:ServoAxis, board):
+        self.axis = axis
+        if axis == ServoAxis.Pitch:
+            self.min_angle = _PITCH_LIMITS[0]
+            self.max_angle = _PITCH_LIMITS[1]
+            self.servo = board.get_pin('d:3:s')
+            self.angle = 0
+            self.home_angle = _PITCH_HOME_
+        elif axis == ServoAxis.Yaw:
+            self.min_angle = _YAW_LIMITS[0]
+            self.max_angle = _YAW_LIMITS[1]
+            self.servo = board.get_pin('d:5:s')
+            self.angle = 0
+            self.home_angle = _YAW_HOME_
+
+        self.auto_center_time = 0.0
+        self.target_pos = None
+        self.move_steps = 1.0
+        self.obj_ave = 0.0
+        self.setAngle(self.home_angle, 0)
+
+    def auto_center(self):
+        self.auto_center_time = 0.0
+        self.target_pos = self.home_angle
+
+    def _setAngle(self, angle, speed):
+        curr = int(self.servo.read())
+        intAngle = int(angle)
+        r = range(curr, intAngle, speed if curr < intAngle else -speed)
+        for pos in r:
+            self.servo.write(pos)
+            time.sleep(0.015)
     
-    if _track_base_track_vel != 0.0:
-        _oakd_sdp.rotate(_track_base_track_vel)
-
-def get_track_status():
-    with _track_status_lock:
-        return deepcopy(_track_status)
-    
-def clearLastTrackedObj():
-    global _last_tracked_object
-    _last_tracked_object = None
-
-def publish_tracked(detection, wasLost=False):
-    global _tracked_duration
-    with _track_status_lock:
-        if detection != None:    
-            _track_status.object = detection
-            _track_status.tracking = TrackingResult.Tracked
-        elif wasLost:
-            _track_status.tracking = TrackingResult.Lost
+    def getAngle(self, relToHome=True):
+        if relToHome:
+            return self.angle - self.home_angle
         else:
-            _track_status.tracking = TrackingResult.Not_Tracked
+            return self.angle
+
+    def setAngle(self, angle, speed=1):
+        angle = clamp(angle, self.min_angle, self.max_angle)
+        self.angle = angle
+        if speed == 0:
+            self.servo.write(int(angle))
+        else:
+            self._setAngle(angle, speed)
+
+    def setHome(self):
+        self.setAngle(self.home_angle)
+    
+    def resume(self):
+        self.servo.disable_reporting()
+
+    def resume(self):
+        self.servo.enable_reporting()
+
+    def update(self, obj):
+        if obj != None:
+            #print('Axis: %s, Object to track: [xmin: %f, xmax: %f, ymin: %f]' % (axis, obj.xmin, obj.xmax, obj.ymin))
+            if self.axis == ServoAxis.Yaw:
+                self.obj_ave = self.obj_ave * 0 + obj.bboxCtr[0] * 1
+                diff = 0.5 - self.obj_ave
+                adj = diff * 7.5
+                if abs(adj) < 1.0:
+                    adj = 0.0
+                self.setAngle(self.angle + adj, 0)
+                if eyes._going:
+                    eyes.setPitchYaw(yaw = servoToEyeYaw(self.angle + adj))
+
+            else: # axis == ServoAxis.Pitch
+                self.obj_ave = self.obj_ave * 0 + obj.ymin * 1
+                diff = self.obj_ave - 0.25
+                adj = diff * 7.5
+                if abs(adj) < 1.0:
+                    adj = 0.0
+                self.setAngle(self.angle + adj, 0)
+                if eyes._going:
+                    eyes.setPitchYaw(pitch = servoToEyePitch(self.angle + adj))
+
+            self.target_pos = None
+            self.auto_center_time = time.monotonic()
+
+        else: # obj == None
+            if self.target_pos != None:
+                diff = self.target_pos - self.angle
+                if abs(diff) < self.move_steps:
+                    self.move_steps = abs(diff)
+                newAngle = self.angle + math.copysign(self.move_steps, diff)
+                self.setAngle(newAngle, 0)
+                if eyes._going:
+                    if self.axis == ServoAxis.Yaw:
+                        eyes.setPitchYaw(yaw = servoToEyeYaw(newAngle))
+                    else: # self.axis == ServoAxis.Pitch
+                        eyes.setPitchYaw(pitch = servoToEyePitch(newAngle))
+                if self.angle == self.target_pos or \
+                        self.angle <= self.min_angle or \
+                        self.angle >= self.max_angle:
+                        self.target_pos = None
+            else:
+                # If wasn't tracking before,
+                # then return to center after a timeout.
+                if self.auto_center_time != 0.0 and time.monotonic() - self.auto_center_time > 6.0:
+                    self.auto_center_time = 0.0
+                    self.target_pos = self.home_angle
+                    self.move_steps = 3
+
+class MoveOakD(object):
+    def __init__(self):
+        self.pitchServo = None
+        self.yawServo = None
+        self.board = None
+        self.min_track_confidence = 0.7
+        self.oakd_sdp = None
+        self.sweeping = False
+        self.sweeping_thread = None
+        self.last_tracked_object = None
+        self.last_detected_time = None
+        self.detected_time = time.monotonic()
+        self.tracked_duration = 0
+        self.track_base_track_vel = 0.0
+        self.track_base_track_pan_ave = None
+        self.track_turn_base = True
+        self.track_base_time = time.monotonic()        
+        self.track_status = TrackStatus()
+        self.track_status_lock = Lock()
+        self.tracking_thread = None
+        self.tracking_run = False
+
+    def initialize(self):
+        self.board = Arduino('COM6')
+        iter = util.Iterator(self.board)
+        iter.start()
+        self.pitchServo = OakDServo(ServoAxis.Pitch, self.board)
+        self.yawServo = OakDServo(ServoAxis.Yaw, self.board)
+
+    def allHome(self):
+        self.pitchServo.setHome()
+        self.yawServo.setHome()
+
+    def isSweeping(self):
+        return self.sweeping
+
+    def getYaw(self):
+        return self.yawServo.getAngle()
+
+    def getPitch(self):
+        return self.pitchServo.getAngle()
+
+    def startSweepingBackAndForth(self, count=1, speed=2, min=45, max=135):
+        self.sweeping = True
+        self.sweeping_thread = Thread(target = self.sweepYawBackAndForth, args=(count,speed,min,max))
+        self.sweeping_thread.start()        
+
+    def stopSweepingBackAndForth(self):
+        self.sweeping = False
+        if self.sweeping_thread is not None:
+            self.sweeping_thread.join()
+            self.sweeping_thread = None
+
+    def sweepYawBackAndForth(self, count, speed=2, min=45, max=135):
+        self.sweeping = True
+        sweep_count = 0
+        self.yawServo.setHome()
+        time.sleep(1.0)
+        sweep_min = min
+        sweep_max = max
+        eyes.setHome()
+        while self.sweeping and (count == 0 or sweep_count < count):
+            self.sweepYaw(_YAW_HOME_, sweep_max, speed)
+            self.sweepYaw(sweep_max, _YAW_HOME_, speed)
+            self.sweepYaw(_YAW_HOME_, sweep_min, speed)
+            self.sweepYaw(sweep_min, _YAW_HOME_, speed)
+            sweep_count += 1
+        self.sweeping = False
+
+    def sweepYaw(self, begin, end, speed):
+        if not self.sweeping:
+            return
+        inc = speed if begin <= end else -speed
+        for pos in range(begin, end, inc):
+            self.yawServo.setAngle(pos, 0)
+            if eyes._going:
+                eyes.setTargetPitchYaw(targetYaw=servoToEyeYaw(pos))
+            if not self.sweeping:
+                return
+            time.sleep(0.05)
+        time.sleep(0.50)
+
+    def suspend(self):
+        self.pitchServo.suspend()
+        self.yawServo.suspend()
+
+    def resume(self):
+        self.pitchServo.resume()
+        self.yawServo.resume()
+
+    def update_base_pose_tracking(self):
+        pan = self.yawServo.getAngle()
+        if self.track_base_track_pan_ave == None:
+            self.track_base_track_pan_ave = pan
+        else:
+            self.track_base_track_pan_ave = self.track_base_track_pan_ave*0.5 + pan*0.5
+
+        if abs(self.yawServo.getAngle()) > 30.0:
+            self.track_base_track_vel = math.copysign(0.05, self.track_base_track_pan_ave)
+        else:
+            if self.track_base_track_vel == 0.0:
+                return
+            self.track_base_track_vel = 0.0
         
-    # Duration tracked/not tracked
-    _tracked_duration = time.monotonic() - _detected_time
+        if self.track_base_track_vel != 0.0:
+            self.oakd_sdp.rotate(self.track_base_track_vel)
 
-def update_tracking(detections):
-    global _last_tracked_object, _last_detected_time, _detected_time
-    tracked_object = None
-    publish = False
+    def get_track_status(self):
+        with self.track_status_lock:
+            return deepcopy(self.track_status)
+    
+    def clearLastTrackedObj(self):
+        self.last_tracked_object = None
 
-    if detections != None:
-        for det in detections:
-            if det.label != "person" or \
-                det.confidence < _min_track_confidence or \
-                det.status != dai.dai.Tracklet.TrackingStatus.TRACKED:
-                continue
+    def publish_tracked(self, detection, wasLost=False):
+        with self.track_status_lock:
+            if detection != None:    
+                self.track_status.object = detection
+                self.track_status.tracking = TrackingResult.Tracked
+            elif wasLost:
+                self.track_status.tracking = TrackingResult.Lost
+            else:
+                self.track_status.tracking = TrackingResult.Not_Tracked
+            
+        # Duration tracked/not tracked
+        self.tracked_duration = time.monotonic() - self.detected_time
 
-            if _last_tracked_object != None and \
-                _last_tracked_object.id == det.id:
+    def update_tracking(self, detections):
+        tracked_object = None
+        publish = False
 
-                    # Currently tracked object is still detected
-                    tracked_object = _last_tracked_object = det
-                    _last_detected_time = time.monotonic()
-                    publish = True
-                    break
-                
-                # Select the closest person
-            if tracked_object == None or tracked_object.z > det.z:
-                tracked_object = det
+        if detections != None:
+            for det in detections:
+                if det.label != "person" or \
+                    det.confidence < self.min_track_confidence or \
+                    det.status != dai.dai.Tracklet.TrackingStatus.TRACKED:
+                    continue
 
-    # Delay a bit before switching away to different person
-    if _last_tracked_object == None or \
-        (time.monotonic() - _last_detected_time > 1.0):
+                if self.last_tracked_object != None and \
+                    self.last_tracked_object.id == det.id:
+
+                        # Currently tracked object is still detected
+                        tracked_object = self.last_tracked_object = det
+                        self.last_detected_time = time.monotonic()
+                        publish = True
+                        break
+                    
+                    # Select the closest person
+                if tracked_object == None or tracked_object.z > det.z:
+                    tracked_object = det
+
+        # Delay a bit before switching away to different person
+        if self.last_tracked_object == None or \
+            (time.monotonic() - self.last_detected_time > 1.0):
+            
+            # Reset the start time of tracking/not tracking if
+            # transitioning from not tracking to tracking or
+            # vice versa (but not on each timeout while not
+            # tracking)
+            if self.last_tracked_object != None:
+                self.detected_time = time.monotonic()
+
+            self.last_tracked_object = tracked_object
+            self.last_detected_time = time.monotonic()
         
-        # Reset the start time of tracking/not tracking if
-        # transitioning from not tracking to tracking or
-        # vice versa (but not on each timeout while not
-        # tracking)
-        if _last_tracked_object != None:
-            _detected_time = time.monotonic()
+            publish = True
+            #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
 
-            _last_tracked_object = tracked_object
-            _last_detected_time = time.monotonic()
-        publish = True
-        #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
+        if publish:
+            self.publish_tracked(tracked_object)
 
-    if publish:
-        publish_tracked(tracked_object)
+        return tracked_object
 
-    return tracked_object
+    def set_track_turn_base(self, value):
+        self.track_turn_base = value
 
-_tracking_thread = None
-_tracking_run = False
+    def start_tracking(self, mdai, modeIn=TrackerMode.TrackScan, trackTurnBase=False):
+        self.track_turn_base = trackTurnBase
+        self.tracking_thread = Thread(target = self.tracker_thread, args=(mdai, modeIn,))
+        self.tracking_run = True
+        self.tracking_thread.start()
 
-def set_track_turn_base(value):
-    global _track_turn_base
-    _track_turn_base = value
+    def stop_tracking(self):
+        if self.tracking_thread != None:
+            self.tracking_run = False
+            self.tracking_thread.join()
+        self.tracking_thread = None
 
-def start_tracking(mdai, modeIn=TrackerMode.TrackScan, trackTurnBase=False):
-    global _tracking_run, _tracking_thread, _track_turn_base
-    _track_turn_base = trackTurnBase
-    _tracking_thread = Thread(target = tracker_thread, args=(mdai, modeIn,))
-    _tracking_run = True
-    _tracking_thread.start()
+    def tracker_thread(self, mdai, mode):
+        #print("Tracking thread started")
+        # must establish a separate client and server and connection to SDP because msl loadlib is not thread safe
+        self.oakd_sdp = my_sdp_client.MyClient()
+        sdp_comm.connectToSdp(self.oakd_sdp)
 
-def stop_tracking():
-    global _tracking_run, _tracking_thread
-    if _tracking_thread != None:
-        _tracking_run = False
-        _tracking_thread.join()
-        _tracking_thread = None
+        self.oakd_sdp.wakeup()
+        last_wakeup = time.monotonic()
 
-def tracker_thread(mdai, mode):
-    global _oakd_sdp
-    print("Tracking thread started")
-    # must establish a separate client and server and connection to SDP because msl loadlib is not thread safe
-    _oakd_sdp = my_sdp_client.MyClient()
-    sdp_comm.connectToSdp(_oakd_sdp)
-
-    _oakd_sdp.wakeup()
-    last_wakeup = time.monotonic()
-
-    track_cnt = 0
-    if mode == TrackerMode.TrackScan:
-        startSweepingBackAndForth(count=3, speed=1)
-    while _tracking_run:
-        # keep lidar spinning for quick movement response
-        if time.monotonic() - last_wakeup > 50:
-            _oakd_sdp.wakeup()
-            last_wakeup = time.monotonic()
-        detections = mdai.getPersonDetections()
-        tracked_object = update_tracking(detections)
         if mode == TrackerMode.TrackScan:
+            self.startSweepingBackAndForth(count=3, speed=2)
+        while self.tracking_run:
+            # keep lidar spinning for quick movement response
+            if time.monotonic() - last_wakeup > 50:
+                self.oakd_sdp.wakeup()
+                last_wakeup = time.monotonic()
+            detections = mdai.getPersonDetections()
+            tracked_object = self.update_tracking(detections)
+            if mode == TrackerMode.TrackScan:
+                if tracked_object == None:
+                    if not self.sweeping:
+                        break
+                else: # found object
+                    self.stopSweepingBackAndForth()
+                    mode = TrackerMode.Track
+            elif mode == TrackerMode.Track:
+                self.yawServo.update(tracked_object)
+                self.pitchServo.update(tracked_object)
+
+                if self.track_turn_base:
+                    self.update_base_pose_tracking()
+
             if tracked_object == None:
-                if not _sweeping:
-                    break
-            else: # found object
-                stopSweepingBackAndForth()
-                mode = TrackerMode.Track
-        elif mode == TrackerMode.Track:
-            servo_update(ServoAxis.Yaw, tracked_object)
-            servo_update(ServoAxis.Pitch, tracked_object)
+                self.last_detected_time == None
+            
+            time.sleep(0.050)
+            
+        self.oakd_sdp.disconnect()
+        del self.oakd_sdp
+        self.oakd_sdp = None
+        self.allHome()
+        eyes.setHome()
+        #print("Tracking thread ending")
 
-            if _track_turn_base:
-                update_base_pose_tracking()
-
-        if tracked_object == None:
-            _last_detected_time == None
-        
-        time.sleep(0.050)
-    _oakd_sdp.disconnect()
-    del _oakd_sdp
-    _oakd_sdp = None
-    allHome()
-    eyes.setHome()
-    print("Tracking thread ending")
-
-def shutdown():
-    global _board
-    stop_tracking()
-    allHome()
-    if _board is not None:
-        _board.exit()
-        _board = None
+    def shutdown(self):
+        self.stop_tracking()
+        self.allHome()
+        if self.board is not None:
+            self.board.exit()
+            self.board = None
 
 if __name__ == '__main__':
-    initialize()
-    setYaw(15)
+    m = MoveOakD()
+    m.initialize()
+    m.yawServo.setAngle(15)
     try:
         while(1):
             for pos in range(_YAW_LIMITS[0], _YAW_LIMITS[1]): # goes from 0 degrees to 180 degrees in steps of 1 degree
-                _yawServo.write(pos)
+                m.yawServo.setAngle(pos, 0)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)
             for pos in range(_YAW_LIMITS[1], _YAW_LIMITS[0], -1): # goes from 180 degrees to 0 degrees
-                _yawServo.write(pos)
+                m.yawServo.setAngle(pos, 0)
                 time.sleep(0.015)                       # waits 15ms for the servo to reach the position
             time.sleep(.5)        
-            yawHome()
-            setPitch(0)
+            m.yawServo.setHome()
+            m.pitchServo.setAngle(0)
             for pos in range(_PITCH_LIMITS[0], _PITCH_LIMITS[1]):
-                _pitchServo.write(pos)              # tell servo to go to position in variable 'pos'
+                m.pitchServo.setAngle(pos, 0)              # tell servo to go to position in variable 'pos'
                 time.sleep(0.015)
             time.sleep(.5)
             for pos in range(_PITCH_LIMITS[1], _PITCH_LIMITS[0], -1): # goes from 180 degrees to 0 degrees
-                _pitchServo.write(pos)              # tell servo to go to position in variable 'pos'
+                m.pitchServo.setAngle(pos, 0)              # tell servo to go to position in variable 'pos'
                 time.sleep(0.015)
             time.sleep(.5)
-            pitchHome()
-            setYaw(15)
+            m.pitchServo.setHome()
+            m.yawServo.setAngle(15)
     except (KeyboardInterrupt):
-        shutdown()
+        m.shutdown()
         print("KeyboardInterrupt, closing board.")
     except Exception as e:
-        shutdown()
-        print("exception: "  + e.str() + ", closing board")
+        m.shutdown()
+        print("exception: "  + str(e) + ", closing board")
     
