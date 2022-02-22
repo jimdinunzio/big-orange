@@ -74,6 +74,7 @@ class OakDServo(object):
             self.angle = 0
             self.home_angle = _YAW_HOME_
 
+        self.lastBaseYaw = -1
         self.auto_center_time = 0.0
         self.target_pos = None
         self.move_steps = 1.0
@@ -115,23 +116,36 @@ class OakDServo(object):
     def resume(self):
         self.servo.enable_reporting()
 
-    def update(self, obj):
+    def update(self, obj, baseYaw):
         if obj != None:
             #print('Axis: %s, Object to track: [xmin: %f, xmax: %f, ymin: %f]' % (axis, obj.xmin, obj.xmax, obj.ymin))
             if self.axis == ServoAxis.Yaw:
                 self.obj_ave = self.obj_ave * 0 + obj.bboxCtr[0] * 1
                 diff = 0.5 - self.obj_ave
-                adj = diff * 7.5
+                adj = diff * 6
                 if abs(adj) < 1.0:
                     adj = 0.0
-                self.setAngle(self.angle + adj, 0)
+                
+                adjForNavBaseMov = 0
+                if baseYaw != -1 and self.lastBaseYaw != -1:
+                    adjForNavBaseMov = baseYaw - self.lastBaseYaw
+                    delta = abs(adjForNavBaseMov)
+                    if delta > 180:
+                        adjForNavBaseMov = math.copysign(360 - delta, adjForNavBaseMov)
+                    # if adjForNavBaseMov != 0:
+                    #     print("Adjusting for base nav move: ", adjForNavBaseMov)
+                    if adjForNavBaseMov < 0.1:
+                        adjForNavBaseMov = 0
+                
+                self.setAngle(self.angle + adj - adjForNavBaseMov, 0)
                 if eyes._going:
-                    eyes.setPitchYaw(yaw = servoToEyeYaw(self.angle + adj))
+                    eyes.setPitchYaw(yaw = servoToEyeYaw(self.angle + adj + adjForNavBaseMov))
+                # try to compensate if the robot is turning quickly and detections are lost
 
             else: # axis == ServoAxis.Pitch
                 self.obj_ave = self.obj_ave * 0 + obj.ymin * 1
                 diff = self.obj_ave - 0.25
-                adj = diff * 7.5
+                adj = diff * 6
                 if abs(adj) < 1.0:
                     adj = 0.0
                 self.setAngle(self.angle + adj, 0)
@@ -156,7 +170,7 @@ class OakDServo(object):
                 if self.angle == self.target_pos or \
                         self.angle <= self.min_angle or \
                         self.angle >= self.max_angle:
-                        self.target_pos = None
+                        self.target_pos = None                
             else:
                 # If wasn't tracking before,
                 # then return to center after a timeout.
@@ -164,6 +178,7 @@ class OakDServo(object):
                     self.auto_center_time = 0.0
                     self.target_pos = self.home_angle
                     self.move_steps = 3
+        self.lastBaseYaw = baseYaw
 
 class MoveOakD(object):
     def __init__(self):
@@ -209,7 +224,7 @@ class MoveOakD(object):
 
     def startSweepingBackAndForth(self, count=1, speed=2, min=45, max=135):
         self.sweeping = True
-        self.sweeping_thread = Thread(target = self.sweepYawBackAndForth, args=(count,speed,min,max))
+        self.sweeping_thread = Thread(target = self.sweepYawBackAndForth, args=(count,speed,min,max), name="oakd sweep", daemon=False)
         self.sweeping_thread.start()        
 
     def stopSweepingBackAndForth(self):
@@ -343,7 +358,7 @@ class MoveOakD(object):
 
     def start_tracking(self, mdai, modeIn=TrackerMode.TrackScan, trackTurnBase=False):
         self.track_turn_base = trackTurnBase
-        self.tracking_thread = Thread(target = self.tracker_thread, args=(mdai, modeIn,))
+        self.tracking_thread = Thread(target = self.tracker_thread, args=(mdai, modeIn,), name="tracker", daemon=False)
         self.tracking_run = True
         self.tracking_thread.start()
 
@@ -361,10 +376,12 @@ class MoveOakD(object):
 
         self.oakd_sdp.wakeup()
         last_wakeup = time.monotonic()
+        last_heading_update = time.monotonic()
 
         if mode == TrackerMode.TrackScan:
             self.startSweepingBackAndForth(count=3, speed=2)
         while self.tracking_run:
+        
             # keep lidar spinning for quick movement response
             if time.monotonic() - last_wakeup > 50:
                 self.oakd_sdp.wakeup()
@@ -379,8 +396,14 @@ class MoveOakD(object):
                     self.stopSweepingBackAndForth()
                     mode = TrackerMode.Track
             elif mode == TrackerMode.Track:
-                self.yawServo.update(tracked_object)
-                self.pitchServo.update(tracked_object)
+                if time.monotonic() - last_heading_update >= 0.25:
+                    if not self.track_turn_base:
+                        baseYaw = self.oakd_sdp.heading() + 360
+                    else:
+                        baseYaw = -1
+                    last_heading_update = time.monotonic()
+                self.yawServo.update(tracked_object, baseYaw)
+                self.pitchServo.update(tracked_object, baseYaw)
 
                 if self.track_turn_base:
                     self.update_base_pose_tracking()
@@ -391,7 +414,7 @@ class MoveOakD(object):
             time.sleep(0.050)
             
         self.oakd_sdp.disconnect()
-        del self.oakd_sdp
+        self.oakd_sdp.shutdown_server32(kill_timeout=1)
         self.oakd_sdp = None
         self.allHome()
         eyes.setHome()

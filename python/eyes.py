@@ -3,7 +3,7 @@ from pygame.locals import *
 from pygame.compat import geterror
 import math
 import random
-from threading import Lock, Thread
+from threading import Lock
 from orange_utils import OrangeOpType
 import my_sdp_client
 import sdp_comm
@@ -483,7 +483,7 @@ def start(handle_op_request, connect_sdp=True):
 
     if sdp is not None:
         sdp.disconnect()
-        del sdp
+        sdp.shutdown_server32(kill_timeout=1)
         sdp = None
 
     pygame.quit()

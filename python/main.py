@@ -11,7 +11,7 @@ import sdp_comm
 import subprocess
 
 # Constants
-_show_rgb_window = True
+_show_rgb_window = False
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
@@ -48,7 +48,7 @@ _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
 _internet = True # True when connected to the internet
-_use_internet = True # If False don't use internet
+_use_internet = False # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
@@ -512,7 +512,7 @@ def handleGotoLocation():
 
         time.sleep(0.5)
     sdp.disconnect()
-    del sdp
+    sdp.shutdown_server32(kill_timeout=1)
     sdp = None
         
 ################################################################
@@ -1145,6 +1145,9 @@ def come_here():
             _interrupt_action = False
         else:
             speak("sorry, i could not find you.")
+    sdp.disconect()
+    sdp.shutdown_server32(kill_timeout=1)
+    sdp = None
 
 def set_handling_response(value):
     global _handling_resp
@@ -1176,7 +1179,7 @@ def handle_response_sync(sdp, phrase, check_hot_word = True, assist = False):
 
 def handle_response_async(sdp, phrase, check_hot_word = True):
     # issue the command in its own thread
-    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, check_hot_word), name = "handle_response_async")
+    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, check_hot_word), name = "handle_response_async", daemon=False)
     _handle_resp_thread.start()
 
 ###############################################################
@@ -1669,8 +1672,8 @@ def handle_response(sdp, phrase, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if phrase == "stop tracking me":
-        speak("Ok. I will stop tracking you.")
         stop_tracking()
+        speak("Ok. I stopped tracking you.")
         return HandleResponseResult.Handled
 
     new_name = ""
@@ -1744,7 +1747,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
 
     if phrase.startswith("come here"):
         speak("Ok.")
-        Thread(target = come_here).start()
+        Thread(target = come_here, name="Come Here", daemon=False).start()
         return HandleResponseResult.Handled
 
     if "local speech" in phrase:
@@ -1827,11 +1830,11 @@ def handle_response(sdp, phrase, check_hot_word = True):
         
             if room in _locations:
                 # run this in a separate thread so we can take voice answers
-                Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()
+                Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom", daemon=False).start()
             else:
                 speak("Sorry, I don't know how to get to " + room + ".")
         else: # room is None i.e. same room
-            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom").start()            
+            Thread(target=deliverToPersonInRoom, args=(person.strip(), package.strip(), room), name="deliverToPersonInRoom", daemon=False).start()            
         return HandleResponseResult.Handled
         
     deg = 0
@@ -2154,7 +2157,7 @@ def listen():
     # if no longer running, stop listening 
     winspeech.stop_listening()
     sdp.disconnect()
-    del sdp
+    sdp.shutdown_server32(kill_timeout=1)
     sdp = None
 
 def recoverLocalization(rect):
@@ -2192,7 +2195,7 @@ def start_facial_recog(new_name=""):
     else:
         _facial_recog = fr.FacialRecognize(debug=False)
 
-    _facial_recog_thread = Thread(target=_facial_recog.run, daemon=True)
+    _facial_recog_thread = Thread(target=_facial_recog.run, name="Facial Recog", daemon=False)
     _facial_recog_thread.start()
     while not _facial_recog.run_flag:
         time.sleep(1)
@@ -2209,7 +2212,7 @@ def start_depthai_thread(model="tinyYolo", use_tracker=False):
     global _my_depthai_thread, _mdai
     _mdai = my_depthai.MyDepthAI(model, use_tracker)
 
-    _my_depthai_thread = Thread(target = _mdai.startUp, args=(_show_rgb_window, _show_depth_window),daemon=True, name="mdai")
+    _my_depthai_thread = Thread(target = _mdai.startUp, args=(_show_rgb_window, _show_depth_window), name="mdai", daemon=False)
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
@@ -2222,7 +2225,7 @@ def shutdown_my_depthai():
 
 def start_eyes_thread():
     global _eyes_thread
-    _eyes_thread = Thread(target = eyes.start, args=(handle_op_request,), daemon=True, name = "Eyes")
+    _eyes_thread = Thread(target = eyes.start, args=(handle_op_request,), name = "Eyes")
     _eyes_thread.start()
 
 def shutdown_eyes_thread():
@@ -2299,11 +2302,13 @@ def follow_me():
     print("Follow Me thread ending")
     stop_tracking()
     sdp.disconnect()
+    sdp.shutdown_server32(kill_timeout=1)
+    sdp = None
 
 def start_following():
     global _follow_thread
     if _follow_thread is None:
-        _follow_thread = Thread(target=follow_me)
+        _follow_thread = Thread(target=follow_me, name="Follow Me", daemon=False)
         _follow_thread.start()
     else:
         print("Error - trying to start following when already following.")
@@ -2314,8 +2319,6 @@ def stop_following():
     if _follow_thread is not None:
         _follow_thread.join()
         _follow_thread = None
-    else:
-        print("Error - trying to stop following, but not currently following.")
 
 def switch_to_local_speech():
     global  _google_mode
@@ -2385,16 +2388,16 @@ def initialize_robot():
 
     start_depthai_thread()
     
-    _listen_thread = Thread(target = listen, name = "Listen", daemon=True)
+    _listen_thread = Thread(target = listen, name = "Listen")
     _listen_thread.start()
     
-    Thread(target = time_update, daemon=True, name = "Time").start()
+    Thread(target = time_update, name = "Time").start()
         
 #    Thread(target = monitor_motion, name = "People Motion Monitor").start()
     
 #    Thread(target = behaviors, name = "Behaviors").start()
     if _slamtec_on:    
-        Thread(target = handleGotoLocation, daemon=True, name = "Handle Goto Location").start()
+        Thread(target = handleGotoLocation, name = "Handle Goto Location").start()
 
 #    Thread(target = actions, name = "Actions").start()
     
@@ -2417,6 +2420,8 @@ def shutdown_robot():
     cancelAction()
     _run_flag = False
 
+    print("stop following if doing so")
+    stop_following()
     print("shutting down eyes")
     eyes.shutdown()
     print("shutting down depthai")
@@ -2429,13 +2434,27 @@ def shutdown_robot():
     # TBD join threads
     
     # Close all open threads
-    print("\nWaiting for non daemon threads to finish.")
-    threading._shutdown()
+    print("\nWaiting for sub threads to finish.")
+    while True:
+        i = 1
+        count = 0
+        threads = threading.enumerate()
+        print()
+        for item in threads:
+            print(i, ":", item)
+            i += 1
+            if not item.isDaemon():
+                count += 1
+        print()
+        if count <= 1:
+            break
+        time.sleep(2)
     
     #print("waiting for listening thread to complete.")
     #if _listen_thread is not None:
     #    _listen_thread.join()
-    del _sdp
+    _sdp.disconnect()
+    _sdp.shutdown_server32(kill_timeout=1)
     _sdp = None
     print("\nDone!")
    
