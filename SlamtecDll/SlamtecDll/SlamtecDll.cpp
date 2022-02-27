@@ -61,8 +61,12 @@ extern "C" __declspec(dllexport) const char* getMoveActionError();
 extern "C" __declspec(dllexport) int waitUntilMoveActionDone();
 
 extern "C" __declspec(dllexport) int battery();
+extern "C" __declspec(dllexport) bool getBatteryIsCharging();
+extern "C" __declspec(dllexport) int getBoardTemperature();
+extern "C" __declspec(dllexport) int getLocalizationQuality();
 extern "C" __declspec(dllexport) float odometry();
 extern "C" __declspec(dllexport) ExportPose pose();
+extern "C" __declspec(dllexport) float heading();
 extern "C" __declspec(dllexport) void home();
 extern "C" __declspec(dllexport) int getSpeed();
 extern "C" __declspec(dllexport) int setSpeed(int speed);
@@ -300,12 +304,39 @@ extern "C" __declspec(dllexport) int waitUntilMoveActionDone()
 }
 
 //----------------------------------------------------------
+// get battery charging status 
+//	Input: none
+//	Output:	bool => true if charging, false if not
+extern "C" __declspec(dllexport) bool getBatteryIsCharging()
+{
+	return sdp.getBatteryIsCharging();	//returns bool
+}
+
+//----------------------------------------------------------
 // get battery percent
 //	Input: none
 //	Output:	int => battery percent
 extern "C" __declspec(dllexport) int battery()
 {
 	return sdp.getBatteryPercentage();	//returns int
+}
+
+//----------------------------------------------------------
+// get board temperature
+//	Input: none
+//	Output:	int => board temperature
+extern "C" __declspec(dllexport) int getBoardTemperature()
+{
+	return sdp.getBoardTemperature();	//returns int
+}
+
+//----------------------------------------------------------
+// get localization quality
+//	Input: none
+//	Output:	int => localization quality
+extern "C" __declspec(dllexport) int getLocalizationQuality()
+{
+	return sdp.getLocalizationQuality();	//returns int
 }
 
 //----------------------------------------------------------
@@ -317,10 +348,12 @@ extern "C" __declspec(dllexport) float odometry()
 	return static_cast<float>(sdp.getOdometry());
 }
 
+
+
 //----------------------------------------------------------
 // get pose
 //	Input: none
-//	Output:	float => heading
+//	Output:	ExportPose => pose
 extern "C" __declspec(dllexport) ExportPose pose()
 {
 	ExportPose retPose;
@@ -331,6 +364,16 @@ extern "C" __declspec(dllexport) ExportPose pose()
 
 	//str_temp.Format("Pose: x=%f, y=%f, yaw=%f, heading=%f\r\n", pose.x(), pose.y(), pose.yaw(), pose.yaw()*180.0f/M_PI);
 	return retPose;
+}
+
+//----------------------------------------------------------
+// get heading
+//	Input: none
+//	Output:	float => heading
+extern "C" __declspec(dllexport) float heading()
+{
+	Pose pose = sdp.getPose();
+	return static_cast<float>(pose.yaw() * 180.0f / M_PI);
 }
 
 //----------------------------------------------------------
