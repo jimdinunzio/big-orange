@@ -90,6 +90,7 @@ class MyServer(Server32):
         self.lib.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
         self.lib.getMoveActionError.restype = c_char_p
         self.lib.pose.restype = POSE
+        self.lib.heading.restype = c_float
         self.lib.getLaserScan.restype = LASER_POINTS
         self.lib.freeIt.argtypes = c_void_p,
         self.lib.freeIt.restype = None
@@ -101,7 +102,7 @@ class MyServer(Server32):
         return retval
 
     def disconnect(self):
-        self.lib.disconnect();
+        self.lib.disconnect()
     
     def forward(self):
         self.lib.forward()
@@ -173,6 +174,9 @@ class MyServer(Server32):
     def pose(self):
         return self.lib.pose()
     
+    def heading(self):
+        return self.lib.heading()
+
     def home(self):
         return self.lib.home()
     
