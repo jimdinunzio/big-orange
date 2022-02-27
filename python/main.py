@@ -72,6 +72,7 @@ _last_speech_heard = ""
 _locations = {}
 _mdai = None
 _move_oak_d = None
+_mic_array = None
 
 import parse
 import tts.sapi
@@ -101,6 +102,8 @@ import facial_recognize as fr
 import pickle
 import speech_recognition as sr
 import socket
+from mic_array_tuning import Tuning
+import usb.core
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -595,7 +598,8 @@ def loadMap(filename):
     print("Loading map and its locations")
     res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
     if (res == 0):
-        speak("Map and locations are loaded.")
+        _sdp.setUpdate(True)
+        speak("Map and locations are loaded. Mapping is on.")
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
         # if result == False:
@@ -661,12 +665,11 @@ def statusReport():
     answer = "And I'm feeling " + _mood
     speak(answer)
     time.sleep(5)
-    
-    
+        
 # rotate 360 and stop if a person is spotted
-def searchForPerson(sdp, clockwise = True):
+def searchForPerson(sdp, clockwise=True):
     global _action_flag, _interrupt_action
-    
+
     aim_oakd(pitch=70) # aim up to see people better
     eyes.setTargetPitchYaw(-70, 0)
 
@@ -800,7 +803,7 @@ def setDeliverToPersonAsGoal():
         print("sweep got a lock on the person")
         return True
     else:
-        ps = searchForPerson(_sdp,random.randint(0,1))
+        ps = searchForPerson(_sdp, random.randint(0,1))
         if _interrupt_action:
             _interrupt_action = False
             return False
@@ -1123,14 +1126,16 @@ def deliverToPersonInRoom(person, package, room):
         _goal = room
     else: # in the same room, just deliver to person
         _goal = "deliver"
-
-def come_here():
-    global _goal
+    
+def come_here(doa):
+    global _goal, _interrupt_action
 
     sdp = MyClient()
     sdp_comm.connectToSdp(sdp)
+    
+    yawDelta = _mic_array.rotateToDoa(doa)
 
-    ps = searchForPerson(sdp, random.randint(0,1))
+    ps = searchForPerson(sdp, yawDelta < 0)
     if len(ps) > 0:
         z = 9999.0
         # find closest person
@@ -1145,7 +1150,7 @@ def come_here():
             _interrupt_action = False
         else:
             speak("sorry, i could not find you.")
-    sdp.disconect()
+    sdp.disconnect()
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
 
@@ -1158,13 +1163,13 @@ def handling_response():
     with _handling_resp_lock:
         return _handling_resp or _handle_resp_thread is not None and _handle_resp_thread.is_alive()
 
-def handle_response_sync(sdp, phrase, check_hot_word = True, assist = False):
+def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False):
     if handling_response():
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
     try:
-        handled_result = handle_response(sdp, phrase, check_hot_word)
+        handled_result = handle_response(sdp, phrase, doa, check_hot_word)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             if assist:
                 words = phrase.split()
@@ -1177,14 +1182,14 @@ def handle_response_sync(sdp, phrase, check_hot_word = True, assist = False):
     finally:
         set_handling_response(False)
 
-def handle_response_async(sdp, phrase, check_hot_word = True):
+def handle_response_async(sdp, phrase, doa, check_hot_word = True):
     # issue the command in its own thread
-    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, check_hot_word), name = "handle_response_async", daemon=False)
+    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, doa, check_hot_word), name = "handle_response_async", daemon=False)
     _handle_resp_thread.start()
 
 ###############################################################
 # Command Handler
-def handle_response(sdp, phrase, check_hot_word = True):
+def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _run_flag, _goal, _listen_flag, _last_phrase
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
@@ -1747,7 +1752,7 @@ def handle_response(sdp, phrase, check_hot_word = True):
 
     if phrase.startswith("come here"):
         speak("Ok.")
-        Thread(target = come_here, name="Come Here", daemon=False).start()
+        Thread(target = come_here, args=(doa,), name="Come Here", daemon=False).start()
         return HandleResponseResult.Handled
 
     if "local speech" in phrase:
@@ -1977,6 +1982,7 @@ def listen():
         except:
             None
         r.energy_threshold = max(100, r.energy_threshold)
+        print("ambient energy threshold changed to ", r.energy_threshold)
 
     # beginning of actual Listen() code - <clean this up!>
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
@@ -2025,16 +2031,17 @@ def listen():
             with mic as source:
                 print("Say something!")
                 audio = r.listen(source, timeout=5, phrase_time_limit = 7)
+                doa = _mic_array.getDoa()
                 print("Your speech ended or timed out.")
         except Exception as e:
             print(e)
-            return ""
+            return "", 0
         
         # recognize speech using Google Speech Recognition
         try:
             phrase = r.recognize_google(audio)
             _internet = True
-            print("I heard: " + phrase)
+            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
             _last_speech_heard = phrase
         except sr.UnknownValueError:
             phrase = ""
@@ -2050,7 +2057,7 @@ def listen():
         except:
             phrase = ""
             print("Unknown speech recognition error.")
-        return phrase
+        return phrase, doa
         
     def sendToGoogleAssistant(phrase):
         global _internet
@@ -2071,37 +2078,38 @@ def listen():
 
     def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
-            phrase = listenFromGoogleSpeechRecog(r, mic, sr)
+            phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
             # slip in an ambient noise level adjustment here because some speech may have just 
             # ended or a timeout occurred.
             adj_spch_recog_ambient(r, mic)
-            handle_response_sync(sdp, phrase, check_hot_word)
+            handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
             speak("sorry, i could not do what you wanted.")
         finally:
             finallyFunc()
 
-    def local_hotword_recog_cb(sdp, phrase, listener, hotword, r, sr):
-        phrase = phrase.lower()
-        print("I heard: %s" % phrase)
-        if phrase == "stop" or "what's your name" in phrase or "what is your name" in phrase \
-            or "who are you" in phrase:
-            listener.set_active(False)
-            try:
-                handle_response_sync(sdp, phrase, assist = False)
-            except:
-                speak("sorry, i could not do what you wanted.")
-            finally:
-                listener.set_active(True)
-            return
-        if hotword in phrase:
-            listener.set_active(False)
-            speak("yes?")
-            listenFromGoogle(sdp, lambda:listener.set_active(True), False)
+    # def local_hotword_recog_cb(sdp, phrase, doa, listener, hotword, r, sr):
+    #     phrase = phrase.lower()
+    #     print("I heard: %s" % phrase)
+    #     if phrase == "stop" or "what's your name" in phrase or "what is your name" in phrase \
+    #         or "who are you" in phrase:
+    #         listener.set_active(False)
+    #         try:
+    #             handle_response_sync(sdp, phrase, doa, assist = False)
+    #         except:
+    #             speak("sorry, i could not do what you wanted.")
+    #         finally:
+    #             listener.set_active(True)
+    #         return
+    #     if hotword in phrase:
+    #         listener.set_active(False)
+    #         speak("yes?")
+    #         listenFromGoogle(sdp, lambda:listener.set_active(True), False)
 
     def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp):
         global _internet, _use_internet, _last_speech_heard
-        print("I heard: %s" % phrase)
+        doa = _mic_array.getDoa()
+        print("I heard: \"%s\" at %d degrees" % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
         _last_speech_heard = phrase
         phrase = phrase.lower()
         listener.set_active(False)
@@ -2109,7 +2117,7 @@ def listen():
             try:
                 if _use_internet and _internet:
                     speak("Go ahead")
-                    phrase = listenFromGoogleSpeechRecog(r, mic, sr)
+                    phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
                     sendToGoogleAssistant(phrase)
                 else:
                     speak("ask google is not available.")
@@ -2117,7 +2125,7 @@ def listen():
                 listener.set_active(True)
             return
 #        try:
-        handled_result = handle_response_sync(sdp, phrase, assist = False)
+        handled_result = handle_response_sync(sdp, phrase, doa, assist = False)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             speak("I am not sure how to help with that.")
         elif handled_result == HandleResponseResult.NotHandledNoHotWord:
@@ -2147,7 +2155,7 @@ def listen():
                 # print("detecting hotword")
                 # local_listener = winspeech.listen_for(None, "hotword.xml", 
                 # "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
-                # sr=sr: local_hotword_recog_cb(sdp, phrase, listener, hotword, r, sr))
+                # sr=sr: local_hotword_recog_cb(sdp, phrase, doa, listener, hotword, r, sr))
         except Exception as e:
             print(e)
 
@@ -2338,7 +2346,7 @@ from orange_utils import *
 def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
     global _last_speech_heard
     if opType == OrangeOpType.TextCommand:
-        return handle_response_async(sdp, arg1, check_hot_word=False)
+        return handle_response_async(sdp, arg1, 0, check_hot_word=False)
     elif opType == OrangeOpType.BatteryPercent:
         return sdp.battery()
     elif opType == OrangeOpType.LastSpeechHeard:
@@ -2481,6 +2489,30 @@ def robot():
 
     shutdown_robot()
 
+class MicArray(object):
+    def __init__(self):
+        self.dev = usb.core.find(idVendor=0x2886, idProduct=0x0018)
+        if not self.dev:
+            raise RuntimeError("Error, could not initialize mic array.")
+        self.tuning = Tuning(self.dev)
+
+    def getDoa(self):
+        return self.tuning.direction
+    
+    def getIsSpeech(self):
+        return self.tuning.is_speech()
+
+    def doa2YawDelta(self, doa):
+        yawDelta = doa - 90
+        if yawDelta >= 180:
+            yawDelta = yawDelta - 360
+        return yawDelta
+
+    def rotateToDoa(self, doa):
+        yawDelta = self.doa2YawDelta(doa)
+        print("turning toward where heard person")
+        turn(yawDelta)
+        return yawDelta
 
 def init_local_speech_rec():
     # Start an in-process edge recognizer using SAPI.
@@ -2496,12 +2528,13 @@ def load_locations(name):
         _locations = pickle.load(f)
 
 def run():
-    global _sdp, _slamtec_on, _move_oak_d
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array
     # Start 32 bit bridge server
     _sdp = MyClient()
 
     init_local_speech_rec()
     initialize_speech()
+    _mic_array = MicArray()
     #init_camera()
 
     speak("I'm starting up.")

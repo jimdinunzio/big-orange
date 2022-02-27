@@ -213,6 +213,12 @@ class MoveOakD(object):
         self.pitchServo.setHome()
         self.yawServo.setHome()
 
+    def yawHome(self):
+        self.yawServo.setHome()
+
+    def pitchHome(self):
+        self.pitchServo.setHome()
+
     def isSweeping(self):
         return self.sweeping
 
@@ -221,6 +227,12 @@ class MoveOakD(object):
 
     def getPitch(self):
         return self.pitchServo.getAngle()
+
+    def setYaw(self, angle):
+        self.yawServo.setAngle(angle)
+
+    def setPitch(self, angle):
+        self.pitchServo.setAngle(angle)
 
     def startSweepingBackAndForth(self, count=1, speed=2, min=45, max=135):
         self.sweeping = True

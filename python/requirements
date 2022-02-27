@@ -26,3 +26,5 @@ pip3 install https://dl.google.com/coral/python/tflite_runtime-2.1.0.post1-cp37-
 conda install Pillow
 
 #For Depth AI, See depthai/requirements.txt
+#For Respeaker Mic Array V2.0 see git/usb_4_mic_array/requirements.txt
+
