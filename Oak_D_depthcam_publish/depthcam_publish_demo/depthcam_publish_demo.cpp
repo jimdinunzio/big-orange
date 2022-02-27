@@ -14,12 +14,16 @@ using namespace std;
 
 static const std::string DEPTH_DEVICE_ID = "14442C10E18CC0D200";
 static const std::string SLAMWARE_IP_ADDR_STR = "192.168.11.1";
-static const int DEFAULT_CONF_THRESHOLD = 200;
+static const int DEFAULT_CONF_THRESHOLD = 120;
+static const int DEFAULT_BILATERAL_SIGMA = 2;
+static const dai::StereoDepthProperties::MedianFilter DEFAULT_MEDIAN_FILTER = dai::MedianFilter::KERNEL_7x7;
+
 static const int SLAMWARE_PORT = 1445;
 
 static const int        cDepthWidth  = 320;
 static const int        cDepthHeight = 200;
 static const size_t NUM_FRAME_DATA = cDepthWidth * cDepthHeight;
+static const float		cScaleFactor = cDepthHeight / 400.0f;
 
 // Closer - in minimum depth, disparity range is doubled(from 95 to 190) :
 static const bool extended_disparity = false;
@@ -87,6 +91,21 @@ static void onFilterChange(int pos, void* ptr)
 
 int main(int argc, char* argv[])
 {
+	bool iMode = false;
+	if (argc > 1)
+	{
+		if (!strcmp(argv[1], "-i"))
+		{
+			iMode = true;
+		}
+		else if (!strcmp(argv[1],"-h"))
+		{
+			cout << "Usage: " << argv[0] << " [-h] [-i]" << endl;
+			cout << "-h - this help message" << endl;
+			cout << "-i - interactive mode" << endl;
+			return 0;
+		}
+	}
 	while (1)
 	{
 		try
@@ -109,7 +128,7 @@ int main(int argc, char* argv[])
 			slamtecDepthFrame.rows = cDepthHeight;
 
 			slamtecDepthFrame.data.resize(NUM_FRAME_DATA);
-			const boost::posix_time::time_duration cMinTimeBetweenPublishing = boost::posix_time::millisec(105);
+			const boost::posix_time::time_duration cMinTimeBetweenPublishing = boost::posix_time::millisec(205);
 			const boost::posix_time::time_duration cZeroTime = boost::posix_time::millisec(0);
 			boost::posix_time::ptime lastTime = boost::posix_time::microsec_clock::local_time();
 #ifdef DEBUG
@@ -137,11 +156,14 @@ int main(int argc, char* argv[])
 
 			left->out.link(stereo->left);
 			right->out.link(stereo->right);
-			
-			auto leftOut = p.create<dai::node::XLinkOut>();
-			leftOut->setStreamName("left");
-			queueNames.push_back("left");
-			left->out.link(leftOut->input);
+
+			if (iMode)
+			{
+				auto leftOut = p.create<dai::node::XLinkOut>();
+				leftOut->setStreamName("left");
+				queueNames.push_back("left");
+				left->out.link(leftOut->input);
+			}
 
 			auto depthOut = p.create<dai::node::XLinkOut>();
 			depthOut->setStreamName("depth");
@@ -179,31 +201,32 @@ int main(int argc, char* argv[])
 			// input queues
 			auto stereoDepthConfigInQueue = d->getInputQueue("stereoDepthConfig");
 
-			cv::Mat depthFrameColor(200, 320, CV_8UC1), depthFrameCv(400, 640, CV_16UC1), halfDepthFrameCv(200, 320, CV_16UC1);
+			cv::Mat depthFrameColor(cDepthHeight, cDepthWidth, CV_8UC1), depthFrameCv(400, 640, CV_16UC1), resizedDepthFrameCv(cDepthHeight, cDepthWidth, CV_16UC1);
 			//cv::Mat disparityFrame(400, 640, CV_8UC1);
 
 			dai::StereoDepthConfig currentStereoDepthConfig = dai::StereoDepthConfig();
 
 			int confThresh = DEFAULT_CONF_THRESHOLD;
 			int lastConfThresh = 0;
-			int bilateralSigma = stereo->initialConfig.getBilateralFilterSigma();
+			int bilateralSigma = DEFAULT_BILATERAL_SIGMA;
 			int lastBilateralSigma = bilateralSigma;
-			
+			dai::StereoDepthProperties::MedianFilter medianFilter = DEFAULT_MEDIAN_FILTER;
 			const cv::String depthColorWindowName = "depth_color";
-			cv::namedWindow(depthColorWindowName);
-			
-			cv::createTrackbar("Confidence", depthColorWindowName, &confThresh, 255);
-			cv::setTrackbarPos("Confidence", depthColorWindowName, confThresh);
+
+			if (iMode)
+			{
+				cv::namedWindow(depthColorWindowName);
+				cv::createTrackbar("Confidence", depthColorWindowName, &confThresh, 255);
+				cv::setTrackbarPos("Confidence", depthColorWindowName, confThresh);
+				cv::createTrackbar("Bilateral sigma", depthColorWindowName, &bilateralSigma, 250);
+				cv::setTrackbarPos("Bilateral sigma", depthColorWindowName, bilateralSigma);
+				cv::createTrackbar("Filter", depthColorWindowName, nullptr, 3, onFilterChange, &medianFilter);
+				cv::setTrackbarPos("Filter", depthColorWindowName, 3);
+			}
+
+			dai::StereoDepthProperties::MedianFilter lastMedianFilter = medianFilter;
 			stereo->initialConfig.setConfidenceThreshold(confThresh);
 			currentStereoDepthConfig.setConfidenceThreshold(confThresh);
-
-			cv::createTrackbar("Bilateral sigma", depthColorWindowName, &bilateralSigma, 250);
-			cv::setTrackbarPos("Bilateral sigma", depthColorWindowName, bilateralSigma);
-
-			dai::StereoDepthProperties::MedianFilter medianFilter = dai::StereoDepthProperties::MedianFilter::KERNEL_5x5;
-			dai::StereoDepthProperties::MedianFilter lastMedianFilter = medianFilter;
-			cv::createTrackbar("Filter", depthColorWindowName, nullptr, 3, onFilterChange, &medianFilter);
-			cv::setTrackbarPos("Filter", depthColorWindowName, 2);
 			stereo->initialConfig.setMedianFilter(medianFilter);
 			currentStereoDepthConfig.setMedianFilter(medianFilter);
 
@@ -239,14 +262,17 @@ int main(int argc, char* argv[])
 					{
 						if (name == "depth") {
 							depthFrameCv = latestPacket[name]->getCvFrame();
-							cv::resize(depthFrameCv, halfDepthFrameCv, cv::Size(), 0.5, 0.5, cv::INTER_NEAREST);
+							cv::resize(depthFrameCv, resizedDepthFrameCv, cv::Size(), cScaleFactor, cScaleFactor, cv::INTER_NEAREST);
 							
-							updateSlamtecBuffer(slamtecDepthFrame.data, halfDepthFrameCv);
+							updateSlamtecBuffer(slamtecDepthFrame.data, resizedDepthFrameCv);
 
-							cv::normalize(depthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
-							cv::equalizeHist(depthFrameColor, depthFrameColor);
-							cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_JET);
-							cv::imshow(depthColorWindowName, depthFrameColor);
+							if (iMode)
+							{
+								cv::normalize(depthFrameCv, depthFrameColor, 255, 0, cv::NORM_INF, CV_8UC1);
+								cv::equalizeHist(depthFrameColor, depthFrameColor);
+								cv::applyColorMap(depthFrameColor, depthFrameColor, cv::COLORMAP_JET);
+								cv::imshow(depthColorWindowName, depthFrameColor);
+							}
 						}
 						//else if (name == "disparity") {
 							//disparityFrame = latestPacket[name]->getCvFrame();
@@ -255,7 +281,7 @@ int main(int argc, char* argv[])
 							//cv::applyColorMap(disparityFrame, disparityFrame, cv::COLORMAP_JET);
 							//cv::imshow("disparity_color", disparityFrame);
 						//}
-						else if (name == "left") 
+						else if (iMode && name == "left") 
 						{
 							cv::imshow("left", latestPacket[name]->getFrame());
 						}
@@ -264,13 +290,13 @@ int main(int argc, char* argv[])
 
 				const int sensorId = 3; //TODO: Config your own SensorId
 
-				// Publish one single frame no faster than 10/s.
+				// Publish one single frame no faster than 10/s. Let's try 5/s
 				boost::posix_time::time_duration waitTime = cMinTimeBetweenPublishing -
 					(boost::posix_time::microsec_clock::local_time() - lastTime);
 				if (waitTime > cZeroTime)
 				{
 #ifdef DEBUG
-					std::cout << "curTime = " << boost::posix_time::microsec_clock::local_time() << "lasttime = " << lastTime << ", sleep waiting " << waitTime << " between publising" << std::endl;
+//					std::cout << "curTime = " << boost::posix_time::microsec_clock::local_time() << "lasttime = " << lastTime << ", sleep waiting " << waitTime << " between publising" << std::endl;
 #endif
 					boost::this_thread::sleep(waitTime);
 				}
