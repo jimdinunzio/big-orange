@@ -48,7 +48,7 @@ _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
 _internet = True # True when connected to the internet
-_use_internet = False # If False don't use internet
+_use_internet = True # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
@@ -1981,7 +1981,7 @@ def listen():
             with m as source: r.adjust_for_ambient_noise(source, duration=1)
         except:
             None
-        r.energy_threshold = max(100, r.energy_threshold)
+        r.energy_threshold = max(300, r.energy_threshold)
         print("ambient energy threshold changed to ", r.energy_threshold)
 
     # beginning of actual Listen() code - <clean this up!>
@@ -2338,6 +2338,8 @@ def switch_to_cloud_speech():
     if not _internet or not _use_internet:
         speak("I cannot connect to cloud speech.")
     else:
+        # stop local speech recog
+        winspeech.stop_listening()
         _google_mode = True
         speak("Ok.")
     
@@ -2551,7 +2553,7 @@ def run():
             _sdp.setUpdate(True)
             None
         else:
-            speak("Something is wrong. I could not connect to Slamtec.")
+            speak("I could not connect to Slamtec. Movement is disabled.")
     
         robot()
     else:
