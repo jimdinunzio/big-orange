@@ -1,3 +1,4 @@
+from tkinter import E
 import pygame
 from pygame.locals import *
 from pygame.compat import geterror
@@ -29,6 +30,7 @@ IP_ADDR_TEXT_BOX_LABEL = "IP Addr:"
 INTERNET_TEXT_BOX_LABEL= "Internet:"
 WIFI_INFO_LABEL = "SSID:"
 LAST_SPEECH_HEARD_LABEL = "Last heard:"
+ENERGY_THRESHOLD_LABEL = "Energy Threshold:"
 LAST_SPEECH_SPOKEN_LABEL = "Last spoken:"
 EXIT_BUTTON_LABEL = "Exit"
 GOOGLE_MODE_BUTTON_LABEL = "Google Speech"
@@ -70,6 +72,8 @@ def dummy_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
         return 66
     elif opType == OrangeOpType.WifiSsidAndStrength:
         return "My Wifi", "95%"
+    elif opType == OrangeOpType.SpeechEnergyThreshold:
+        return 300
 
 def update():
     pass
@@ -240,6 +244,10 @@ def start(handle_op_request, connect_sdp=True):
     last_heard_box_rect = pygame.Rect(350, 300, 200, 32)
     last_heard_box_label_surface = base_font.render(LAST_SPEECH_HEARD_LABEL, True, ORANGE_COLOR)
 
+    # energy threshold value
+    energy_thresh_box_rect = pygame.Rect(750, 300, 50, 32)
+    energy_thresh_box_label_surface = base_font.render(ENERGY_THRESHOLD_LABEL, True, ORANGE_COLOR)
+
     # create last spoken
     last_spoken_box_rect = pygame.Rect(350, 350, 200, 32)
     last_spoken_box_label_surface = base_font.render(LAST_SPEECH_SPOKEN_LABEL, True, ORANGE_COLOR)
@@ -322,7 +330,10 @@ def start(handle_op_request, connect_sdp=True):
                 elif event.type == pygame.ACTIVEEVENT:
                     if event.state == 1:
                         if event.gain == 1:
-                            screen = pygame.display.set_mode((WIDTH,HEIGHT), RESIZABLE)
+                            try:
+                                screen = pygame.display.set_mode((WIDTH,HEIGHT), RESIZABLE)
+                            except:
+                                None
                 elif event.type == MOUSEBUTTONDOWN:
                     if draw_eyes_enabled:
                         draw_eyes_enabled = False
@@ -336,7 +347,10 @@ def start(handle_op_request, connect_sdp=True):
                             draw_ui_enabled = False
                             draw_eyes_enabled = True
                         elif hide_button_rect.collidepoint(event.pos):
-                            screen = pygame.display.set_mode((WIDTH,HEIGHT-20), RESIZABLE)
+                            try:
+                                screen = pygame.display.set_mode((WIDTH,HEIGHT-20), RESIZABLE)
+                            except:
+                                None
                         elif google_mode_button_rect.collidepoint(event.pos):
                             google_mode = handle_op_request(sdp, OrangeOpType.ToggleGoogleSpeech)
                             google_mode_color = button_on_color if google_mode else button_off_color
@@ -394,6 +408,7 @@ def start(handle_op_request, connect_sdp=True):
                     board_temp_str = str(handle_op_request(sdp, OrangeOpType.BoardTemperature)) + "C"
                     local_qual_str = str(handle_op_request(sdp, OrangeOpType.LocalizationQuality)) + "%"
                     ssid, wifi_strength = handle_op_request(sdp, OrangeOpType.WifiSsidAndStrength)
+                    speech_energy_threshold = str(handle_op_request(sdp, OrangeOpType.SpeechEnergyThreshold))
                     time_to_refresh_control = next_control_refresh()
 
                 # draw title 
@@ -434,6 +449,12 @@ def start(handle_op_request, connect_sdp=True):
                 screen.blit(last_heard_text_surface, (last_heard_box_rect.x+10, last_heard_box_rect.y+5))
                 # draw label
                 screen.blit(last_heard_box_label_surface, (last_heard_box_rect.x - last_heard_box_label_surface.get_width() - 5, last_heard_box_rect.y + 5))
+
+                # draw energy threshold 
+                energy_threshold_text_surface = base_font.render(speech_energy_threshold, True, "lightgray")
+                screen.blit(energy_threshold_text_surface, (energy_thresh_box_rect.x + 10, energy_thresh_box_rect.y + 5))
+                # draw label
+                screen.blit(energy_thresh_box_label_surface, (energy_thresh_box_rect.x - energy_thresh_box_label_surface.get_width() - 5, energy_thresh_box_rect.y + 5))
 
                 # draw last speech spoken
                 last_spoken_text_surface = base_font.render(last_speech_spoken, True, "lightgray")

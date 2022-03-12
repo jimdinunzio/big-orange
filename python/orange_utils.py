@@ -17,4 +17,5 @@ class OrangeOpType(Enum):
     BoardTemperature = 10
     LocalizationQuality = 11
     WifiSsidAndStrength = 12
+    SpeechEnergyThreshold = 13
     

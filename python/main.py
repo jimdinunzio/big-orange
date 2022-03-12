@@ -68,11 +68,14 @@ _handling_resp_lock = Lock()
 _sendToGoogleAssistantFn = None
 _restart_flag = False
 _set_energy_threshold = None
+_get_energy_threshold = None
 _last_speech_heard = ""
 _locations = {}
 _mdai = None
 _move_oak_d = None
 _mic_array = None
+_pixel_ring = None
+_starting_up = True
 
 import parse
 import tts.sapi
@@ -93,7 +96,7 @@ from my_sdp_server import *
 import cv2
 import ai_vision.detect as detect
 import ai_vision.classify as classify
-import winspeech
+#import winspeech
 from enum import Enum
 import move_oak_d
 import my_depthai
@@ -104,6 +107,8 @@ import speech_recognition as sr
 import socket
 from mic_array_tuning import Tuning
 import usb.core
+import usb.util
+import usb_pixel_ring_v2 as pixel_ring
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -269,12 +274,13 @@ def testgoto(str):
     global _goal
     _goal = str
 
+_reported_35 = False
 _reported_25 = False
 _reported_18 = False
 _reported_15 = False
 
 def batteryMonitor():
-    global _sdp, _run_flag, _person, _goal, _reported_25, _reported_18, _reported_15
+    global _sdp, _run_flag, _person, _goal, _reported_35, _reported_25, _reported_18, _reported_15
     try:
         batteryPercent = _sdp.battery()
         person = _person if _person != "nobody" else "hello anyone"
@@ -294,6 +300,13 @@ def batteryMonitor():
             if not _reported_25:
                 _reported_25 = True
                 speak(person + ", my battery is getting low. I'll have to charge up soon.")
+                setPixelPaletteRed()
+        elif batteryPercent <= 35:
+            if not _reported_35:
+                _reported_35 = True
+                setPixelPaletteYellow()
+        else:
+            setPixelPaletteDefault()
     except:
         None
     
@@ -554,7 +567,9 @@ def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
 
     try:
         print(phrase)
+        setPixelRingSpeak()
         _voice.say(phrase, flag)
+        setPixelRingTrace()
     except Exception:
         print("Speak has timed out.")
         pass
@@ -1194,10 +1209,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
+    global _show_rgb_window
 
     # convert phrase to lower case for comparison
     phrase = phrase.lower()
-    if phrase == "stop" or phrase == "orange stop":
+    if phrase == "stop" or phrase == "stop stop" or phrase == "orange stop":
         cancelAction(True)
         speak("Okay.")
         location, distance, closeEnough = where_am_i() 
@@ -1212,6 +1228,19 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         phrase == "what is your name" or
         phrase == "who are you"):
         speak("My name is Orange. Easy to remember, right?")
+        return HandleResponseResult.Handled
+
+    if (phrase == "what" or
+        phrase == "what did you say" or
+        phrase == "please repeat what you just said"):
+        speak("I said")
+        speak(_last_phrase)
+        return HandleResponseResult.Handled
+    
+    if phrase == "goodbye":
+        answer = "See you later, " + _person
+        speak(answer)
+        _person = "nobody"
         return HandleResponseResult.Handled
 
     # check if the first word is the wake up word, otherwise ignore speech
@@ -1241,19 +1270,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         print("Okay, pause listening.")
         return HandleResponseResult.Handled
     
-    if (phrase == "what" or
-        phrase == "what did you say" or
-        phrase == "please repeat what you just said"):
-        speak("I said")
-        speak(_last_phrase)
-        return HandleResponseResult.Handled
-    
-    if phrase == "goodbye":
-        answer = "See you later, " + _person
-        speak(answer)
-        _person = "nobody"
-        return HandleResponseResult.Handled
-
     if phrase == "who are you with":
         answer = "I'm with " + _person
         speak(answer)
@@ -1531,7 +1547,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _run_flag = False
         return HandleResponseResult.Handled        
 
-    if phrase == "shutdown system":
+    if phrase == "shut down system":
         speak("Okay, I'm shutting down the system.")
         _run_flag = False
         os.system("shutdown /s /t 10")
@@ -1658,6 +1674,22 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _all_loaded = False
         return HandleResponseResult.Handled
 
+    if phrase == "show me your view":
+        speak("Ok.")
+        if not _show_rgb_window:
+            _show_rgb_window = True
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+    
+    if phrase == "hide your view":
+        speak("Ok.")
+        if _show_rgb_window:
+            _show_rgb_window = False
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+    
     if phrase == "follow me":
         if _follow_thread is None:
             speak("Ok. I will follow you.")
@@ -1770,6 +1802,14 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             return HandleResponseResult.Handled
         else:
             return HandleResponseResult.NotHandledUnknown
+
+    if phrase.startswith("ask google"):
+        try:
+            question = phrase.partition("ask google")[2]
+            _sendToGoogleAssistantFn(question)
+        except:
+            return HandleResponseResult.NotHandledUnknown
+        return HandleResponseResult.Handled
 
     if ("bring" in phrase or "take" in phrase) and ("this" in phrase or "these" in phrase):
         room = None
@@ -2010,28 +2050,67 @@ def listen():
         # create a microphone object
         mic = sr.Microphone()
 
+        def get_energy_threshold():
+            return r.energy_threshold
+
         def set_energy_threshold(value):
             r.energy_threshold = value
             print("energy threshold changed to ", r.energy_threshold)
 
-        adj_spch_recog_ambient(r, mic)
+        #adj_spch_recog_ambient(r, mic)
 
         global _set_energy_threshold
         _set_energy_threshold = set_energy_threshold
+
+        global _get_energy_threshold
+        _get_energy_threshold = get_energy_threshold
+
     else:
         r = None
         mic = None
         
     speak("Hello, My name is Orange. Pleased to be at your service.")
-        
+
+    def listenFromVoskSpeechRecog(r, mic, sr):
+        global _last_speech_heard
+        # obtain audio from the microphone
+        try:
+            with mic as source:
+                print("Say something!")
+                audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=_mic_array.getIsSpeech)
+                doa = _mic_array.getDoa()
+                setPixelRingThink()
+                print("Your speech ended or timed out.")
+        except Exception as e:
+            print(e)
+            return "", 0
+
+        # recognize speech using Vosk Speech Recognition
+        try:
+            phrase = json.loads(r.recognize_vosk(audio))
+            phrase = phrase["text"]           
+            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+            _last_speech_heard = phrase
+        except sr.UnknownValueError:
+            phrase = ""
+            print("What?")
+        except sr.RequestError as e:
+            phrase = ""
+            print("Recognizer error; {0}".format(e))
+        except:
+            phrase = ""
+            print("Unknown speech recognition error.")
+        return phrase, doa
+
     def listenFromGoogleSpeechRecog(r, mic, sr):
         global _last_speech_heard, _internet, _google_mode
         # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
-                audio = r.listen(source, timeout=5, phrase_time_limit = 7)
+                audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
+                setPixelRingThink()
                 print("Your speech ended or timed out.")
         except Exception as e:
             print(e)
@@ -2076,12 +2155,23 @@ def listen():
     global _sendToGoogleAssistantFn
     _sendToGoogleAssistantFn = sendToGoogleAssistant
 
+    def listenFromVosk(sdp, finallyFunc=lambda:None, check_hot_word=True):
+        try:
+            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr)
+            setPixelRingTrace()
+            handle_response_sync(sdp, phrase, doa, check_hot_word)
+        except:
+            speak("sorry, i could not do what you wanted.")
+        finally:
+            finallyFunc()
+
     def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
             phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
             # slip in an ambient noise level adjustment here because some speech may have just 
             # ended or a timeout occurred.
-            adj_spch_recog_ambient(r, mic)
+            #adj_spch_recog_ambient(r, mic)
+            setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
             speak("sorry, i could not do what you wanted.")
@@ -2106,6 +2196,14 @@ def listen():
     #         speak("yes?")
     #         listenFromGoogle(sdp, lambda:listener.set_active(True), False)
 
+    def ask_google():
+        if _use_internet and _internet:
+            speak("Go ahead")
+            phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
+            sendToGoogleAssistant(phrase)
+        else:
+            speak("ask google is not available.")
+
     def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp):
         global _internet, _use_internet, _last_speech_heard
         doa = _mic_array.getDoa()
@@ -2115,14 +2213,9 @@ def listen():
         listener.set_active(False)
         if phrase == "orange ask google":
             try:
-                if _use_internet and _internet:
-                    speak("Go ahead")
-                    phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
-                    sendToGoogleAssistant(phrase)
-                else:
-                    speak("ask google is not available.")
+                ask_google()
             finally:
-                listener.set_active(True)
+                listener.set_active(True)    
             return
 #        try:
         handled_result = handle_response_sync(sdp, phrase, doa, assist = False)
@@ -2134,18 +2227,23 @@ def listen():
 #           speak("sorry, i could not do what you wanted.")
 #        finally:
         listener.set_active(True)
-
+    
+    global _starting_up
+    _starting_up = False
+    setPixelRingEndStartup() # restore pixel ring to default sound sensitive mode after boot up
+    
     while _run_flag:
-        local_listener = None
+        #local_listener = None
         use_local_speech = not _use_internet or not _internet or not _google_mode
         try:
             if use_local_speech:
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                local_listener = winspeech.listen_for(None, "speech.xml", 
-                "RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
-                sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
+                listenFromVosk(sdp)
+                #local_listener = winspeech.listen_for(None, "speech.xml", 
+                #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
+                #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
             else: 
                 # use google cloud speech
                 listenFromGoogle(sdp)
@@ -2159,11 +2257,11 @@ def listen():
         except Exception as e:
             print(e)
 
-        while _run_flag and local_listener is not None and not _google_mode:
-            time.sleep(2)
+        #while _run_flag and local_listener is not None and not _google_mode:
+        #   time.sleep(2)
     
     # if no longer running, stop listening 
-    winspeech.stop_listening()
+    #winspeech.stop_listening()
     sdp.disconnect()
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
@@ -2339,7 +2437,7 @@ def switch_to_cloud_speech():
         speak("I cannot connect to cloud speech.")
     else:
         # stop local speech recog
-        winspeech.stop_listening()
+        #winspeech.stop_listening()
         _google_mode = True
         speak("Ok.")
     
@@ -2386,6 +2484,8 @@ def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
             signal = sig_line[0].split(':')
             signal = signal[1].strip()
         return connected_ssid, signal
+    elif opType == OrangeOpType.SpeechEnergyThreshold:
+        return _get_energy_threshold()
         
 ################################################################   
 # This is where data gets initialized from information stored on disk
@@ -2440,7 +2540,9 @@ def shutdown_robot():
     shutdown_facial_recog()
     print("shutting down move oakd")
     _move_oak_d.shutdown()
-
+    _pixel_ring.close()
+    _mic_array.close()
+    
     # TBD join threads
     
     # Close all open threads
@@ -2516,9 +2618,12 @@ class MicArray(object):
         turn(yawDelta)
         return yawDelta
 
-def init_local_speech_rec():
-    # Start an in-process edge recognizer using SAPI.
-    winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
+    def close(self):
+        usb.util.dispose_resources(self.dev)
+
+# def init_local_speech_rec():
+#     # Start an in-process edge recognizer using SAPI.
+#     winspeech.initialize_recognizer(winspeech.INPROC_RECOGNIZER)
     
 def save_locations(name):
     with open(name + ".pkl", "wb") as f:
@@ -2529,14 +2634,55 @@ def load_locations(name):
     with open(name + ".pkl", "rb") as f:
         _locations = pickle.load(f)
 
+# TBD make this into a class
+def setPixelRingSpeak():
+    _pixel_ring.speak()
+
+def setPixelRingThink():
+    _pixel_ring.think()
+
+def setPixelRingStartup():
+    setPixelPaletteForSpin()
+    setPixelRingSpin()
+
+def setPixelRingEndStartup():
+    setPixelPaletteDefault()
+    setPixelRingTrace()
+
+def setPixelRingTrace():
+    if _starting_up:
+        setPixelRingSpin()
+    else:
+        _pixel_ring.trace()
+
+def setPixelRingSpin():
+    _pixel_ring.spin()
+
+def setPixelPaletteYellow():
+    _pixel_ring.set_color_palette(0x005050,0x402000) 
+
+def setPixelPaletteRed():
+    _pixel_ring.set_color_palette(0x005050,0x400000)
+    
+def setPixelPaletteDefault():
+    _pixel_ring.set_color_palette(0x003000,0x700800)
+
+def setPixelPaletteForSpin():
+    _pixel_ring.set_color_palette(0x700800,0x003000)
+
+def setPixelPaletteBootDefault():
+    _pixel_ring.set_color_palette(0x005050,0x000050)
+
 def run():
-    global _sdp, _slamtec_on, _move_oak_d, _mic_array
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring
     # Start 32 bit bridge server
     _sdp = MyClient()
 
-    init_local_speech_rec()
+    #init_local_speech_rec()
     initialize_speech()
     _mic_array = MicArray()
+    _pixel_ring = pixel_ring.PixelRing(_mic_array.dev)
+    setPixelRingStartup()
     #init_camera()
 
     speak("I'm starting up.")
