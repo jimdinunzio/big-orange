@@ -245,7 +245,7 @@ def start(handle_op_request, connect_sdp=True):
     last_heard_box_label_surface = base_font.render(LAST_SPEECH_HEARD_LABEL, True, ORANGE_COLOR)
 
     # energy threshold value
-    energy_thresh_box_rect = pygame.Rect(750, 300, 50, 32)
+    energy_thresh_box_rect = pygame.Rect(750, 200, 50, 32)
     energy_thresh_box_label_surface = base_font.render(ENERGY_THRESHOLD_LABEL, True, ORANGE_COLOR)
 
     # create last spoken

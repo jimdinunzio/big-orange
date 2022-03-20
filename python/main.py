@@ -613,7 +613,8 @@ def loadMap(filename):
     print("Loading map and its locations")
     res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
     if (res == 0):
-        _sdp.setUpdate(True)
+        # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
+        _sdp.setUpdate(False)
         speak("Map and locations are loaded. Mapping is on.")
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
@@ -1187,13 +1188,9 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
         handled_result = handle_response(sdp, phrase, doa, check_hot_word)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             if assist:
-                words = phrase.split()
-                if words[0].lower().startswith(_hotword):
-                    words[0] = ''
-                phrase = " ".join(words)
-                _sendToGoogleAssistantFn(phrase)
+                _sendToGoogleAssistantFn(phrase.strip(_hotword))
             else:
-                speak("Sorry, I don't know about that.")
+                speak("Sorry, I don't understand \"" + phrase.strip(_hotword) + "\"?")
     finally:
         set_handling_response(False)
 
@@ -1372,7 +1369,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _goal = "custom"
         return HandleResponseResult.Handled
 
-    if phrase == "go recharge" or phrase == "go to dock":
+    if phrase == "go recharge" or phrase == "go to dock" or phrase == "go to the dock":
         cancelAction(interrupt = True)
         _goal = "recharge"
         return HandleResponseResult.Handled
