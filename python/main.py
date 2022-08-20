@@ -2437,7 +2437,32 @@ def switch_to_cloud_speech():
         #winspeech.stop_listening()
         _google_mode = True
         speak("Ok.")
-    
+
+def radar_main():
+    while _run_flag:
+        
+        time.sleep(0.25)
+
+def start_radar():
+    global _radar_thread
+    if _radar_thread is None:
+        _radar_thread = Thread(target=radar_main, name="Radar", daemon=False)
+        _radar_thread.start()
+    else:
+        print("Error - trying to start following when already following.")
+
+def stop_following():
+    global _radar_thread, _following
+    _following = False
+    if _radar_thread is not None:
+        _radar_thread.join()
+        _radar_thread = None
+
+def enable_radar():
+    global _radar_enabled
+    _radar_enabled = True
+
+
 from orange_utils import *
 
 def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
