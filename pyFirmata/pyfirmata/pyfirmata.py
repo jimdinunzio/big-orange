@@ -1,4 +1,5 @@
 from __future__ import division, unicode_literals
+from ast import arguments
 
 import inspect
 import time
@@ -26,6 +27,7 @@ QUERY_FIRMWARE = 0x79       # query the firmware name
 # extended command set using sysex (0-127/0x00-0x7F)
 # 0x00-0x0F reserved for user-defined commands */
 
+SERIAL_DATA = 0x60              # communicate with serial devices, including other boards
 EXTENDED_ANALOG = 0x6F          # analog write (PWM, Servo, etc) to any pin
 PIN_STATE_QUERY = 0x6D          # ask for a pin's current mode and value
 PIN_STATE_RESPONSE = 0x6E       # reply with pin's current mode and value
@@ -45,6 +47,39 @@ SAMPLING_INTERVAL = 0x7A    # set the poll rate of the main loop
 SYSEX_NON_REALTIME = 0x7E   # MIDI Reserved for non-realtime messages
 SYSEX_REALTIME = 0x7F       # MIDI Reserved for realtime messages
 
+# Serial Modes
+CONTINUOUS_READ = 0x00
+STOP_READING = 0x01
+
+# Serial port Ids
+HW_SERIAL0 = 0x00
+HW_SERIAL1 = 0x01
+HW_SERIAL2 = 0x02
+HW_SERIAL3 = 0x03
+HW_SERIAL4 = 0x04
+HW_SERIAL5 = 0x05
+HW_SERIAL6 = 0x06
+# extensible up to 0x07
+
+SW_SERIAL0 = 0x08
+SW_SERIAL1 = 0x09
+SW_SERIAL2 = 0x0A
+SW_SERIAL3 = 0x0B
+
+# Serial command bytes
+SERIAL_CONFIG = 0x10
+SERIAL_WRITE  = 0x20
+SERIAL_READ   = 0x30
+SERIAL_REPLY  = 0x40
+SERIAL_CLOSE  = 0x50
+SERIAL_FLUSH  = 0x60
+SERIAL_LISTEN = 0x70
+
+# Serial read modes
+SERIAL_READ_CONTINUOUSLY = 0x00
+SERIAL_STOP_READING      = 0x01
+SERIAL_PORT_ID_MASK      = 0x0F
+SERIAL_MODE_MASK         = 0xF0
 
 # Pin modes.
 # except from UNAVAILABLE taken from Firmata.h
@@ -54,6 +89,7 @@ OUTPUT = 1         # as defined in wiring.h
 ANALOG = 2         # analog pin in analogInput mode
 PWM = 3            # digital pin in PWM output mode
 SERVO = 4          # digital pin in SERVO mode
+SERIAL = 10        # digital pin for serial communication
 
 # Pin types
 DIGITAL = OUTPUT   # same as OUTPUT below
@@ -84,6 +120,7 @@ class Board(object):
     _command = None
     _stored_data = []
     _parsing_sysex = False
+    _serial_callbacks = {}
 
     def __init__(self, port, layout=None, baudrate=57600, name=None, timeout=None):
         self.sp = serial.Serial(port, baudrate, timeout=timeout)
@@ -146,6 +183,10 @@ class Board(object):
         for i in board_layout['pwm']:
             self.digital[i].PWM_CAPABLE = True
 
+        # Setup serial Rx capable pins
+        for i in board_layout['serial_rx']:
+            self.digital[i].SERIAL_RX_CAPABLE = True
+
         # Disable certain ports like Rx/Tx and crystal ports
         for i in board_layout['disabled']:
             self.digital[i].mode = UNAVAILABLE
@@ -162,6 +203,8 @@ class Board(object):
         self.add_cmd_handler(DIGITAL_MESSAGE, self._handle_digital_message)
         self.add_cmd_handler(REPORT_VERSION, self._handle_report_version)
         self.add_cmd_handler(REPORT_FIRMWARE, self._handle_report_firmware)
+        self.add_cmd_handler(SERIAL_DATA, self._handle_serial_reply)
+        self.add_cmd_handler(STRING_DATA, self._handle_string_data)
 
     def auto_setup(self):
         """
@@ -180,6 +223,9 @@ class Board(object):
         else:
             raise IOError("Board detection failed.")
 
+    def del_cmd_handler(self, cmd):
+        self._command_handlers[cmd] = None
+        
     def add_cmd_handler(self, cmd, func):
         """Adds a command handler for a command."""
         len_args = len(inspect.getargspec(func)[0])
@@ -309,6 +355,116 @@ class Board(object):
         """
         return self.firmata_version
 
+    def serial_config(self, portId, baud, rxPin, txPin):
+        """
+        Configure a hardware or soft serial port.
+
+        ``portId`` The serial port to use (HW_SERIAL1, HW_SERIAL2, HW_SERIAL3, SW_SERIAL0,
+        SW_SERIAL1, SW_SERIAL2, SW_SERIAL3)
+
+        ``baud`` The baud rate of the serial port
+        
+        ``rxPin`` [SW Serial only] The RX pin of the SoftwareSerial instance
+        
+        ``txPin`` [SW Serial only] The TX pin of the SoftwareSerial instance
+        """
+        if not self.digital[rxPin].SERIAL_RX_CAPABLE:
+            raise IOError("Pin {0} does not have serial RX capabilities".format(rxPin))
+
+        data = bytearray([SERIAL_CONFIG | portId])
+        data += bytearray([baud & 0x7F])
+        data += bytearray([(baud >> 7) & 0x7F])
+        data += bytearray([(baud >> 14) & 0x7F])
+
+        if portId > 7 and rxPin is not None and txPin is not None:
+            data += bytearray([rxPin, txPin])
+        elif portId > 7:
+            raise IOError("Both RX and TX pins must be defined when using Software Serial.")        
+        self.send_sysex(SERIAL_DATA, data)
+
+    def serial_write(self, portId, bytes):
+        """ Write an array of bytes to the specified serial port.
+        ``portId`` The serial port to write to.
+        ``inBytes`` An array of bytes to write to the serial port.
+        """
+        data = bytearray([SERIAL_WRITE | portId])
+
+        for byte in bytes:
+            data += bytearray([byte & 0x7F, (byte >> 7) & 0x7F])
+        if len(bytes) > 0:           
+            self.send_sysex(SERIAL_DATA, data)  
+
+
+    def serial_read(self, portId, maxBytesToRead=None, callback=None):
+        """
+        Start continuous reading of the specified serial port. The port is checked for data each
+        iteration of the main Arduino loop.
+
+        ``portId`` The serial port to start reading continuously.
+
+        ``maxBytesToRead`` [Optional] The maximum number of bytes to read per iteration.
+        
+        If there are fewer bytes in the buffer, the lesser number of bytes will be returned. A value of 0
+        indicates that all available bytes in the buffer should be read.
+        
+        ``callback`` A function to call when we have received the bytes.
+        """
+
+        data = bytearray([SERIAL_READ | portId, CONTINUOUS_READ])
+        self._serial_callbacks[portId] = callback
+        if maxBytesToRead is not None:
+            data += bytearray([maxBytesToRead & 0x7F, (maxBytesToRead >> 7) & 0x7F])
+
+        self.send_sysex(SERIAL_DATA, data)
+
+    def serial_stop(self, portId):
+        """
+        Stop continuous reading of the specified serial port. This does not close the port, it stops
+        reading it but keeps the port open.
+
+        ``portId`` The serial port to stop reading.
+        """
+        data = bytearray([SERIAL_READ | portId, STOP_READING])
+        self.send_sysex(SERIAL_DATA, data)
+        self._serial_callbacks[portId] = None
+
+    def serial_flush(self, portId):
+        """
+        Flush the specified serial port. For hardware serial, this waits for the transmission of
+        outgoing serial data to complete. For software serial, this removed any buffered incoming serial
+        data.
+
+        ``portId`` The serial port to flush.
+        """
+        data = bytearray([SERIAL_FLUSH | portId])
+        self.send_sysex(SERIAL_DATA, data)
+
+    def serial_close(self, portId):
+        """
+        Close the specified serial port.
+
+        ``portId`` The serial port to close.
+        """
+        self.serial_flush(portId) # flush before closing
+        data = bytearray([SERIAL_CLOSE | portId])
+        self.send_sysex(SERIAL_DATA, data)
+
+    def serial_listen(self, portId):
+        """
+        For SoftwareSerial only. Only a single SoftwareSerial instance can read data at a time.
+        Call this method to set this port to be the reading port in the case there are multiple
+        SoftwareSerial instances.
+
+        ``portId`` The serial port to listen on.
+        """
+    
+        # listen only applies to software serial ports
+        if (portId < 8):
+            return
+    
+        data = bytearray([SERIAL_LISTEN | portId])
+        self.send_sysex(SERIAL_DATA, data)
+
     def servo_config(self, pin, min_pulse=544, max_pulse=2400, angle=0):
         """
         Configure a pin as servo with min_pulse, max_pulse and first angle.
@@ -326,6 +482,10 @@ class Board(object):
         # don't set pin.mode as that calls this method
         self.digital[pin]._mode = SERVO
         self.digital[pin].write(angle)
+
+    def reset(self):
+        """Call this to do a system reset"""
+        self.send_sysex(SYSTEM_RESET)
 
     def exit(self):
         """Call this to exit cleanly."""
@@ -383,7 +543,23 @@ class Board(object):
 
         self._layout = pin_list_to_board_dict(pin_spec_list)
 
+    def _handle_serial_reply(self, *data):
+        command = data[0] & SERIAL_MODE_MASK
+        portId = data[0] & SERIAL_PORT_ID_MASK
+        reply = []
 
+        if command == SERIAL_REPLY:
+            for i in range(1, len(data) - 1, 2):
+                reply.append((data[i + 1] << 7) | data[i])
+            if self._serial_callbacks.get(portId):
+                self._serial_callbacks[portId](reply)
+
+    def _handle_string_data(self, *data):
+        msg = bytearray()
+        for i in range(0, len(data) - 1, 2):
+            msg.append((data[i + 1] << 7) | data[i])
+        print("### Firmata sent string: ", msg.decode())
+        
 class Port(object):
     """An 8-bit port on the board."""
     def __init__(self, board, port_number, num_pins=8):
@@ -446,6 +622,7 @@ class Pin(object):
         self.type = type
         self.port = port
         self.PWM_CAPABLE = False
+        self.SERIAL_RX_CAPABLE = False
         self._mode = (type == DIGITAL and OUTPUT or INPUT)
         self.reporting = False
         self.value = None
