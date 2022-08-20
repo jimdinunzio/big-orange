@@ -11,7 +11,7 @@ import sdp_comm
 import subprocess
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window =False
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
@@ -74,8 +74,10 @@ _locations = {}
 _mdai = None
 _move_oak_d = None
 _mic_array = None
+_lpArduino = None
 _pixel_ring = None
 _starting_up = True
+_radar = None
 
 import parse
 import tts.sapi
@@ -98,6 +100,7 @@ import ai_vision.detect as detect
 import ai_vision.classify as classify
 #import winspeech
 from enum import Enum
+from latte_panda_arduino import LattePandaArduino
 import move_oak_d
 import my_depthai
 import eyes
@@ -109,6 +112,7 @@ from mic_array_tuning import Tuning
 import usb.core
 import usb.util
 import usb_pixel_ring_v2 as pixel_ring
+from radar import Radar
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -615,7 +619,7 @@ def loadMap(filename):
     if (res == 0):
         # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
         _sdp.setUpdate(False)
-        speak("Map and locations are loaded. Mapping is on.")
+        speak("Map and locations are loaded. Mapping is off.")
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
         # if result == False:
@@ -778,7 +782,7 @@ def checkForPerson():
     return False, ps
 
 def setLocationOfObj(sdp, obj, p, cam_yaw=0):
-    p.z -= 1 # come up to the object within certain distance
+    p.z -= 0.75 # come up to the object within certain distance
     pose = sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
     yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
@@ -1206,10 +1210,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
-    global _show_rgb_window
+    global _show_rgb_window, _show_depth_window
 
     # convert phrase to lower case for comparison
-    phrase = phrase.lower()
+    phrase = phrase.lower().strip()
+    
     if phrase == "stop" or phrase == "stop stop" or phrase == "orange stop":
         cancelAction(True)
         speak("Okay.")
@@ -1544,7 +1549,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _run_flag = False
         return HandleResponseResult.Handled        
 
-    if phrase == "shut down system":
+    if phrase == "shut down system" or phrase == "shutdown system":
         speak("Okay, I'm shutting down the system.")
         _run_flag = False
         os.system("shutdown /s /t 10")
@@ -1586,7 +1591,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _locations.clear()
         return HandleResponseResult.Handled
 
-    if "map updating" in phrase:
+    if "map updating" in phrase or "map update" in phrase:
         if "enable" in phrase:
             enable = True
             speak("Ok. I will enable map updating.")
@@ -1671,7 +1676,31 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _all_loaded = False
         return HandleResponseResult.Handled
 
-    if phrase == "show me your view":
+    if phrase == "show depth view":
+        speak("Ok.")
+        if not _show_depth_window:
+            _show_depth_window = True
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+
+    if phrase == "hide depth view":
+        speak("Ok.")
+        if _show_depth_window:
+            _show_depth_window = False
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+    
+    if phrase == "hide your view":
+        speak("Ok.")
+        if _show_rgb_window:
+            _show_rgb_window = False
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+    
+    if phrase == "show your view":
         speak("Ok.")
         if not _show_rgb_window:
             _show_rgb_window = True
@@ -1717,8 +1746,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         new_name = phrase.partition("i'm")[2]
     elif phrase.startswith("my name is"):
         new_name = phrase.partition("my name is")[2]
-    
+
     if len(new_name) > 0:
+        speak("hello, ", new_name)
         _move_oak_d.setPitch(70) # pitch up to see person better
         eyes.setTargetPitchYaw(-70, 0)
         speak("Hello " + new_name + ". It's nice to meet you.")
@@ -2041,30 +2071,26 @@ def listen():
         #speak("I'm connected to Google Assistant.")
         #logging.info('Connecting to %s', api_endpoint)
 
-        # create a recognizer object
-        r = sr.Recognizer()
+    # create a recognizer object
+    r = sr.Recognizer()
 
-        # create a microphone object
-        mic = sr.Microphone()
+    # create a microphone object
+    mic = sr.Microphone()
 
-        def get_energy_threshold():
-            return r.energy_threshold
+    def get_energy_threshold():
+        return r.energy_threshold
 
-        def set_energy_threshold(value):
-            r.energy_threshold = value
-            print("energy threshold changed to ", r.energy_threshold)
+    def set_energy_threshold(value):
+        r.energy_threshold = value
+        print("energy threshold changed to ", r.energy_threshold)
 
-        #adj_spch_recog_ambient(r, mic)
+    #adj_spch_recog_ambient(r, mic)
 
-        global _set_energy_threshold
-        _set_energy_threshold = set_energy_threshold
+    global _set_energy_threshold
+    _set_energy_threshold = set_energy_threshold
 
-        global _get_energy_threshold
-        _get_energy_threshold = get_energy_threshold
-
-    else:
-        r = None
-        mic = None
+    global _get_energy_threshold
+    _get_energy_threshold = get_energy_threshold
         
     speak("Hello, My name is Orange. Pleased to be at your service.")
 
@@ -2083,20 +2109,22 @@ def listen():
             return "", 0
 
         # recognize speech using Vosk Speech Recognition
-        try:
-            phrase = json.loads(r.recognize_vosk(audio))
-            phrase = phrase["text"]           
-            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
-            _last_speech_heard = phrase
-        except sr.UnknownValueError:
-            phrase = ""
-            print("What?")
-        except sr.RequestError as e:
-            phrase = ""
-            print("Recognizer error; {0}".format(e))
-        except:
-            phrase = ""
-            print("Unknown speech recognition error.")
+        # try:
+        result = r.recognize_vosk(audio, arg2=None, alts=3)
+        print(result)
+        phrase = json.loads(result)
+        phrase = phrase["alternatives"][0]["text"]           
+        print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+        _last_speech_heard = phrase
+        # except sr.UnknownValueError:
+        #     phrase = ""
+        #     print("What?")
+        # except sr.RequestError as e:
+        #     phrase = ""
+        #     print("Recognizer error; {0}".format(e))
+        # except:
+        #     phrase = ""
+        #     print("Unknown speech recognition error.")
         return phrase, doa
 
     def listenFromGoogleSpeechRecog(r, mic, sr):
@@ -2562,9 +2590,15 @@ def shutdown_robot():
     shutdown_facial_recog()
     print("shutting down move oakd")
     _move_oak_d.shutdown()
+    print("shutting down radar")
+    _radar.shutdown()
+    print("shutting down pixel ring")
     _pixel_ring.close()
+    print("shutting down microphone array")
     _mic_array.close()
-    
+    print("shutting down leonardo")
+    _lpArduino.shutdown()
+
     # TBD join threads
     
     # Close all open threads
@@ -2696,10 +2730,11 @@ def setPixelPaletteBootDefault():
     _pixel_ring.set_color_palette(0x005050,0x000050)
 
 def run():
-    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar
     # Start 32 bit bridge server
     _sdp = MyClient()
-
+    _lpArduino = LattePandaArduino()
+    _lpArduino.initialize()
     #init_local_speech_rec()
     initialize_speech()
     _mic_array = MicArray()
@@ -2709,7 +2744,10 @@ def run():
 
     speak("I'm starting up.")
     _move_oak_d = move_oak_d.MoveOakD()
-    _move_oak_d.initialize()
+    _move_oak_d.initialize(_lpArduino.board)
+
+    _radar = Radar()
+    _radar.initialize(_lpArduino.board)
 
     res = sdp_comm.connectToSdp(_sdp)
 
