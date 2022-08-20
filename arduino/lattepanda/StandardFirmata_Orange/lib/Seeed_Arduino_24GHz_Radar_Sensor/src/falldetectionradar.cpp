@@ -3,7 +3,7 @@
 
 #ifdef __AVR__
     #include <SoftwareSerial.h>
-    SoftwareSerial SSerial(2, 3); // RX, TX
+    SoftwareSerial SSerial(11, 12); // RX, TX
     #define Serial1 SSerial
 #endif
 
@@ -36,6 +36,7 @@ void FallDetectionRadar::recvRadarBytes(){
       }
   }
 }
+
 
 // Unpacking of physical parameters
 void FallDetectionRadar::Bodysign_judgment(byte inf[], float Move_min, float Move_max){
@@ -326,4 +327,3 @@ unsigned short int FallDetectionRadar::us_CalculateCrc16(unsigned char *lpuc_Fra
   }
   return (unsigned short int )(luc_CRCLo << 8 | luc_CRCHi);
 }
-

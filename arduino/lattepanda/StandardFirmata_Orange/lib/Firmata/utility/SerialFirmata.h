@@ -195,6 +195,8 @@ class SerialFirmata: public FirmataFeature
     signed char serialIndex;
 
 #if defined(SoftwareSerial_h)
+    void deleteSerial(byte portId);
+
     Stream *swSerial0;
     Stream *swSerial1;
     Stream *swSerial2;

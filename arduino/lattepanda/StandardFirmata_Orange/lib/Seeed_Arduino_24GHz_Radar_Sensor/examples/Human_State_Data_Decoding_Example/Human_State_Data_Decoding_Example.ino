@@ -1,4 +1,5 @@
 #include <falldetectionradar.h>
+#include <Arduino.h>
 
 FallDetectionRadar radar;
 

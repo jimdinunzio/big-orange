@@ -23,9 +23,9 @@
   Last updated August 17th, 2017
 */
 
-#include <Servo.h>
+#include <Servo2.h>
 #include <Wire.h>
-#include <Firmata.h>
+#include <SerialFirmata.h>
 
 #define I2C_WRITE                   B00000000
 #define I2C_READ                    B00001000
@@ -122,22 +122,24 @@ byte wireRead(void)
 
 void attachServo(byte pin, int minPulse, int maxPulse)
 {
-  if (servoCount < MAX_SERVOS) {
-    // reuse indexes of detached servos until all have been reallocated
-    if (detachedServoCount > 0) {
-      servoPinMap[pin] = detachedServos[detachedServoCount - 1];
-      if (detachedServoCount > 0) detachedServoCount--;
-    } else {
-      servoPinMap[pin] = servoCount;
-      servoCount++;
-    }
-    if (minPulse > 0 && maxPulse > 0) {
-      servos[servoPinMap[pin]].attach(PIN_TO_DIGITAL(pin), minPulse, maxPulse);
-    } else {
-      servos[servoPinMap[pin]].attach(PIN_TO_DIGITAL(pin));
-    }
+  // reuse indexes of detached servos first until all have been reallocated
+  if (detachedServoCount > 0) {
+    servoPinMap[pin] = detachedServos[detachedServoCount - 1];
+    detachedServoCount--;
   } else {
-    Firmata.sendString("Max servos attached");
+    if (servoCount < MAX_SERVOS) {
+        servoPinMap[pin] = servoCount;
+        servoCount++;
+    } else {
+      Firmata.sendString("Max servos attached");
+      return;
+    }  
+  }
+
+  if (minPulse > 0 && maxPulse > 0) {
+    servos[servoPinMap[pin]].attach(PIN_TO_DIGITAL(pin), minPulse, maxPulse);
+  } else {
+    servos[servoPinMap[pin]].attach(PIN_TO_DIGITAL(pin));
   }
 }
 
@@ -146,7 +148,7 @@ void detachServo(byte pin)
   servos[servoPinMap[pin]].detach();
   // if we're detaching the last servo, decrement the count
   // otherwise store the index of the detached servo
-  if (servoPinMap[pin] == servoCount && servoCount > 0) {
+  if (servoPinMap[pin] == servoCount - 1 && servoCount > 0) {
     servoCount--;
   } else if (servoCount > 0) {
     // keep track of detached servos because we want to reuse their indexes

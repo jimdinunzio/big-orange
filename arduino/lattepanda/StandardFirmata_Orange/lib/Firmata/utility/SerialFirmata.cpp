@@ -175,11 +175,8 @@ boolean SerialFirmata::handleSysex(byte command, byte argc, byte *argv)
             ((HardwareSerial*)serialPort)->end();
           } else {
 #if defined(SoftwareSerial_h)
-            ((SoftwareSerial*)serialPort)->end();
-            if (serialPort != NULL) {
-              free(serialPort);
-              serialPort = NULL;
-            }
+            deleteSerial(portId);
+            serialPort = NULL;
 #endif
           }
         }
@@ -206,6 +203,30 @@ boolean SerialFirmata::handleSysex(byte command, byte argc, byte *argv)
   }
   return false;
 }
+
+#if defined(SoftwareSerial_h)
+void SerialFirmata::deleteSerial(byte portId)
+{
+  switch (portId) {
+  case SW_SERIAL0:
+      delete (SoftwareSerial*)swSerial0;
+      swSerial0 = NULL;
+      break;
+  case SW_SERIAL1:
+      delete (SoftwareSerial*)swSerial1;
+      swSerial1 = NULL;
+      break;
+  case SW_SERIAL2:
+      delete (SoftwareSerial*)swSerial2;
+      swSerial2 = NULL;
+      break;
+  case SW_SERIAL3:
+      delete (SoftwareSerial*)swSerial3;
+      swSerial3 = NULL;
+      break;
+  }
+}
+#endif
 
 void SerialFirmata::update()
 {
