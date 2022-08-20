@@ -1,4 +1,3 @@
-from pyfirmata import Arduino, util
 import time
 from threading import Thread
 import eyes
@@ -9,6 +8,7 @@ from threading import Lock
 from copy import deepcopy
 import my_sdp_client
 import sdp_comm
+from pyfirmata import INPUT, Board
 
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""
@@ -59,18 +59,18 @@ def servoToEyePitch(pitch):
 
 class OakDServo(object):
     """OakD Servo Class for Pitch and Yaw """
-    def __init__(self, axis:ServoAxis, board):
+    def __init__(self, axis:ServoAxis, board :Board):
         self.axis = axis
         if axis == ServoAxis.Pitch:
             self.min_angle = _PITCH_LIMITS[0]
             self.max_angle = _PITCH_LIMITS[1]
-            self.servo = board.get_pin('d:3:s')
+            self.servo = board.get_pin('d:9:s')
             self.angle = 0
             self.home_angle = _PITCH_HOME_
         elif axis == ServoAxis.Yaw:
             self.min_angle = _YAW_LIMITS[0]
             self.max_angle = _YAW_LIMITS[1]
-            self.servo = board.get_pin('d:5:s')
+            self.servo = board.get_pin('d:10:s')
             self.angle = 0
             self.home_angle = _YAW_HOME_
 
@@ -80,6 +80,9 @@ class OakDServo(object):
         self.move_steps = 1.0
         self.obj_ave = 0.0
         self.setAngle(self.home_angle, 0)
+
+    def __del__(self):
+        self.servo.mode = INPUT
 
     def auto_center(self):
         self.auto_center_time = 0.0
@@ -182,9 +185,9 @@ class OakDServo(object):
 
 class MoveOakD(object):
     def __init__(self):
+        self.board : Board = None
         self.pitchServo = None
         self.yawServo = None
-        self.board = None
         self.min_track_confidence = 0.7
         self.oakd_sdp = None
         self.sweeping = False
@@ -202,10 +205,11 @@ class MoveOakD(object):
         self.tracking_thread = None
         self.tracking_run = False
 
-    def initialize(self):
-        self.board = Arduino('COM6')
-        iter = util.Iterator(self.board)
-        iter.start()
+    def __del__(self):
+        self.shutdown()
+
+    def initialize(self, board: Board):
+        self.board = board
         self.pitchServo = OakDServo(ServoAxis.Pitch, self.board)
         self.yawServo = OakDServo(ServoAxis.Yaw, self.board)
 
@@ -433,15 +437,20 @@ class MoveOakD(object):
         #print("Tracking thread ending")
 
     def shutdown(self):
-        self.stop_tracking()
-        self.allHome()
-        if self.board is not None:
-            self.board.exit()
-            self.board = None
+        try:
+            self.stop_tracking()
+            self.allHome()
+            del(self.yawServo)
+            del(self.pitchServo)
+        except:
+            None
 
 if __name__ == '__main__':
+    from latte_panda_arduino import LattePandaArduino
+    _lpArduino = LattePandaArduino()
+    _lpArduino.initialize()
     m = MoveOakD()
-    m.initialize()
+    m.initialize(_lpArduino.board)
     m.yawServo.setAngle(15)
     try:
         while(1):
@@ -466,9 +475,11 @@ if __name__ == '__main__':
             m.pitchServo.setHome()
             m.yawServo.setAngle(15)
     except (KeyboardInterrupt):
-        m.shutdown()
         print("KeyboardInterrupt, closing board.")
-    except Exception as e:
         m.shutdown()
+        _lpArduino.shutdown()
+    except Exception as e:
         print("exception: "  + str(e) + ", closing board")
+        m.shutdown()
+        _lpArduino.shutdown()
     
