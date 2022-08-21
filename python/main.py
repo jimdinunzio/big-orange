@@ -30,10 +30,15 @@ _DELIVERY_RESPONSES = [
     "You know, I'm only doing this until I get discovered... I, want to direct... For now, it's on to the next delivery.",
     "Since you asked... This, is just my day job... At night, I'm shooting an indie film... Oh well, deliveries are fun too.",
     "Waiting tables of people guzzling down their drinks is a means to an end for me... Filmmaking is, my real passion. Later."]
-
+_WALKED_AWAY_RESPONSES = [
+    "Maybe I can help.",
+    "I can be quite entertaining.",
+    "I take a host of commands."]
 _LOCATION_RECTS = { "kitchen": _KITCHEN_RECT, "office": _OFFICE_RECT, "dining area": _DINING_AREA_RECT}
 _dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
+_movement_timeout = 60
+_movement_towards_away = 30
 
 # Globals
 _mood = "happy"
@@ -63,6 +68,7 @@ _my_depthai_thread = None
 _listen_thread = None
 _eyes_thread = None
 _handle_resp_thread = None
+_radar_thread = None
 _handling_resp = False
 _handling_resp_lock = Lock()
 _sendToGoogleAssistantFn = None
@@ -78,6 +84,7 @@ _lpArduino = None
 _pixel_ring = None
 _starting_up = True
 _radar = None
+_enable_movement_sensing = True
 
 import parse
 import tts.sapi
@@ -112,7 +119,7 @@ from mic_array_tuning import Tuning
 import usb.core
 import usb.util
 import usb_pixel_ring_v2 as pixel_ring
-from radar import Radar
+import radar
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -1822,6 +1829,14 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         switch_to_cloud_speech()
         return HandleResponseResult.Handled
 
+    if "enable movement sensing" in phrase:
+        start_radar()
+        return HandleResponseResult.Handled
+
+    if "disable movement sensing" in phrase:
+        stop_radar()
+        return HandleResponseResult.Handled
+
     if phrase.startswith("et = "):
         global _set_energy_threshold
         if _set_energy_threshold is not None:
@@ -2467,9 +2482,32 @@ def switch_to_cloud_speech():
         speak("Ok.")
 
 def radar_main():
-    while _run_flag:
-        
+    # initialize
+    global _radar_enabled
+    next_movement = 0
+    next_towards = 0
+    next_away = 0
+    _radar_enabled = True
+    _radar.start_sensing()
+    while _radar_enabled:
+        if _radar.has_message():
+            msg = _radar.pop_message()
+            if msg.report_type == radar.BODYSIGN_OUT:
+                if msg.value > 25.0 and time.monotonic() >= next_movement:
+                    next_movement = time.monotonic() + _movement_timeout
+                    speak("Hello, I noticed you came in the room. I am ready to help.")
+            elif msg.value == radar.TOWARDS_AWAY_OUT:
+                if time.monotonic() >= next_towards and msg.status == radar.CA_TOWARDS_OUT:
+                    speak("I noticed you've approached. What can I do for you?")
+                    next_towards = time.monotonic() + _movement_towards_away
+                elif time.monotonic() >= next_away and msg.status == radar.CA_AWAY_OUT:
+                    r = random.randint(0,2)
+                    speak("I noticed you've walked away. " + _WALKED_AWAY_RESPONSES[r])
+                    next_away = time.monotonic() + _movement_towards_away
+                next_movement = time.monotonic() + _movement_timeout
+            #print(msg)
         time.sleep(0.25)
+    _radar.stop_sensing()
 
 def start_radar():
     global _radar_thread
@@ -2477,19 +2515,14 @@ def start_radar():
         _radar_thread = Thread(target=radar_main, name="Radar", daemon=False)
         _radar_thread.start()
     else:
-        print("Error - trying to start following when already following.")
+        print("Error - trying to start radar when already started.")
 
-def stop_following():
-    global _radar_thread, _following
-    _following = False
+def stop_radar():
+    global _radar_thread, _radar_enabled
+    _radar_enabled = False
     if _radar_thread is not None:
         _radar_thread.join()
         _radar_thread = None
-
-def enable_radar():
-    global _radar_enabled
-    _radar_enabled = True
-
 
 from orange_utils import *
 
@@ -2571,6 +2604,10 @@ def initialize_robot():
 
     if _eyes_flag: # this is needed to start the display and to keep it open
         start_eyes_thread()
+
+    if _enable_movement_sensing:
+        start_radar()
+
 ################################################################
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
@@ -2746,7 +2783,7 @@ def run():
     _move_oak_d = move_oak_d.MoveOakD()
     _move_oak_d.initialize(_lpArduino.board)
 
-    _radar = Radar()
+    _radar = radar.Radar()
     _radar.initialize(_lpArduino.board)
 
     res = sdp_comm.connectToSdp(_sdp)

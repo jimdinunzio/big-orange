@@ -3,6 +3,7 @@ import time
 from numpy import array, byte
 from pyfirmata import Board, SW_SERIAL0
 import struct
+from threading import Lock
 
 # output codes
 
@@ -56,7 +57,7 @@ class Radar:
         def __repr__(self):
             s = "Report Type:"
             if self.report_type == BODYSIGN_OUT:
-                interp = self.evalBodySign(self.value, 10, 30)
+                interp = self.evalBodySign(self.value, 25, 35)
                 s += " Body sense, speed = " + str(self.value) + " interp: "
                 if interp == SOMEBODY_STOP_OUT:
                     s += "Resting person"
@@ -121,6 +122,8 @@ class Radar:
         self.message_queue = []
         self.command_queue = []
         self.QUEUE_SIZE = 3
+        self.msg_queue_lock = Lock()
+        self.cmd_queue_lock = Lock()
         self.cuc_CRCHi = [
             0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41,
             0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40,
@@ -192,9 +195,19 @@ class Radar:
         resp = [0x3, 0x1, 0x2]
         self.send_command(cmd, resp, callback)
 
+    def has_message(self) -> bool:
+        with self.msg_queue_lock:
+            return len(self.message_queue) > 0
+
+    # pop oldest message off so we read them in order
+    def pop_message(self) -> Message:
+        with self.msg_queue_lock:
+            return self.message_queue.pop(0)
+
     def send_command(self, data, resp=None, callback=None):
         if resp is not None:
-            self.command_queue.append({"resp":resp, "cb": callback})
+            with self.cmd_queue_lock:
+                self.command_queue.append({"resp":resp, "cb": callback})
         crc_data = self.us_CalculateCrc16(data)
         data.append((crc_data & 0xff00) >> 8)
         data.append(crc_data & 0xff)
@@ -244,30 +257,32 @@ class Radar:
             if not self.new_data:
                 return
 
-            print("Msg: [", end='')
-            for d in self.msg:
-                print(hex(d), end=', ')
-            print(']')
+            # print("Msg: [", end='')
+            # for d in self.msg:
+            #     print(hex(d), end=', ')
+            # print(']')
 
             # check if this is a response to a command sent earlier
             if len(self.msg) > 7:
-                for c in self.command_queue:
-                    if c['resp'] == self.msg[3:6]:
-                        if c['cb'] is not None:
-                            c['cb'](self.msg[6:-2])
-                        self.command_queue.remove(c)
-                        self.new_data = False
-                        continue
+                with self.cmd_queue_lock:
+                    for c in self.command_queue:
+                        if c['resp'] == self.msg[3:6]:
+                            if c['cb'] is not None:
+                                c['cb'](self.msg[6:-2])
+                            self.command_queue.remove(c)
+                            self.new_data = False
+                            continue
 
             report_type, value, status = self.parseMsg(self.msg)
             self.new_data = False # Data has been used, next one can fill in
             
             if report_type != 0:
                 msg = self.Message(report_type, value, status)
-                self.message_queue.append(msg)
-                print(msg)
-                if len(self.message_queue) > self.QUEUE_SIZE:
-                    self.message_queue.pop(0)
+                with self.msg_queue_lock:
+                    self.message_queue.append(msg)
+                    #print(msg)
+                    if len(self.message_queue) > self.QUEUE_SIZE:
+                        self.message_queue.pop(0)
 
             #self.debug_print(report_type, value, status)
             # if report_type == BODYSIGN_OUT:
