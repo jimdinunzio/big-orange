@@ -384,7 +384,8 @@ class DepthAI:
 
 
 class FacialRecognize(DepthAI):
-    def __init__(self, file=None, camera=True, debug=True, add_face=False, new_name=""):
+    def __init__(self, getPitch=None, offsetPitch=None, getYaw=None, offsetYaw=None, file=None,
+                 camera=True, debug=True, add_face=False, new_name=""):
         self.cam_size = (300, 300)
         super(FacialRecognize, self).__init__(file, camera, debug)
         self.face_frame_corr = Queue()
@@ -397,6 +398,11 @@ class FacialRecognize(DepthAI):
         self.detected_names = []
         if not add_face:
             self.db_dic = read_db(self.labels)
+        self.getPitch=getPitch
+        self.offsetPitch=offsetPitch
+        self.getYaw=getYaw
+        self.offsetYaw=offsetYaw
+        self.search_dir=-1
 
     def create_nns(self):
         self.create_mobilenet_nn(
@@ -434,15 +440,43 @@ class FacialRecognize(DepthAI):
             return False
 
         bboxes = nn_data.detections
+        if len(bboxes) == 0:
+            # try moving camera up until a face is detected
+            if self.getPitch and self.offsetPitch:
+                self.offsetPitch(self.search_dir)
+                pitch = self.getPitch()
+                if pitch <= -60:
+                    self.search_dir = 1
+                elif pitch >= -10:
+                    self.search_dir = -1 
+        count = 0
         for bbox in bboxes:
             face_coord = frame_norm(
                 self.frame.shape[:2], *[bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax]
             )
+            # center camera on the first face
+            if self.offsetPitch and self.offsetYaw and count == 0:
+                x_ctr = (face_coord[0] + face_coord[2]) / (2.0 * self.cam_size[0])
+                y_ctr = (face_coord[1] + face_coord[3]) / (2.0 * self.cam_size[1])
+
+                y_diff = y_ctr - 0.5
+                adj = y_diff * 6
+                if abs(adj) < 1.0:
+                    adj = 0.0                
+                self.offsetPitch(adj)
+
+                x_diff = 0.5 - x_ctr
+                adj = x_diff * 6
+                if abs(adj) < 1.0:
+                    adj = 0.0
+                self.offsetYaw(adj)
+
             self.face_frame.put(
                 self.frame[face_coord[1] : face_coord[3], face_coord[0] : face_coord[2]]
             )
             self.face_coords.put(face_coord)
             self.draw_bbox(face_coord, (10, 245, 10))
+            count += 1
         return True
 
     def run_head_pose(self):
@@ -537,8 +571,27 @@ class FacialRecognize(DepthAI):
 # import time
 # import facial_recognize as fr
 # from threading import Thread
-# f = fr.FacialRecognize()
+# from latte_panda_arduino import LattePandaArduino
+# from move_oak_d import MoveOakD
+
+# def getPitch():
+#     return m.getPitch()
+# def setPitch(val):
+#     m.setPitch(val)
+# def getYaw():
+#     return m.getYaw()
+# def setYaw(val):
+#     m.setYaw(val)
+
+# _lpArduino = LattePandaArduino()
+# _lpArduino.initialize()
+# m = MoveOakD()
+# m.initialize(_lpArduino.board)
+
+# f = fr.FacialRecognize(getPitch, setPitch, getYaw, setYaw)
 # t=Thread(target=f.run).start()
 # while 1:
 #     f.get_detected_names()
 #     time.sleep(0.100)
+
+

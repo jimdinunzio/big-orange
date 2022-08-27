@@ -9,6 +9,7 @@ import random
 from threading import Lock
 import sdp_comm
 import subprocess
+import typing
 
 # Constants
 _show_rgb_window =False
@@ -39,6 +40,8 @@ _dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 _movement_timeout = 60
 _movement_towards_away = 30
+
+MicArray = typing.NewType("MicArray", object)
 
 # Globals
 _mood = "happy"
@@ -79,12 +82,12 @@ _last_speech_heard = ""
 _locations = {}
 _mdai = None
 _move_oak_d = None
-_mic_array = None
+_mic_array : MicArray = None
 _lpArduino = None
 _pixel_ring = None
 _starting_up = True
 _radar = None
-_enable_movement_sensing = True
+_enable_movement_sensing = False
 
 import parse
 import tts.sapi
@@ -120,6 +123,8 @@ import usb.core
 import usb.util
 import usb_pixel_ring_v2 as pixel_ring
 import radar
+
+_move_oak_d : move_oak_d.MoveOakD
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -378,6 +383,7 @@ def handleGotoLocation():
                     _goal = ""
                     if len(_goal_queue) > 0:
                         _goal = _goal_queue.pop(0)
+                    _move_oak_d.allHome()
                     continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
                     speak("I'm going to the " + _goal)
@@ -1755,8 +1761,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         new_name = phrase.partition("my name is")[2]
 
     if len(new_name) > 0:
+        _mic_array.rotateToDoa(doa)
         speak("hello, ", new_name)
-        _move_oak_d.setPitch(70) # pitch up to see person better
+        #_move_oak_d.setPitch(70) # pitch up to see person better
         eyes.setTargetPitchYaw(-70, 0)
         speak("Hello " + new_name + ". It's nice to meet you.")
         shutdown_my_depthai()
@@ -1771,7 +1778,8 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if phrase.startswith("hello") or phrase.startswith("hi"):
-        _move_oak_d.setPitch(70) # pitch up to see person better
+        _mic_array.rotateToDoa(doa)
+        #_move_oak_d.setPitch(70) # pitch up to see person better
         eyes.setTargetPitchYaw(-70, 0)
         shutdown_my_depthai()
         speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
@@ -1830,10 +1838,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if "enable movement sensing" in phrase:
+        speak("ok, i've enabled movement sensing.")
         start_radar()
         return HandleResponseResult.Handled
 
     if "disable movement sensing" in phrase:
+        speak("ok, i've disabled movement sensing.")
         stop_radar()
         return HandleResponseResult.Handled
 
@@ -2337,9 +2347,13 @@ def initialize_speech():
 def start_facial_recog(new_name=""):
     global _facial_recog, _facial_recog_thread
     if len(new_name) > 0:
-        _facial_recog = fr.FacialRecognize(add_face=True, debug=False, new_name = new_name)
+        _facial_recog = fr.FacialRecognize(getPitch=_move_oak_d.getPitch, offsetPitch=_move_oak_d.offsetPitch,
+                                           getYaw =_move_oak_d.getYaw, offsetYaw=_move_oak_d.offsetYaw,
+                                           add_face=True, debug=True, new_name = new_name)
     else:
-        _facial_recog = fr.FacialRecognize(debug=False)
+        _facial_recog = fr.FacialRecognize(getPitch=_move_oak_d.getPitch, offsetPitch=_move_oak_d.offsetPitch,
+                                           getYaw =_move_oak_d.getYaw, offsetYaw=_move_oak_d.offsetYaw,
+                                           debug=True)
 
     _facial_recog_thread = Thread(target=_facial_recog.run, name="Facial Recog", daemon=False)
     _facial_recog_thread.start()
@@ -2490,10 +2504,10 @@ def radar_main():
     _radar_enabled = True
     _radar.start_sensing()
     while _radar_enabled:
-        if _radar.has_message():
+        if not _action_flag and _radar.has_message():
             msg = _radar.pop_message()
             if msg.report_type == radar.BODYSIGN_OUT:
-                if msg.value > 25.0 and time.monotonic() >= next_movement:
+                if msg.value > 30.0 and time.monotonic() >= next_movement:
                     next_movement = time.monotonic() + _movement_timeout
                     speak("Hello, I noticed you came in the room. I am ready to help.")
             elif msg.value == radar.TOWARDS_AWAY_OUT:
@@ -2505,7 +2519,7 @@ def radar_main():
                     speak("I noticed you've walked away. " + _WALKED_AWAY_RESPONSES[r])
                     next_away = time.monotonic() + _movement_towards_away
                 next_movement = time.monotonic() + _movement_timeout
-            #print(msg)
+            print(msg)
         time.sleep(0.25)
     _radar.stop_sensing()
 
@@ -2628,7 +2642,7 @@ def shutdown_robot():
     print("shutting down move oakd")
     _move_oak_d.shutdown()
     print("shutting down radar")
-    _radar.shutdown()
+    stop_radar()
     print("shutting down pixel ring")
     _pixel_ring.close()
     print("shutting down microphone array")

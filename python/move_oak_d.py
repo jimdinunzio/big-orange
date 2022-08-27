@@ -110,6 +110,9 @@ class OakDServo(object):
         else:
             self._setAngle(angle, speed)
 
+    def offsetAngle(self, delta, speed=0):
+        self.setAngle(self.angle + delta, speed)
+
     def setHome(self):
         self.setAngle(self.home_angle)
     
@@ -232,8 +235,14 @@ class MoveOakD(object):
     def getPitch(self):
         return self.pitchServo.getAngle()
 
+    def offsetYaw(self, delta):
+        self.yawServo.offsetAngle(delta)
+
     def setYaw(self, angle):
         self.yawServo.setAngle(angle)
+
+    def offsetPitch(self, delta):
+        self.pitchServo.offsetAngle(delta)
 
     def setPitch(self, angle):
         self.pitchServo.setAngle(angle)
