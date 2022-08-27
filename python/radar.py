@@ -58,7 +58,7 @@ class Radar:
             s = "Report Type:"
             if self.report_type == BODYSIGN_OUT:
                 interp = self.evalBodySign(self.value, 25, 35)
-                s += " Body sense, speed = " + str(self.value) + " interp: "
+                s += " Body sign, speed = " + str(self.value) + " interp: "
                 if interp == SOMEBODY_STOP_OUT:
                     s += "Resting person"
                 elif interp == SOMEBODY_MOVE_OUT:
