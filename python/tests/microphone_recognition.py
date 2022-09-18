@@ -39,11 +39,13 @@ def test():
             try:
                 r.adjust_for_ambient_noise(source, is_speech_cb=m.getIsSpeech)
                 print("threshold = ", r.energy_threshold)
-                #audio = r.listen(source, phrase_time_limit=7, is_speech_cb=m.getIsSpeech)
+                audio = r.listen(source, phrase_time_limit=7, is_speech_cb=m.getIsSpeech)
                 #phrase = r.recognize_google(audio)
-                # phrase = json.loads(r.recognize_vosk(audio))
-                # phrase = phrase["text"]
-                #print("Vosk recognizer thinks you said \"", phrase, "\"")
+                result = r.recognize_vosk(audio, arg2='[ "orange", "[unk]" ]', alts=1)
+                print(result)
+                phrase = json.loads(result)
+                phrase = phrase["alternatives"][0]["text"]
+                print("Vosk recognizer thinks you said \"", phrase, "\"")
             except sr.UnknownValueError:
                 print("Vosk recognizer could not understand audio")
             except sr.RequestError as e:
