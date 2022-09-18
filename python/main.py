@@ -300,19 +300,19 @@ def batteryMonitor():
     try:
         batteryPercent = _sdp.battery()
         person = _person if _person != "nobody" else "hello anyone"
-        if batteryPercent <= 15:
-            if not _reported_15:
-                _reported_15 = True
-                speak(person + ", my battery is exhausted, and I am shutting down now.") 
-                cancelAction()
-                _run_flag = False
-                os.system("shutdown /s /t 30")
-        elif batteryPercent <= 18:
-            if not _reported_18:
-                _reported_18 = True
-                speak(person + ", I need to recharge my battery. I am going to the recharge station.")
-                _goal = "recharge"
-        elif batteryPercent <= 25:
+        # if batteryPercent <= 15:
+        #     if not _reported_15:
+        #         _reported_15 = True
+        #         speak(person + ", my battery is exhausted, and I am shutting down now.") 
+        #         cancelAction()
+        #         _run_flag = False
+        #         os.system("shutdown /s /t 30")
+        # elif batteryPercent <= 18:
+        #     if not _reported_18:
+        #         _reported_18 = True
+        #         speak(person + ", I need to recharge my battery. I am going to the recharge station.")
+        #         _goal = "recharge"
+        if batteryPercent <= 25:
             if not _reported_25:
                 _reported_25 = True
                 speak(person + ", my battery is getting low. I'll have to charge up soon.")
@@ -1258,17 +1258,19 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _person = "nobody"
         return HandleResponseResult.Handled
 
-    # check if the first word is the wake up word, otherwise ignore speech
+    # check if the hot word is in the string, and take the words after it, otherwise ignore speech
     if check_hot_word:
-        try:
-            (firstWord, phrase) = phrase.split(maxsplit=1)
-        except:
+        hot_word_idx = phrase.find(_hotword)
+        if hot_word_idx >= 0:
+            phrase = phrase[hot_word_idx + len(_hotword):].strip()
+        else:
             return HandleResponseResult.NotHandledNoHotWord
-        if (firstWord != _hotword):
-            return HandleResponseResult.NotHandledNoHotWord
-        
+
     # some verbal commands are handled inside the listen thread
-    
+    if phrase == "":
+        speak("That's my name. Don't wear it out...")
+        return HandleResponseResult.Handled
+
     if (phrase == "resume listening" or
         phrase == "start listening" or
         phrase == "start listening again"):
@@ -1615,14 +1617,21 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             return HandleResponseResult.Handled                
         sdp.setUpdate(enable)
         return HandleResponseResult.Handled
-    
+
     if "take a picture" in phrase:
-        speak("Ok. Say Cheeze...")
-        pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
-        mat = take_picture(pic_filename)
+        if not _show_rgb_window:
+            speak("You'll need to show my view first.")
+            return HandleResponseResult.Handled
+        _mdai.takePicture()
         time.sleep(0.5)
         speak("Ok. Here is the picture I took.")
-        show_picture_mat(mat)
+
+        # speak("Ok. Say Cheeze...")
+        # pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
+        # mat = take_picture(pic_filename)
+        # time.sleep(0.5)
+        # speak("Ok. Here is the picture I took.")
+        # show_picture_mat(mat)
         return HandleResponseResult.Handled
 
     if "set speed" in phrase:
@@ -1816,7 +1825,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _locations.pop(loc)
         return HandleResponseResult.Handled
 
-    if phrase.startswith("update location of"):
+    if phrase.startswith("update location of") or phrase.startswith("set location of"):
         loc = phrase[19:]
         pose = sdp.pose()
         _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
@@ -1916,12 +1925,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         else:
             return HandleResponseResult.NotHandledUnknown
         if room is not None:
-            room_words = room.split()
-            if len(room_words) > 1:
-                try:
-                    room = " ".join([room_words[0], str(w2n.word_to_num(room_words[1]))])
-                except:
-                    None             
+            # room_words = room.split()
+            # if len(room_words) > 1:
+            #     try:
+            #         room = " ".join([room_words[0], str(w2n.word_to_num(room_words[1]))])
+            #     except:
+            #         None             
 
             room = room.strip()
         
@@ -2138,7 +2147,7 @@ def listen():
         result = r.recognize_vosk(audio, arg2=None, alts=3)
         print(result)
         phrase = json.loads(result)
-        phrase = phrase["alternatives"][0]["text"]           
+        phrase = phrase["alternatives"][0]["text"].strip()          
         print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
         _last_speech_heard = phrase
         # except sr.UnknownValueError:

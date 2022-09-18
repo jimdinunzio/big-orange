@@ -9,6 +9,7 @@ import time
 from threading import Lock
 from copy import deepcopy
 import math
+from playsound import playsound
 
 MAX_ATTEMPTS = 3
 TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
@@ -68,6 +69,7 @@ class MyDepthAI:
         self.pipeline = None
         self.nnBlobPath =""
         self.labelMap = []
+        self.takePictureNow = False
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -208,6 +210,9 @@ class MyDepthAI:
         with self.detection_lock:
             return deepcopy(self.objectDetections)
         
+    def takePicture(self):
+        self.takePictureNow = True
+        
     def startUp(self, showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
         self.run_flag = True
@@ -276,7 +281,14 @@ class MyDepthAI:
                 
                         # If the frame is available, draw bounding boxes on it and show the frame
                         if showRgbWindow:
-                            frame = inPreview.getCvFrame()                    
+                            frame = inPreview.getCvFrame()
+                            if self.takePictureNow:
+                                self.takePictureNow = False
+                                pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
+                                playsound("sounds/camera-shutter.wav", block=True)
+                                cv2.imwrite("pictures_taken/" + pic_filename, frame)
+                                cv2.imshow("Snapshot", frame)
+
                             height = frame.shape[0]
                             width  = frame.shape[1]
                             
@@ -323,7 +335,8 @@ class MyDepthAI:
                                     cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
                                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
                         
-                        if showRgbWindow:                    
+                        if showRgbWindow:           
+
                             cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
                             cv2.imshow("rgb", frame)
                         
