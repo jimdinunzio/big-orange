@@ -1720,20 +1720,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             _show_rgb_window = False
             shutdown_my_depthai()
             start_depthai_thread()
-        return HandleResponseResult.Handled
+        return HandleResponseResult.Handled        
     
     if phrase == "show your view":
         speak("Ok.")
         if not _show_rgb_window:
             _show_rgb_window = True
-            shutdown_my_depthai()
-            start_depthai_thread()
-        return HandleResponseResult.Handled
-    
-    if phrase == "hide your view":
-        speak("Ok.")
-        if _show_rgb_window:
-            _show_rgb_window = False
             shutdown_my_depthai()
             start_depthai_thread()
         return HandleResponseResult.Handled
