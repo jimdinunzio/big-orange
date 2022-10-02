@@ -350,3 +350,17 @@ class MyDepthAI:
                 print(repr(e))
                 cv2.destroyAllWindows()
                 time.sleep(1)
+
+from threading import Thread
+if __name__ == '__main__':
+    mdai = MyDepthAI(model="tinyYolo", use_tracker=True)
+
+    my_depthai_thread = Thread(target = mdai.startUp, args=(False, False), name="mdai", daemon=False)
+    my_depthai_thread.start()
+
+    try:
+        while True:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        mdai.shutdown()
+        my_depthai_thread.join()

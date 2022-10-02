@@ -241,6 +241,7 @@ class MoveOakD(object):
     def setYaw(self, angle):
         self.yawServo.setAngle(angle)
 
+    # pitch up with negative delta, down with positive delta
     def offsetPitch(self, delta):
         self.pitchServo.offsetAngle(delta)
 

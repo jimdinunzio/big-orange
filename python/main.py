@@ -12,7 +12,7 @@ import subprocess
 import typing
 
 # Constants
-_show_rgb_window =False
+_show_rgb_window = False
 _show_depth_window = False
 _default_map_name = 'my house'
 _hotword = "orange"
@@ -88,6 +88,7 @@ _pixel_ring = None
 _starting_up = True
 _radar = None
 _enable_movement_sensing = False
+_blazepose_thread = None
 
 import parse
 import tts.sapi
@@ -123,8 +124,11 @@ import usb.core
 import usb.util
 import usb_pixel_ring_v2 as pixel_ring
 import radar
+import human_pose as hp
+import numpy as np
 
 _move_oak_d : move_oak_d.MoveOakD
+_hp : hp.MyBlazePose = None
 
 class HandleResponseResult(Enum):
     """Enumerated type for result of handling response of command"""
@@ -1482,6 +1486,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         pose = sdp.pose()
         xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
         yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
+        
+        print("going to ", xt ,", ", yt)
+
         _locations["custom"] = (xt, yt)
         _goal = "custom"
         return HandleResponseResult.Handled
@@ -1720,12 +1727,20 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             _show_rgb_window = False
             shutdown_my_depthai()
             start_depthai_thread()
-        return HandleResponseResult.Handled        
+        return HandleResponseResult.Handled
     
     if phrase == "show your view":
         speak("Ok.")
         if not _show_rgb_window:
             _show_rgb_window = True
+            shutdown_my_depthai()
+            start_depthai_thread()
+        return HandleResponseResult.Handled
+    
+    if phrase == "hide your view":
+        speak("Ok.")
+        if _show_rgb_window:
+            _show_rgb_window = False
             shutdown_my_depthai()
             start_depthai_thread()
         return HandleResponseResult.Handled
@@ -1751,6 +1766,101 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     if phrase == "stop tracking me":
         stop_tracking()
         speak("Ok. I stopped tracking you.")
+        return HandleResponseResult.Handled
+
+    if phrase == "go there":
+        shutdown_my_depthai()
+        start_blazepose_thread()
+
+        while not _hp.get_is_running():
+            time.sleep(0.050)
+
+        pose = sdp.pose()
+        loc = _hp.get_target()
+        
+        search_dir = -1 # assume we have to raise camera to get person in frame
+        timeout = time.monotonic() + 10
+        timed_out = False
+        while True:
+            loc = _hp.get_target()
+
+            if loc is not None:
+                top_points = _hp.get_rect_points()
+                #print("top_points = ", top_points)
+                tl = top_points[0][1]
+                tr = top_points[1][1]
+                head_visible = tl > -75 and tr > -75 and tl < 25 and tr < 25
+
+                score = _hp.get_lm_score()
+                #print("score = ", score)
+                #print("head_visible = ", head_visible)
+                if time.monotonic() >= timeout:
+                    timed_out = True
+                if timed_out or (score > 0.95 and head_visible):
+                    break
+
+                if tl <= -75 or tr <= -75: 
+                    search_dir = -1
+                elif tl >= 25 or tr >= 25:
+                    search_dir = 1
+                else:
+                    search_dir = 0
+
+            _move_oak_d.offsetPitch(search_dir)
+            time.sleep(0.050)            
+        time.sleep(0.5)
+        
+        if timed_out:
+            speak("Sorry I don't know where you want me to go.")
+        else:
+            print("GOT a detection")
+            if loc[1] == -1: # pointing up too high
+                rnd = random.randint(0,2)
+                if rnd == 0:
+                    speak("Uh, I'll need a pair of wings to go there.")
+                elif rnd == 1:
+                    speak("You'll need to call NASA for my jet pack.")
+                else:
+                    speak("If only I could fly like a drone.")
+                shutdown_blazepose_thread()
+                start_depthai_thread()
+                _move_oak_d.allHome()
+                return HandleResponseResult.Handled                
+                    
+            person = _hp.get_person_loc()
+            x_cam = loc[0]
+            z_cam = loc[2]
+            theta = -math.asin(x_cam/z_cam) if z_cam != 0.0 else 0
+            cam_yaw = _move_oak_d.getYaw()
+            xt_w = pose.x + z_cam * math.cos(math.radians(pose.yaw + cam_yaw) + theta)
+            yt_w = pose.y + z_cam * math.sin(math.radians(pose.yaw + cam_yaw) + theta)
+
+            px_cam = person[0]
+            pz_cam = person[2]
+            pTheta = -math.asin(px_cam/pz_cam) if pz_cam != 0.0 else 0
+            px_w = pose.x + pz_cam * math.cos(math.radians(pose.yaw + cam_yaw) + pTheta)
+            py_w = pose.y + pz_cam * math.sin(math.radians(pose.yaw + cam_yaw) + pTheta)
+
+            look_at_v = np.array([px_w - xt_w, py_w - yt_w])
+            look_at_v = look_at_v / np.linalg.norm(look_at_v)
+
+            la_heading = math.atan2(look_at_v[1], look_at_v[0])
+            
+            speak("ok, I am going", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+            shutdown_blazepose_thread()
+            time.sleep(.5)
+            print("going to location (", xt_w, ", ", yt_w, " @ heading ", math.degrees(la_heading))
+            #sdp.moveToFloatWithYaw(float(xt_w), float(yt_w), float(la_heading))
+            sdp.moveToFloat(float(xt_w), float(yt_w))
+            result = sdp.waitUntilMoveActionDone()
+            if result == ActionStatus.Error:
+                print("error trying to move")
+
+            _move_oak_d.allHome()
+            start_depthai_thread()
+
+            #_locations["custom"] = (float(xt_w), float(yt_w), float(la_heading))
+            #_goal = "custom"
         return HandleResponseResult.Handled
 
     new_name = ""
@@ -2368,9 +2478,36 @@ def shutdown_facial_recog():
         _facial_recog_thread.join()
     except:
         None
-    
+
+def start_blazepose_thread():
+    global _blazepose_thread, _hp
+
+    if _blazepose_thread is not None:
+        return
+
+    _hp = hp.MyBlazePose()
+
+    _blazepose_thread = Thread(target = _hp.run, name="hp", daemon=False)
+    _blazepose_thread.start()
+
+def shutdown_blazepose_thread():
+    global _hp, _blazepose_thread
+    if _blazepose_thread is None:
+        return
+    try:
+        _hp.shutdown()
+        _blazepose_thread.join()
+        _blazepose_thread = None
+    except:
+        None
+    del(_hp)
+    _hp = None
+
 def start_depthai_thread(model="tinyYolo", use_tracker=False):
     global _my_depthai_thread, _mdai
+
+    if _my_depthai_thread is not None:
+        return
     _mdai = my_depthai.MyDepthAI(model, use_tracker)
 
     _my_depthai_thread = Thread(target = _mdai.startUp, args=(_show_rgb_window, _show_depth_window), name="mdai", daemon=False)
@@ -2378,9 +2515,12 @@ def start_depthai_thread(model="tinyYolo", use_tracker=False):
 
 def shutdown_my_depthai():
     global _my_depthai_thread
+    if _my_depthai_thread is None:
+        return
     try:
         _mdai.shutdown()
         _my_depthai_thread.join()
+        _my_depthai_thread = None
     except:
         None
 
@@ -2638,6 +2778,8 @@ def shutdown_robot():
     eyes.shutdown()
     print("shutting down depthai")
     shutdown_my_depthai()
+    print("shutting down human pose")
+    shutdown_blazepose_thread()
     print("shutting doen facial recog")
     shutdown_facial_recog()
     print("shutting down move oakd")
