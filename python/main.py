@@ -56,7 +56,7 @@ _listen_flag = True
 _action_flag = False # True means some action is in progress
 _interrupt_action = False # True when interrupting a previously started action
 _internet = True # True when connected to the internet
-_use_internet = True # If False don't use internet
+_use_internet = False # If False don't use internet
 _call_out_objects = False # call out objects along route
 _user_set_speed = 2
 _error_last_goto = False
@@ -1807,6 +1807,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
                     search_dir = 0
 
             _move_oak_d.offsetPitch(search_dir)
+            pitch = _move_oak_d.getPitch()
+            if pitch <= -60:
+                search_dir = 1
+            elif pitch >= -10:
+                search_dir = -1
             time.sleep(0.050)            
         time.sleep(0.5)
         
@@ -1822,9 +1827,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
                     speak("You'll need to call NASA for my jet pack.")
                 else:
                     speak("If only I could fly like a drone.")
+                _move_oak_d.allHome()
                 shutdown_blazepose_thread()
                 start_depthai_thread()
-                _move_oak_d.allHome()
                 return HandleResponseResult.Handled                
                     
             person = _hp.get_person_loc()
@@ -1847,20 +1852,19 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             la_heading = math.atan2(look_at_v[1], look_at_v[0])
             
             speak("ok, I am going", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
-            shutdown_blazepose_thread()
             time.sleep(.5)
             print("going to location (", xt_w, ", ", yt_w, " @ heading ", math.degrees(la_heading))
             #sdp.moveToFloatWithYaw(float(xt_w), float(yt_w), float(la_heading))
-            sdp.moveToFloat(float(xt_w), float(yt_w))
-            result = sdp.waitUntilMoveActionDone()
-            if result == ActionStatus.Error:
-                print("error trying to move")
+            #sdp.moveToFloat(float(xt_w), float(yt_w))
+            #result = sdp.waitUntilMoveActionDone()
+            #if result == ActionStatus.Error:
+            #    print("error trying to move")
 
             _move_oak_d.allHome()
+            _locations["custom"] = (float(xt_w), float(yt_w), float(la_heading))
+            _goal = "custom"
+            shutdown_blazepose_thread()
             start_depthai_thread()
-
-            #_locations["custom"] = (float(xt_w), float(yt_w), float(la_heading))
-            #_goal = "custom"
         return HandleResponseResult.Handled
 
     new_name = ""
@@ -2322,7 +2326,7 @@ def listen():
             setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
-            speak("sorry, i could not do what you wanted.")
+           speak("sorry, i could not do what you wanted.")
         finally:
             finallyFunc()
 
@@ -2735,14 +2739,13 @@ def initialize_robot():
     _internet = True
 
     start_depthai_thread()
-    
+    #start_blazepose_thread()
+
     _listen_thread = Thread(target = listen, name = "Listen")
     _listen_thread.start()
     
     Thread(target = time_update, name = "Time").start()
-        
-#    Thread(target = monitor_motion, name = "People Motion Monitor").start()
-    
+            
 #    Thread(target = behaviors, name = "Behaviors").start()
     if _slamtec_on:    
         Thread(target = handleGotoLocation, name = "Handle Goto Location").start()
