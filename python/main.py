@@ -792,7 +792,7 @@ def checkForPerson():
             p = ps[0]
             # If bbox ctr of detection is away from edge then stop
             if p.bboxCtr[0] >= 0 and p.bboxCtr[0] <= 1:
-                print("Person at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
+                #print("Person at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
                 return True, ps
     except:
         None
@@ -1632,13 +1632,53 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _mdai.takePicture()
         time.sleep(0.5)
         speak("Ok. Here is the picture I took.")
-
+        
         # speak("Ok. Say Cheeze...")
         # pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
         # mat = take_picture(pic_filename)
         # time.sleep(0.5)
         # speak("Ok. Here is the picture I took.")
         # show_picture_mat(mat)
+        return HandleResponseResult.Handled
+
+    if "take my picture" in phrase:
+        if not _show_rgb_window:
+            speak("You'll need to show my view first.")
+            return HandleResponseResult.Handled
+    
+        _mic_array.rotateToDoa(doa)
+        search_dir = -1 # assume we have to raise camera to get person in frame
+        timeout = time.monotonic() + 10
+        timed_out = False
+        while True:
+            found, ps = checkForPerson()
+            if found:
+                upper_body_y = (ps[0].ymax - ps[0].ymin) * 0.75 + ps[0].ymin
+                #print("upper body y = ", upper_body_y, ", ymin = ", ps[0].ymin)
+                if ps[0].ymin > 0.05 and upper_body_y >= 0.7 and upper_body_y <= 0.8:
+                    break
+
+            if time.monotonic() >= timeout:
+                timed_out = True
+                break
+
+            _move_oak_d.offsetPitch(search_dir)
+            pitch = _move_oak_d.getPitch()
+            if pitch <= -60:
+                search_dir = 1
+            elif pitch >= -10:
+                search_dir = -1
+            time.sleep(0.050)            
+
+        if timed_out:
+            speak("Sorry, I could not find your face.")
+        else:
+            time.sleep(0.5)
+            _mdai.takePicture()
+            time.sleep(0.5)
+            speak("Ok. Here is the picture I took.")
+ 
+        _move_oak_d.allHome()
         return HandleResponseResult.Handled
 
     if "set speed" in phrase:
@@ -1854,12 +1894,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak("ok, I am going", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
             time.sleep(.5)
             print("going to location (", xt_w, ", ", yt_w, " @ heading ", math.degrees(la_heading))
-            #sdp.moveToFloatWithYaw(float(xt_w), float(yt_w), float(la_heading))
-            #sdp.moveToFloat(float(xt_w), float(yt_w))
-            #result = sdp.waitUntilMoveActionDone()
-            #if result == ActionStatus.Error:
-            #    print("error trying to move")
-
             _move_oak_d.allHome()
             _locations["custom"] = (float(xt_w), float(yt_w), float(la_heading))
             _goal = "custom"
@@ -2326,7 +2360,7 @@ def listen():
             setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
-           speak("sorry, i could not do what you wanted.")
+            speak("sorry, i could not do what you wanted.")
         finally:
             finallyFunc()
 
