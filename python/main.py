@@ -10,6 +10,7 @@ from threading import Lock
 import sdp_comm
 import subprocess
 import typing
+from speaker_pixel_ring import SpeakerPixelRing
 
 # Constants
 _show_rgb_window = False
@@ -19,7 +20,7 @@ _hotword = "orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
-_eyes_flag = True # should eyes be displayed or not
+_eyes_flag = False # should eyes be displayed or not
 _moods = {"happy":50, "bored":20, "hungry":10}
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":0.405,"bottom":-0.128, "width":3.6, "height":1}
@@ -84,7 +85,7 @@ _mdai = None
 _move_oak_d = None
 _mic_array : MicArray = None
 _lpArduino = None
-_pixel_ring = None
+_pixel_ring:SpeakerPixelRing = None
 _starting_up = True
 _radar = None
 _enable_movement_sensing = False
@@ -122,7 +123,6 @@ import socket
 from mic_array_tuning import Tuning
 import usb.core
 import usb.util
-import usb_pixel_ring_v2 as pixel_ring
 import radar
 import human_pose as hp
 import numpy as np
@@ -147,17 +147,17 @@ class HandleResponseResult(Enum):
 ###############################################################
 # Text input to Google Assistant for web based queries
 
-import logging
+#import logging
 import json
-import click
-import google.auth.transport.grpc
-import google.auth.transport.requests
-import google.oauth2.credentials
+#import click
+# import google.auth.transport.grpc
+# import google.auth.transport.requests
+# import google.oauth2.credentials
 
-from google.assistant.embedded.v1alpha2 import (
-    embedded_assistant_pb2,
-    embedded_assistant_pb2_grpc
-)
+# from google.assistant.embedded.v1alpha2 import (
+#     embedded_assistant_pb2,
+#     embedded_assistant_pb2_grpc
+# )
 
 
 ###############################################################
@@ -320,13 +320,13 @@ def batteryMonitor():
             if not _reported_25:
                 _reported_25 = True
                 speak(person + ", my battery is getting low. I'll have to charge up soon.")
-                setPixelPaletteRed()
+                _pixel_ring.setPaletteRed()
         elif batteryPercent <= 35:
             if not _reported_35:
                 _reported_35 = True
-                setPixelPaletteYellow()
+                _pixel_ring.setPaletteYellow()
         else:
-            setPixelPaletteDefault()
+            _pixel_ring.setPaletteDefault()
     except:
         None
     
@@ -580,6 +580,12 @@ def time_update():
             _time = "night"
         time.sleep(10)
 
+def setPixelRingTrace():
+    if _starting_up:
+        _pixel_ring.setSpin()
+    else:
+        _pixel_ring.setTrace()
+
 ###############################################################
 # Speech Related
 
@@ -588,7 +594,7 @@ def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
 
     try:
         print(phrase)
-        setPixelRingSpeak()
+        _pixel_ring.setSpeak()
         _voice.say(phrase, flag)
         setPixelRingTrace()
     except Exception:
@@ -1996,6 +2002,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         stop_radar()
         return HandleResponseResult.Handled
 
+    if "open riva weather service" in phrase:
+        p = os.path.join(os.path.abspath(''),'virtual-assistant')
+        os.chdir(p)
+        os.system('riva_weather')
+        os.chdir('..')
+        return HandleResponseResult.Handled
+
     if phrase.startswith("et = "):
         global _set_energy_threshold
         if _set_energy_threshold is not None:
@@ -2004,13 +2017,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         else:
             return HandleResponseResult.NotHandledUnknown
 
-    if phrase.startswith("ask google"):
-        try:
-            question = phrase.partition("ask google")[2]
-            _sendToGoogleAssistantFn(question)
-        except:
-            return HandleResponseResult.NotHandledUnknown
-        return HandleResponseResult.Handled
+    # if phrase.startswith("ask google"):
+    #     try:
+    #         question = phrase.partition("ask google")[2]
+    #         _sendToGoogleAssistantFn(question)
+    #     except:
+    #         return HandleResponseResult.NotHandledUnknown
+    #     return HandleResponseResult.Handled
 
     if ("bring" in phrase or "take" in phrase) and ("this" in phrase or "these" in phrase):
         room = None
@@ -2117,96 +2130,96 @@ def listen():
     
     ###########################################################
     # Text input to Google Assistant for web based queries
-    ASSISTANT_API_ENDPOINT = 'embeddedassistant.googleapis.com'
-    DEFAULT_GRPC_DEADLINE = 60 * 3 + 5
-    PLAYING = embedded_assistant_pb2.ScreenOutConfig.PLAYING
+    # ASSISTANT_API_ENDPOINT = 'embeddedassistant.googleapis.com'
+    # DEFAULT_GRPC_DEADLINE = 60 * 3 + 5
+    # PLAYING = embedded_assistant_pb2.ScreenOutConfig.PLAYING
 
-    api_endpoint = ASSISTANT_API_ENDPOINT
-    credentials = os.path.join(click.get_app_dir('google-oauthlib-tool'), 'credentials.json')
-    device_model_id = "orbital-clarity-197305-marvin-hcmekv"
-    device_id = "orbital-clarity-197305"
-    lang = 'en-US'
-    display = False
-    verbose = False
-    grpc_deadline = DEFAULT_GRPC_DEADLINE
+    # api_endpoint = ASSISTANT_API_ENDPOINT
+    # credentials = os.path.join(click.get_app_dir('google-oauthlib-tool'), 'credentials.json')
+    # device_model_id = "orbital-clarity-197305-marvin-hcmekv"
+    # device_id = "orbital-clarity-197305"
+    # lang = 'en-US'
+    # display = False
+    # verbose = False
+    # grpc_deadline = DEFAULT_GRPC_DEADLINE
     
-    class TextAssistant(object):
-        """Text Assistant that supports text based conversations.
-        Args:
-          language_code: language for the conversation.
-          device_model_id: identifier of the device model.
-          device_id: identifier of the registered device instance.
-          display: enable visual display of assistant response.
-          channel: authorized gRPC channel for connection to the
-            Google Assistant API.
-          deadline_sec: gRPC deadline in seconds for Google Assistant API call.
-        """
+    # class TextAssistant(object):
+    #     """Text Assistant that supports text based conversations.
+    #     Args:
+    #       language_code: language for the conversation.
+    #       device_model_id: identifier of the device model.
+    #       device_id: identifier of the registered device instance.
+    #       display: enable visual display of assistant response.
+    #       channel: authorized gRPC channel for connection to the
+    #         Google Assistant API.
+    #       deadline_sec: gRPC deadline in seconds for Google Assistant API call.
+    #     """
         
-        def __init__(self, language_code, device_model_id, device_id,
-                     display, channel, deadline_sec):
-            self.language_code = language_code
-            self.device_model_id = device_model_id
-            self.device_id = device_id
-            self.conversation_state = None
-            # Force reset of first conversation.
-            self.is_new_conversation = True
-            self.display = display
-            self.assistant = embedded_assistant_pb2_grpc.EmbeddedAssistantStub(channel)
-            self.deadline = deadline_sec
+    #     def __init__(self, language_code, device_model_id, device_id,
+    #                  display, channel, deadline_sec):
+    #         self.language_code = language_code
+    #         self.device_model_id = device_model_id
+    #         self.device_id = device_id
+    #         self.conversation_state = None
+    #         # Force reset of first conversation.
+    #         self.is_new_conversation = True
+    #         self.display = display
+    #         self.assistant = embedded_assistant_pb2_grpc.EmbeddedAssistantStub(channel)
+    #         self.deadline = deadline_sec
         
-        def __enter__(self):
-            return self
+    #     def __enter__(self):
+    #         return self
         
-        def __exit__(self, etype, e, traceback):
-            if e:
-                return False
+    #     def __exit__(self, etype, e, traceback):
+    #         if e:
+    #             return False
         
-        def assist(self, text_query):
-            """Send a text request to the Assistant and playback the response.
-            """
-            def iter_assist_requests():
-                config = embedded_assistant_pb2.AssistConfig(
-                    audio_out_config=embedded_assistant_pb2.AudioOutConfig(
-                        encoding='LINEAR16',
-                        sample_rate_hertz=16000,
-                        volume_percentage=0,
-                    ),
-                    dialog_state_in=embedded_assistant_pb2.DialogStateIn(
-                        language_code=self.language_code,
-                        conversation_state=self.conversation_state,
-                        is_new_conversation=self.is_new_conversation,
-                    ),
-                    device_config=embedded_assistant_pb2.DeviceConfig(
-                        device_id=self.device_id,
-                        device_model_id=self.device_model_id,
-                    ),
-                    text_query=text_query,
-                )
-                # Continue current conversation with later requests.
-                self.is_new_conversation = False
-                if self.display:
-                    config.screen_out_config.screen_mode = PLAYING
-                req = embedded_assistant_pb2.AssistRequest(config=config)
-                #assistant_helpers.log_assist_request_without_audio(req)
-                yield req
+    #     def assist(self, text_query):
+    #         """Send a text request to the Assistant and playback the response.
+    #         """
+    #         def iter_assist_requests():
+    #             config = embedded_assistant_pb2.AssistConfig(
+    #                 audio_out_config=embedded_assistant_pb2.AudioOutConfig(
+    #                     encoding='LINEAR16',
+    #                     sample_rate_hertz=16000,
+    #                     volume_percentage=0,
+    #                 ),
+    #                 dialog_state_in=embedded_assistant_pb2.DialogStateIn(
+    #                     language_code=self.language_code,
+    #                     conversation_state=self.conversation_state,
+    #                     is_new_conversation=self.is_new_conversation,
+    #                 ),
+    #                 device_config=embedded_assistant_pb2.DeviceConfig(
+    #                     device_id=self.device_id,
+    #                     device_model_id=self.device_model_id,
+    #                 ),
+    #                 text_query=text_query,
+    #             )
+    #             # Continue current conversation with later requests.
+    #             self.is_new_conversation = False
+    #             if self.display:
+    #                 config.screen_out_config.screen_mode = PLAYING
+    #             req = embedded_assistant_pb2.AssistRequest(config=config)
+    #             #assistant_helpers.log_assist_request_without_audio(req)
+    #             yield req
 
-            text_response = None
-            html_response = None
+    #         text_response = None
+    #         html_response = None
             
-            try:
-                for resp in self.assistant.Assist(iter_assist_requests(),
-                                                  self.deadline):
-                    #assistant_helpers.log_assist_response_without_audio(resp)
-                    if resp.screen_out.data:
-                        html_response = resp.screen_out.data
-                    if resp.dialog_state_out.conversation_state:
-                        conversation_state = resp.dialog_state_out.conversation_state
-                        self.conversation_state = conversation_state
-                    if resp.dialog_state_out.supplemental_display_text:
-                        text_response = resp.dialog_state_out.supplemental_display_text
-            except Exception as e:
-                print("got error from assistant: "+ str(e))
-            return text_response, html_response
+    #         try:
+    #             for resp in self.assistant.Assist(iter_assist_requests(),
+    #                                               self.deadline):
+    #                 #assistant_helpers.log_assist_response_without_audio(resp)
+    #                 if resp.screen_out.data:
+    #                     html_response = resp.screen_out.data
+    #                 if resp.dialog_state_out.conversation_state:
+    #                     conversation_state = resp.dialog_state_out.conversation_state
+    #                     self.conversation_state = conversation_state
+    #                 if resp.dialog_state_out.supplemental_display_text:
+    #                     text_response = resp.dialog_state_out.supplemental_display_text
+    #         except Exception as e:
+    #             print("got error from assistant: "+ str(e))
+    #         return text_response, html_response
     
     def adj_spch_recog_ambient(r, m):
         # adjust microphone for ambient noise:
@@ -2219,29 +2232,29 @@ def listen():
         
         r.dynamic_energy_threshold = False
         try:
-            with m as source: r.adjust_for_ambient_noise(source, duration=1)
+            with m as source: r.adjust_for_ambient_noise(source, duration=1, is_speech_cb=_mic_array.getIsSpeech)
         except:
             None
         r.energy_threshold = max(300, r.energy_threshold)
-        print("ambient energy threshold changed to ", r.energy_threshold)
+        print("final ambient threshold changed to ", r.energy_threshold)
 
     # beginning of actual Listen() code - <clean this up!>
-    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+    #logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
     
-    if _use_internet:
-        # Load OAuth 2.0 credentials.
-        try:
-            with open(credentials, 'r') as f:
-                credentials = google.oauth2.credentials.Credentials(token=None, **json.load(f))
-                http_request = google.auth.transport.requests.Request()
-                credentials.refresh(http_request)
-        except Exception as e:
-            logging.error('Error loading credentials: %s', e)
-            logging.error('Run google-oauthlib-tool to initialize '
-                            'new OAuth 2.0 credentials.')
+    #if _use_internet:
+        # # Load OAuth 2.0 credentials.
+        # try:
+        #     with open(credentials, 'r') as f:
+        #         credentials = google.oauth2.credentials.Credentials(token=None, **json.load(f))
+        #         http_request = google.auth.transport.requests.Request()
+        #         credentials.refresh(http_request)
+        # except Exception as e:
+        #     logging.error('Error loading credentials: %s', e)
+        #     logging.error('Run google-oauthlib-tool to initialize '
+        #                     'new OAuth 2.0 credentials.')
         
         # Create an authorized gRPC channel.
-        grpc_channel = google.auth.transport.grpc.secure_authorized_channel(credentials, http_request, api_endpoint)
+        #grpc_channel = google.auth.transport.grpc.secure_authorized_channel(credentials, http_request, api_endpoint)
         #speak("I'm connected to Google Assistant.")
         #logging.info('Connecting to %s', api_endpoint)
 
@@ -2249,7 +2262,7 @@ def listen():
     r = sr.Recognizer()
 
     # create a microphone object
-    mic = sr.Microphone()
+    mic = sr.Microphone(sample_rate=16000)
 
     def get_energy_threshold():
         return r.energy_threshold
@@ -2258,7 +2271,7 @@ def listen():
         r.energy_threshold = value
         print("energy threshold changed to ", r.energy_threshold)
 
-    #adj_spch_recog_ambient(r, mic)
+    adj_spch_recog_ambient(r, mic)
 
     global _set_energy_threshold
     _set_energy_threshold = set_energy_threshold
@@ -2268,16 +2281,24 @@ def listen():
         
     speak("Hello, My name is Orange. Pleased to be at your service.")
 
-    def listenFromVoskSpeechRecog(r, mic, sr):
+    def on_prediction(conf):
+        #print('!' if conf > 0.7 else '.', end='', flush=True)
+        _pixel_ring.setPrediction(conf)
+
+    def listenFromVoskSpeechRecog(r, mic, sr, precise_config):
         global _last_speech_heard
         # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
-                audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=_mic_array.getIsSpeech)
+                _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
+                audio = r.listen(source, timeout=10, phrase_time_limit = 7, mycroft_precise_config=precise_config, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
-                setPixelRingThink()
+                _pixel_ring.setThink()
                 print("Your speech ended or timed out.")
+        except sr.WaitTimeoutError:
+            adj_spch_recog_ambient(r, mic)
+            return "", 0
         except Exception as e:
             print(e)
             return "", 0
@@ -2309,7 +2330,7 @@ def listen():
                 print("Say something!")
                 audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
-                setPixelRingThink()
+                _pixel_ring.setThink()
                 print("Your speech ended or timed out.")
         except Exception as e:
             print(e)
@@ -2337,26 +2358,26 @@ def listen():
             print("Unknown speech recognition error.")
         return phrase, doa
         
-    def sendToGoogleAssistant(phrase):
-        global _internet
-        if _internet:
-            print("Sending question to google assistant: ", phrase)
-            with TextAssistant(lang, device_model_id, device_id, display,
-                    grpc_channel, grpc_deadline) as assistant:
-                response_text, response_html = assistant.assist(text_query = phrase)
-                if response_text:
-                    speak(response_text)
-                else:
-                    speak("Sorry, I don't know about that.")
-        else: 
-            speak("I am not sure how to help with that.")
+    # def sendToGoogleAssistant(phrase):
+    #     global _internet
+    #     if _internet:
+    #         print("Sending question to google assistant: ", phrase)
+    #         with TextAssistant(lang, device_model_id, device_id, display,
+    #                 grpc_channel, grpc_deadline) as assistant:
+    #             response_text, response_html = assistant.assist(text_query = phrase)
+    #             if response_text:
+    #                 speak(response_text)
+    #             else:
+    #                 speak("Sorry, I don't know about that.")
+    #     else: 
+    #         speak("I am not sure how to help with that.")
 
-    global _sendToGoogleAssistantFn
-    _sendToGoogleAssistantFn = sendToGoogleAssistant
+    # global _sendToGoogleAssistantFn
+    # _sendToGoogleAssistantFn = sendToGoogleAssistant
 
-    def listenFromVosk(sdp, finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromVosk(sdp, precise_config=None, finallyFunc=lambda:None, check_hot_word=True):
         try:
-            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr)
+            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, precise_config)
             setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
@@ -2395,13 +2416,13 @@ def listen():
     #         speak("yes?")
     #         listenFromGoogle(sdp, lambda:listener.set_active(True), False)
 
-    def ask_google():
-        if _use_internet and _internet:
-            speak("Go ahead")
-            phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
-            sendToGoogleAssistant(phrase)
-        else:
-            speak("ask google is not available.")
+    # def ask_google():
+    #     if _use_internet and _internet:
+    #         speak("Go ahead")
+    #         phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
+    #         sendToGoogleAssistant(phrase)
+    #     else:
+    #         speak("ask google is not available.")
 
     def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp):
         global _internet, _use_internet, _last_speech_heard
@@ -2410,12 +2431,12 @@ def listen():
         _last_speech_heard = phrase
         phrase = phrase.lower()
         listener.set_active(False)
-        if phrase == "orange ask google":
-            try:
-                ask_google()
-            finally:
-                listener.set_active(True)    
-            return
+        # if phrase == "orange ask google":
+        #     try:
+        #         ask_google()
+        #     finally:
+        #         listener.set_active(True)    
+        #     return
 #        try:
         handled_result = handle_response_sync(sdp, phrase, doa, assist = False)
         if handled_result == HandleResponseResult.NotHandledUnknown:
@@ -2429,8 +2450,10 @@ def listen():
     
     global _starting_up
     _starting_up = False
-    setPixelRingEndStartup() # restore pixel ring to default sound sensitive mode after boot up
-    
+    _pixel_ring.setEndStartup() # restore pixel ring to default sound sensitive mode after boot up
+
+    precise_config = r.PreciseListener.Config(model_file_path='models/hey-orange.pb', on_prediction=on_prediction)
+
     while _run_flag:
         #local_listener = None
         use_local_speech = not _use_internet or not _internet or not _google_mode
@@ -2439,7 +2462,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp)
+                listenFromVosk(sdp, precise_config=precise_config)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
@@ -2823,8 +2846,6 @@ def shutdown_robot():
     _move_oak_d.shutdown()
     print("shutting down radar")
     stop_radar()
-    print("shutting down pixel ring")
-    _pixel_ring.close()
     print("shutting down microphone array")
     _mic_array.close()
     print("shutting down leonardo")
@@ -2921,45 +2942,6 @@ def load_locations(name):
     with open(name + ".pkl", "rb") as f:
         _locations = pickle.load(f)
 
-# TBD make this into a class
-def setPixelRingSpeak():
-    _pixel_ring.speak()
-
-def setPixelRingThink():
-    _pixel_ring.think()
-
-def setPixelRingStartup():
-    setPixelPaletteForSpin()
-    setPixelRingSpin()
-
-def setPixelRingEndStartup():
-    setPixelPaletteDefault()
-    setPixelRingTrace()
-
-def setPixelRingTrace():
-    if _starting_up:
-        setPixelRingSpin()
-    else:
-        _pixel_ring.trace()
-
-def setPixelRingSpin():
-    _pixel_ring.spin()
-
-def setPixelPaletteYellow():
-    _pixel_ring.set_color_palette(0x005050,0x402000) 
-
-def setPixelPaletteRed():
-    _pixel_ring.set_color_palette(0x005050,0x400000)
-    
-def setPixelPaletteDefault():
-    _pixel_ring.set_color_palette(0x003000,0x700800)
-
-def setPixelPaletteForSpin():
-    _pixel_ring.set_color_palette(0x700800,0x003000)
-
-def setPixelPaletteBootDefault():
-    _pixel_ring.set_color_palette(0x005050,0x000050)
-
 def run():
     global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar
     # Start 32 bit bridge server
@@ -2969,8 +2951,8 @@ def run():
     #init_local_speech_rec()
     initialize_speech()
     _mic_array = MicArray()
-    _pixel_ring = pixel_ring.PixelRing(_mic_array.dev)
-    setPixelRingStartup()
+    _pixel_ring = SpeakerPixelRing(_mic_array, )
+    _pixel_ring.setStartup()
     #init_camera()
 
     speak("I'm starting up.")
