@@ -2292,13 +2292,13 @@ def listen():
             with mic as source:
                 print("Say something!")
                 _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, timeout=10, phrase_time_limit = 7, mycroft_precise_config=precise_config, is_speech_cb=_mic_array.getIsSpeech)
+                audio = r.listen(source, phrase_time_limit = 8, mycroft_precise_config=precise_config, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
-                print("Your speech ended or timed out.")
-        except sr.WaitTimeoutError:
-            adj_spch_recog_ambient(r, mic)
-            return "", 0
+                print("Your speech ended.")
+        # except sr.WaitTimeoutError:
+        #     adj_spch_recog_ambient(r, mic)
+        #     return "", 0
         except Exception as e:
             print(e)
             return "", 0
