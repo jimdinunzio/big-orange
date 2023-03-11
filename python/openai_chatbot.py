@@ -1,7 +1,6 @@
 import os
 import openai
-openai.api_key = "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"
-#os.getenv("OPENAI_API_KEY")
+openai.api_key = getenv("OPENAI_API_KEY")
 
 #roles: system, user, or assistant
 # user is the role that gives instructions or asks questions
