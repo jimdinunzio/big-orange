@@ -39,9 +39,9 @@ def test():
             try:
                 r.adjust_for_ambient_noise(source, is_speech_cb=m.getIsSpeech)
                 print("threshold = ", r.energy_threshold)
-                audio = r.listen(source, phrase_time_limit=7, is_speech_cb=m.getIsSpeech)
+                audio = r.listen(source, timeout=15, phrase_time_limit=7, is_speech_cb=m.getIsSpeech)
                 #phrase = r.recognize_google(audio)
-                result = r.recognize_vosk(audio, arg2='[ "orange", "[unk]" ]', alts=1)
+                result = r.recognize_vosk(audio, alts=3)
                 print(result)
                 phrase = json.loads(result)
                 phrase = phrase["alternatives"][0]["text"]

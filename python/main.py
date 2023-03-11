@@ -11,6 +11,8 @@ import sdp_comm
 import subprocess
 import typing
 from speaker_pixel_ring import SpeakerPixelRing
+from chatbot_socket_client import ChatbotSocketClient
+from orange_openai_chatbot import OrangeOpenAiChatbot
 
 # Constants
 _show_rgb_window = False
@@ -41,6 +43,8 @@ _dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 _movement_timeout = 60
 _movement_towards_away = 30
+_chatbot_server_ip_addr = "192.168.1.41"
+_chatbot_port = 5124
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -90,6 +94,8 @@ _starting_up = True
 _radar = None
 _enable_movement_sensing = False
 _blazepose_thread = None
+_chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
+_chatbot_openai : OrangeOpenAiChatbot = None
 
 import parse
 import tts.sapi
@@ -1215,9 +1221,9 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
         handled_result = handle_response(sdp, phrase, doa, check_hot_word)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             if assist:
-                _sendToGoogleAssistantFn(phrase.strip(_hotword))
+                _sendToGoogleAssistantFn(phrase.split(_hotword)[-1])
             else:
-                speak("Sorry, I don't understand \"" + phrase.strip(_hotword) + "\"?")
+                speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
     finally:
         set_handling_response(False)
 
@@ -1234,11 +1240,76 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
     global _show_rgb_window, _show_depth_window
+    global _chatbot_openai
 
     # convert phrase to lower case for comparison
     phrase = phrase.lower().strip()
     
-    if phrase == "stop" or phrase == "stop stop" or phrase == "orange stop":
+    if _chatbot_openai:
+        print("handling openai chat speech")
+        if len(phrase) > 0:
+            if phrase == "reset chat":
+                _chatbot_openai.init_chat_log()
+                speak("chatbot reset.")
+                return HandleResponseResult.Handled
+            
+            elif phrase == "show log":
+                print(_chatbot_openai.get_log())
+                return HandleResponseResult.Handled
+        
+            print(f"Human: {phrase}")
+            response = _chatbot_openai.get_response(phrase)
+            if len(response) > 0:
+                print(f"Orange: {response}")
+                speak(response)
+            else:
+                speak("I got nothing on that.")
+
+            if "goodbye" in phrase.lower():
+                _chatbot_openai = None
+                speak("chat has ended.")
+        
+        return HandleResponseResult.Handled        
+
+    # send text to chatbot and get response if connected
+    if _chatbot_socket.is_connected():
+        print("handling chat speech")
+        if len(phrase) > 0:
+            speak_response = True
+
+            if phrase == "reset chat":
+                phrase = ".reset"
+            elif phrase == "restart chat":
+                phrase = ".restart"
+                speak_response = False
+            elif phrase == "show log":
+                phrase = ".log"
+                speak_response = False
+        
+            if phrase[0] != '.':
+                print(f"Human: {phrase}")
+            
+            result = _chatbot_socket.send_msg(phrase)
+            if result:
+                response = _chatbot_socket.get_response()
+                if len(response) > 0:
+                    if speak_response:
+                        print("Orange: ", end='')
+                        speak(response)
+
+                    print(response)
+                else:
+                    speak("I got nothing on that.")
+            else:
+                speak("I'm sorry, I can't continue the chat at the moment.")
+
+            if "goodbye" in phrase.lower() or phrase == ".restart":
+                _chatbot_socket.close()
+                speak("chat has ended.")
+        
+        return HandleResponseResult.Handled
+
+    if "stop all" in phrase:
         cancelAction(True)
         speak("Okay.")
         location, distance, closeEnough = where_am_i() 
@@ -1270,7 +1341,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
 
     # check if the hot word is in the string, and take the words after it, otherwise ignore speech
     if check_hot_word:
-        hot_word_idx = phrase.find(_hotword)
+        hot_word_idx = phrase.rfind(_hotword)
         if hot_word_idx >= 0:
             phrase = phrase[hot_word_idx + len(_hotword):].strip()
         else:
@@ -1766,16 +1837,8 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             shutdown_my_depthai()
             start_depthai_thread()
         return HandleResponseResult.Handled
-    
-    if phrase == "hide your view":
-        speak("Ok.")
-        if _show_rgb_window:
-            _show_rgb_window = False
-            shutdown_my_depthai()
-            start_depthai_thread()
-        return HandleResponseResult.Handled
-    
-    if phrase == "show your view":
+        
+    if phrase == "show rgb view":
         speak("Ok.")
         if not _show_rgb_window:
             _show_rgb_window = True
@@ -1783,7 +1846,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             start_depthai_thread()
         return HandleResponseResult.Handled
     
-    if phrase == "hide your view":
+    if phrase == "hide rgb view":
         speak("Ok.")
         if _show_rgb_window:
             _show_rgb_window = False
@@ -1992,23 +2055,42 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         switch_to_cloud_speech()
         return HandleResponseResult.Handled
 
-    if "enable movement sensing" in phrase:
-        speak("ok, i've enabled movement sensing.")
+    if "enable radar" in phrase:
+        speak("ok, i've enabled radar.")
         start_radar()
         return HandleResponseResult.Handled
 
-    if "disable movement sensing" in phrase:
-        speak("ok, i've disabled movement sensing.")
+    if "disable radar" in phrase:
+        speak("ok, i've disabled radar.")
         stop_radar()
         return HandleResponseResult.Handled
 
-    if "open riva weather service" in phrase:
+    if "open weather chat" in phrase:
         p = os.path.join(os.path.abspath(''),'virtual-assistant')
         os.chdir(p)
-        os.system('riva_weather')
+        result = os.system('riva_weather')
         os.chdir('..')
+        print(result)
+        if result != 0:
+            speak("Sorry, I could not open the weather chat.")
         return HandleResponseResult.Handled
 
+    if "open chat cloud" in phrase:
+        _chatbot_openai = OrangeOpenAiChatbot()
+        speak(_chatbot_openai.intro_line)
+        return HandleResponseResult.Handled
+
+    if "open chat local" in phrase:
+        conn = _chatbot_socket.connect()
+        intro = ""
+        if conn:
+            intro = _chatbot_socket.get_response()
+        if _chatbot_socket.is_connected():
+            speak(intro)
+        else:
+            speak("sorry, i'm unable to open a chat right now.")
+        return HandleResponseResult.Handled
+         
     if phrase.startswith("et = "):
         global _set_energy_threshold
         if _set_energy_threshold is not None:
@@ -2117,7 +2199,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
     
     return HandleResponseResult.NotHandledUnknown # not handled
-
 
 ###############################################################
 # Speech recognition using Google over internet connection
@@ -2462,7 +2543,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp, precise_config=precise_config)
+                listenFromVosk(sdp, precise_config=None if _chatbot_openai or _chatbot_socket.is_connected() else precise_config)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
