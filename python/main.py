@@ -13,6 +13,8 @@ import typing
 from speaker_pixel_ring import SpeakerPixelRing
 from chatbot_socket_client import ChatbotSocketClient
 from orange_openai_chatbot import OrangeOpenAiChatbot
+from orange_textgen_chatbot import OrangeTextGenChatbot
+import asyncio
 
 # Constants
 _show_rgb_window = False
@@ -96,6 +98,7 @@ _enable_movement_sensing = False
 _blazepose_thread = None
 _chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
 _chatbot_openai : OrangeOpenAiChatbot = None
+_chatbot_textgen : OrangeTextGenChatbot = None
 
 import parse
 import tts.sapi
@@ -1240,11 +1243,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
     global _show_rgb_window, _show_depth_window
-    global _chatbot_openai
+    global _chatbot_openai, _chatbot_textgen
 
     # convert phrase to lower case for comparison
-    phrase = phrase.lower().strip()
-    
+    phrase = phrase.lower().strip()      
+
+
     if _chatbot_openai:
         print("handling openai chat speech")
         if len(phrase) > 0:
@@ -1262,6 +1266,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             if len(response) > 0:
                 print(f"Orange: {response}")
                 speak(response)
+                _chatbot_openai.add_to_chat_log(response)
             else:
                 speak("I got nothing on that.")
 
@@ -1346,6 +1351,41 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             phrase = phrase[hot_word_idx + len(_hotword):].strip()
         else:
             return HandleResponseResult.NotHandledNoHotWord
+
+    if _chatbot_textgen:
+        print("handling textgen chat speech")
+        if len(phrase) > 0:
+            if phrase == "reset chat":
+                _chatbot_textgen.init_chat_log()
+                speak("chatbot reset.")
+                return HandleResponseResult.Handled
+            
+            elif phrase == "show log":
+                print(_chatbot_textgen.get_log())
+                return HandleResponseResult.Handled
+        
+            print(f"Human: {phrase}")
+
+            async def speak_response(inp):
+                response = ""
+                async for sent in _chatbot_textgen.get_response_stream(inp):
+                    if len(sent) > 0:
+                        speak(sent)
+                        response += sent
+                return response
+
+            response = asyncio.run(speak_response(phrase))
+
+            if len(response) > 0:
+                print(f"Orange: {response}")
+            else:
+                speak("I got nothing on that.")
+
+            if "goodbye" in phrase.lower():
+                _chatbot_textgen = None
+                speak("chat has ended.")
+
+        return HandleResponseResult.Handled      
 
     # some verbal commands are handled inside the listen thread
     if phrase == "":
@@ -2078,6 +2118,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     if "open chat cloud" in phrase:
         _chatbot_openai = OrangeOpenAiChatbot()
         speak(_chatbot_openai.intro_line)
+        return HandleResponseResult.Handled
+
+    if "open chat" in phrase:
+        _chatbot_textgen = OrangeTextGenChatbot()
+        speak(_chatbot_textgen.intro_line)
         return HandleResponseResult.Handled
 
     if "open chat local" in phrase:
