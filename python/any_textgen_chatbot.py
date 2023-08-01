@@ -15,7 +15,7 @@ class AnyTextGenChatbot(TextGenChatbot):
             None
         
         intro_line = "In chat mode I can converse freely. Say goodbye to end the chat. What can I answer for you today?"
-        super().__init__("", init_prompt, intro_line, "User", "RoBud")
+        super().__init__("", init_prompt, intro_line, "User", prompt_name)
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
