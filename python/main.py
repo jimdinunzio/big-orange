@@ -14,7 +14,9 @@ from speaker_pixel_ring import SpeakerPixelRing
 from chatbot_socket_client import ChatbotSocketClient
 from orange_openai_chatbot import OrangeOpenAiChatbot
 from orange_textgen_chatbot import OrangeTextGenChatbot
+from aws_mqtt_listener import AwsMqttListener
 import asyncio
+import my_depthai
 
 # Constants
 _show_rgb_window = False
@@ -51,6 +53,7 @@ _chatbot_port = 5124
 MicArray = typing.NewType("MicArray", object)
 
 # Globals
+_sdp = None
 _mood = "happy"
 _person = "jim"
 _slamtec_on = False
@@ -87,7 +90,7 @@ _set_energy_threshold = None
 _get_energy_threshold = None
 _last_speech_heard = ""
 _locations = {}
-_mdai = None
+_mdai : my_depthai.MyDepthAI = None
 _move_oak_d = None
 _mic_array : MicArray = None
 _lpArduino = None
@@ -99,6 +102,9 @@ _blazepose_thread = None
 _chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
 _chatbot_openai : OrangeOpenAiChatbot = None
 _chatbot_textgen : OrangeTextGenChatbot = None
+_aws_mqtt_listener = AwsMqttListener()
+_aws_mqtt_listener_thread = None
+_enable_aws_mqtt_listener = True
 
 import parse
 import tts.sapi
@@ -123,7 +129,6 @@ import ai_vision.classify as classify
 from enum import Enum
 from latte_panda_arduino import LattePandaArduino
 import move_oak_d
-import my_depthai
 import eyes
 import facial_recognize as fr
 import pickle
@@ -242,13 +247,12 @@ def nearest_location(x, y):
  
 
 ################################################################
-# if the robt is within half a meter of the goal, then success:
+# if the robot is within half a meter of the goal, then success:
 # return the closest location and the distance to it and if it is close enough
-def where_am_i():
-    global _sdp
-    
+
+def where_am_i(sdp = _sdp):
     try:
-        pose = _sdp.pose()
+        pose = sdp.pose()
     except:
         return "unknown", 0, False
     location, distance = nearest_location(pose.x, pose.y)
@@ -274,13 +278,13 @@ def is_close_to(loc, max_dist=1.0):
 # This cancels an ongoing action - which may be a goto or something else.
 
 
-def cancelAction(interrupt = False):
-    global _sdp, _action_flag, _interrupt_action
+def cancelAction(interrupt = False, sdp = _sdp):
+    global _action_flag, _interrupt_action
     if interrupt:
         _interrupt_action = True
     for attempt in range(3):
         try:
-            _sdp.cancelMoveAction()
+            sdp.cancelMoveAction()
             _action_flag = False
         except:            
             print("An error occurred canceling the action, trying again.")
@@ -328,7 +332,7 @@ def batteryMonitor():
         if batteryPercent <= 25:
             if not _reported_25:
                 _reported_25 = True
-                speak(person + ", my battery is getting low. I'll have to charge up soon.")
+                #speak(person + ", my battery is getting low. I'll have to charge up soon.")
                 _pixel_ring.setPaletteRed()
         elif batteryPercent <= 35:
             if not _reported_35:
@@ -346,7 +350,7 @@ def batteryMonitor():
 # replace the earlier request
 
 def handleGotoLocation():
-    global _run_flag, _goal, _action_flag, _sdp, _interrupt_action
+    global _run_flag, _goal, _action_flag, _interrupt_action
     global _deliveree, _package, _sub_goal, _call_out_objects
     global _error_last_goto, _response_num, _locations
 
@@ -2866,14 +2870,57 @@ def stop_radar():
         _radar_thread.join()
         _radar_thread = None
 
+def start_aws_mqtt_listener():
+    global _aws_mqtt_listener_thread
+    if _aws_mqtt_listener_thread is None:   
+        _aws_mqtt_listener_thread = Thread(target = _aws_mqtt_listener.start, args=(handle_op_request,), name = "AWS MQTT Listener")
+        _aws_mqtt_listener_thread.start()
+
+def stop_aws_mqtt_listener():
+    global _aws_mqtt_listener_thread
+    if _aws_mqtt_listener_thread is not None:
+        _aws_mqtt_listener.shutdown()
+        _aws_mqtt_listener_thread.join()
+        _aws_mqtt_listener_thread = None
+
 from orange_utils import *
 
-def handle_op_request(sdp, opType : OrangeOpType, arg1=None, arg2=None):
-    global _last_speech_heard
+def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=None):
+    global _last_speech_heard, _goal
     if opType == OrangeOpType.TextCommand:
         return handle_response_async(sdp, arg1, 0, check_hot_word=False)
     elif opType == OrangeOpType.BatteryPercent:
         return sdp.battery()
+    elif opType == OrangeOpType.Location:
+        location, distance, closeEnough = where_am_i(sdp)
+        if not closeEnough:
+            answer = "near the " + location
+        else:
+            answer = "at the " + location
+        return answer
+    elif opType == OrangeOpType.Status:
+        batt = sdp.battery()
+        loc = handle_op_request(sdp, OrangeOpType.Location)
+        return batt, loc
+    elif opType == OrangeOpType.GotoCommand:
+        location = arg1.strip()
+        words = location.split()
+        try:
+            words.remove("the")
+        except:
+            None
+        location = " ".join(words[0:]).lower()
+        print("searching for location \"", location, "\"")
+        coords = _locations.get(location)
+        if coords is None and location != "recharge":
+            return False        
+        else:
+            cancelAction(interrupt=True, sdp=sdp)
+            _goal = location
+        return True
+    elif opType == OrangeOpType.TakeAPictureCommand:
+        _mdai.takePicture()
+        return True
     elif opType == OrangeOpType.LastSpeechHeard:
         return _last_speech_heard
     elif opType == OrangeOpType.LastSpeechSpoken:
@@ -2949,6 +2996,9 @@ def initialize_robot():
     if _enable_movement_sensing:
         start_radar()
 
+    if _enable_aws_mqtt_listener:
+        start_aws_mqtt_listener()
+
 ################################################################
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
@@ -2972,6 +3022,8 @@ def shutdown_robot():
     _move_oak_d.shutdown()
     print("shutting down radar")
     stop_radar()
+    print("shutting down aws mqtt listener")
+    stop_aws_mqtt_listener()
     print("shutting down microphone array")
     _mic_array.close()
     print("shutting down leonardo")

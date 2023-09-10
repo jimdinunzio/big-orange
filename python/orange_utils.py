@@ -18,4 +18,8 @@ class OrangeOpType(Enum):
     LocalizationQuality = 11
     WifiSsidAndStrength = 12
     SpeechEnergyThreshold = 13
-    
+    Location = 14
+    Status = 15
+    GotoCommand = 16
+    TakeAPictureCommand = 17
+    StopAllMovement = 18
