@@ -1,0 +1,213 @@
+{
+  "interactionModel": {
+    "dialog": {
+      "intents": [
+        {
+          "slots": [
+            {
+              "name": "statusType",
+              "elicitationRequired": true,
+              "type": "StatusType",
+              "confirmationRequired": false,
+              "prompts": {
+                "elicitation": "Elicit.Slot.192443068802.1359000389167"
+              }
+            }
+          ],
+          "name": "StatusIntent",
+          "confirmationRequired": false,
+          "prompts": {}
+        },
+        {
+          "slots": [
+            {
+              "name": "location",
+              "elicitationRequired": true,
+              "type": "AMAZON.Room",
+              "confirmationRequired": false,
+              "prompts": {
+                "elicitation": "Elicit.Slot.691847470371.1156964887612"
+              }
+            }
+          ],
+          "name": "GotoIntent",
+          "confirmationRequired": false,
+          "prompts": {}
+        }
+      ],
+      "delegationStrategy": "ALWAYS"
+    },
+    "languageModel": {
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "slots": [
+            {
+              "name": "statusType",
+              "type": "StatusType"
+            }
+          ],
+          "name": "StatusIntent",
+          "samples": [
+            "his {statusType}",
+            "what is his {statusType}"
+          ]
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "slots": [
+            {
+              "name": "location",
+              "type": "AMAZON.Room",
+              "samples": [
+                "the {location}"
+              ]
+            }
+          ],
+          "name": "GotoIntent",
+          "samples": [
+            "come to the {location}",
+            "find me in the {location}",
+            "meet me in the {location}",
+            "go to the {location}"
+          ]
+        },
+        {
+          "slots": [],
+          "name": "TakePictureIntent",
+          "samples": [
+            "capture the scene",
+            "snap a picture",
+            "take a picture"
+          ]
+        },
+        {
+          "slots": [],
+          "name": "RechargeIntent",
+          "samples": [
+            "go to the dock",
+            "go dock",
+            "dock",
+            "recharge",
+            "go to your dock",
+            "go recharge"
+          ]
+        },
+        {
+          "slots": [],
+          "name": "WhereAreYouIntent",
+          "samples": [
+            "where are you",
+            "where is he",
+            "where he is"
+          ]
+        },
+        {
+          "slots": [],
+          "name": "StopAllMovementIntent",
+          "samples": [
+            "stop",
+            "stop moving",
+            "cancel",
+            "halt",
+            "cancel action",
+            "stop movement"
+          ]
+        }
+      ],
+      "types": [
+        {
+          "values": [
+            {
+              "name": {
+                "value": "location"
+              }
+            },
+            {
+              "name": {
+                "synonyms": [
+                  "battery"
+                ],
+                "value": "battery level"
+              }
+            },
+            {
+              "name": {
+                "value": "status"
+              }
+            }
+          ],
+          "name": "StatusType"
+        },
+        {
+          "values": [
+            {
+              "name": {
+                "value": "dining area"
+              }
+            },
+            {
+              "name": {
+                "value": "kitchen nook"
+              }
+            },
+            {
+              "name": {
+                "value": "front door"
+              }
+            }
+          ],
+          "name": "AMAZON.Room"
+        }
+      ],
+      "invocationName": "big orange"
+    },
+    "prompts": [
+      {
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "What do you want to know about Big Orange?"
+          }
+        ],
+        "id": "Elicit.Slot.94032143053.1310205887984"
+      },
+      {
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "Where do you want Big Orange to go?"
+          }
+        ],
+        "id": "Elicit.Slot.691847470371.1156964887612"
+      },
+      {
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "You can ask for Big Orange\u0027s status, battery level, and location"
+          }
+        ],
+        "id": "Elicit.Slot.192443068802.1359000389167"
+      }
+    ]
+  }
+}
