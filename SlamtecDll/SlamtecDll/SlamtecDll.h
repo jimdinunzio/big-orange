@@ -18,6 +18,7 @@
 //#include <rpos/robot_platforms/objects/pose_map_layer.h>
 //#include <rpos/robot_platforms/objects/points_map_layer.h>
 
+
 using namespace std;									//for connect
 using namespace rpos::robot_platforms;					//for everything
 using namespace rpos::robot_platforms::objects;			//for map
@@ -27,7 +28,8 @@ using namespace rpos::features::location_provider;		//for locations, map
 ////using namespace rpos::features::system_resource;		//for docking, health, network
 //using namespace rpos::features::impact_sensor;			//for sensors
 using namespace rpos::features::motion_planner;			//for movement, health
-//using namespace rpos::features::artifact_provider;		//for artifacts, health
+using namespace rpos::features::impact_sensor;			//for sonar
+														//using namespace rpos::features::artifact_provider;		//for artifacts, health
 //using namespace rpos::core;								//for map
 //using namespace rpos::system::types;					//for map (_U8)
 
@@ -69,3 +71,9 @@ typedef struct MoveOptionsStruct
 	int flag;
 	double speed_ratio;
 } MoveOptionsStruct;
+
+typedef struct SensorValueStruct
+{
+	unsigned int time;
+	float value;
+} SensorValueStruct;

@@ -77,6 +77,7 @@ extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height);
 extern "C" __declspec(dllexport) int setUpdate(int enable);
 extern "C" __declspec(dllexport) void freeIt(void *ptr);
+extern "C" __declspec(dllexport) SensorValueStruct getSensorValue(int id);
 
 BEGIN_MESSAGE_MAP(CSlamtecDllApp, CWinApp)
 END_MESSAGE_MAP()
@@ -531,3 +532,21 @@ extern "C" __declspec(dllexport) void freeIt(void *ptr)
 	}
 }
 
+//-----------------------------------------------------------
+extern "C" __declspec(dllexport) SensorValueStruct getSensorValue(int id)
+{
+	ImpactSensorValue sensorValue;
+	bool result = sdp.getSensorValue(id, sensorValue);
+
+	SensorValueStruct svs;
+	svs.time = 0;
+	svs.value = 0;
+
+	if (result)
+	{
+		svs.time = sensorValue.time;
+		svs.value = sensorValue.value;
+	}
+
+	return svs;
+}

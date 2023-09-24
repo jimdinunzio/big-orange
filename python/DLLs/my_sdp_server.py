@@ -28,6 +28,11 @@ class MOVEOPTIONS(Structure):
     _fields_ = [("flag", c_int),
                 ("speed_ratio", c_double)]
     
+class SENSORVALUE(Structure):
+	"""Structure to hold sensor value and time"""
+	_fields_ = [("time", c_int),
+				("value", c_float)]
+
 class MoveOptionFlag(Enum):
     """Enumerated type for Move Option flags field"""
     def __init__(self, number):
@@ -95,6 +100,7 @@ class MyServer(Server32):
         self.lib.freeIt.argtypes = c_void_p,
         self.lib.freeIt.restype = None
         self.lib.getBatteryIsCharging.restype = c_bool
+		self.lib.getSensorValue.resType = SENSORVALUE
 
     def connectSlamtec(self, ip_address, port, errStr, errStrLen):
         # The Server32 class has a 'lib' property that is a reference to the ctypes.CDLL object.
@@ -204,3 +210,5 @@ class MyServer(Server32):
     def setUpdate(self, enable):
         return self.lib.setUpdate(enable)
     
+	def getSensorValue(self, id):
+		return self.lib.getSensorValue(id)

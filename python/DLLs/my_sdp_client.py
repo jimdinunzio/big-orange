@@ -10,7 +10,7 @@ Created on Sun Jan  6 16:23:18 2019
 import os  # added this import
 from msl.loadlib import Client64
 MAX_ATTEMPTS = 3
-from my_sdp_server import POSE, LASER_POINTS, ActionStatus
+from my_sdp_server import POSE, LASER_POINTS, SENSORVALUE, ActionStatus
 import time
 
 def get_decorator(errors=(Exception, ), default_value=''):
@@ -41,6 +41,7 @@ getIntDecorator = get_decorator(default_value = 0)
 getFloatDecorator = get_decorator(default_value = 0.0)
 getStringDecorator = get_decorator(default_value = "")
 getLaserPointsDecorator = get_decorator(default_value=LASER_POINTS(size=0))
+getSensorValueDecorator = get_decorator(default_value=SENSORVALUE(time=0,value=0.0))
 
 class MyClient(Client64):
     """Send a request to 'MyServer' to execute the methods and get the response."""
@@ -193,7 +194,9 @@ class MyClient(Client64):
     def setUpdate(self, enable):
         return self.request32('setUpdate', enable)
 
-
+	@getSensorValueDecorator
+	def getSensorValue(self, id):
+		return self.request32('getSensorValue', id)
 """
 USAGE:
     First launch server and then client from a terminal window,
