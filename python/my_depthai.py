@@ -13,6 +13,7 @@ from playsound import playsound
 
 MAX_ATTEMPTS = 3
 TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
+BOTTOM_MOUNTED_OAK_D_ID = "14442C10E18CC0D200";
 
 '''
 Spatial Tiny-yolo example
@@ -38,17 +39,14 @@ class MyDetection(object):
             self.id = 0
             self.status = ""
             
-        if label == "sports ball":
-            self.label = "baseball"
-        else:
-            self.label = label
+        self.label = label
         self.x = det.spatialCoordinates.x / 1000.0
         self.y = det.spatialCoordinates.y / 1000.0
         self.z = det.spatialCoordinates.z / 1000.0
 
         self.theta = math.degrees(-math.asin(self.x/self.z) if self.z != 0.0 else 0)
         self.bboxCtr = [ (self.xmin + self.xmax) / 2.0, (self.ymin + self.ymax) / 2.0]
-
+        
 class MyDepthAI:
     def __init__(
         self,
@@ -92,8 +90,8 @@ class MyDepthAI:
                 "toaster",        "sink",       "refrigerator",  "book",          "clock",       "vase",          "scissors",
                 "teddy bear",     "hair drier", "toothbrush"
             ]
-            self.nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
-            #self.nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
+            #self.nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
+            self.nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 
         if not Path(self.nnBlobPath).exists():
             import sys
@@ -213,16 +211,16 @@ class MyDepthAI:
     def takePicture(self):
         self.takePictureNow = True
         
-    def startUp(self, showRgbWindow=False, showDepthWindow=False):
+    def startUp(self, device_id=TOP_MOUNTED_OAK_D_ID, showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
         self.run_flag = True
         
         self.createPipeline()
 
-        found, device_info = dai.Device.getDeviceByMxId(TOP_MOUNTED_OAK_D_ID)
+        found, device_info = dai.Device.getDeviceByMxId(device_id)
 
         if not found:
-            raise RuntimeError("Top mounted Oak-D device not found!")
+            raise RuntimeError("Oak-D device not found!")
 
         while self.run_flag:
             try:
@@ -351,11 +349,12 @@ class MyDepthAI:
                 cv2.destroyAllWindows()
                 time.sleep(1)
 
-from threading import Thread
 if __name__ == '__main__':
-    mdai = MyDepthAI(model="tinyYolo", use_tracker=True)
+    from my_depthai import MyDepthAI, BOTTOM_MOUNTED_OAK_D_ID
+    from threading import Thread
+    mdai = MyDepthAI(model="tinyYolo", use_tracker=False)
 
-    my_depthai_thread = Thread(target = mdai.startUp, args=(False, False), name="mdai", daemon=False)
+    my_depthai_thread = Thread(target = mdai.startUp, args=(BOTTOM_MOUNTED_OAK_D_ID, True, False), name="mdai", daemon=False)
     my_depthai_thread.start()
 
     try:

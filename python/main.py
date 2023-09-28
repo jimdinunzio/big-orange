@@ -17,6 +17,7 @@ from orange_textgen_chatbot import OrangeTextGenChatbot
 from aws_mqtt_listener import AwsMqttListener
 import asyncio
 import my_depthai
+from robo_gripper import RoboGripper
 
 # Constants
 _show_rgb_window = False
@@ -49,6 +50,8 @@ _movement_timeout = 60
 _movement_towards_away = 30
 _chatbot_server_ip_addr = "192.168.1.41"
 _chatbot_port = 5124
+_sonar_ctr_id = 4
+_sonar_grasp_offset = -0.24 # sonar's x location (18cm) + distance to back of grasper (6cm)
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -98,13 +101,15 @@ _pixel_ring:SpeakerPixelRing = None
 _starting_up = True
 _radar = None
 _enable_movement_sensing = False
+_grasper : RoboGripper = None
+_enable_grasper = True
 _blazepose_thread = None
 _chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
 _chatbot_openai : OrangeOpenAiChatbot = None
 _chatbot_textgen : OrangeTextGenChatbot = None
 _aws_mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
-_enable_aws_mqtt_listener = True
+_enable_aws_mqtt_listener = False
 
 import parse
 import tts.sapi
@@ -342,7 +347,169 @@ def batteryMonitor():
             _pixel_ring.setPaletteDefault()
     except:
         None
+
+def getSonar(sdp, id):
+    return sdp.getSensorValue(id)
+
+def getGraspDist(sdp):
+    sensorValue = getSonar(sdp, _sonar_ctr_id)
+    if sensorValue.value == 0:
+        return 4.50, 0 
+    dist = sensorValue.value + _sonar_grasp_offset
+    return dist, sensorValue.time
+
+def testGraspDist(sdp):
+    dist, init_time_offset = getGraspDist(sdp)
+    while True:
+        dist, time_offset = getGraspDist(sdp)
+        time_offset -= init_time_offset
+        print("time = {}, dist = {} cm".format(time_offset / 1000, dist * 100))
+        time.sleep(.5)
+
+def moveToFloatWithYawSync(sdp, xt, yt, yaw):
+    global _action_flag
+    sdp.moveToFloatWithYaw(xt, yt, yaw)
+    _action_flag = True
+    res = sdp.waitUntilMoveActionDone()
+    _action_flag = False
+    return res
+
+def moveForward(sdp, dist):
+    print("move forward {} cm".format(dist * 100))
+    pose = sdp.pose()
+    xt = pose.x + dist * math.cos(math.radians(pose.yaw))
+    yt = pose.y + dist * math.sin(math.radians(pose.yaw))
+    sdp.moveToFloatWithYaw(xt, yt, math.radians(pose.yaw))
+
+def sonarSweepSearchForObject(sdp):
+    min_dist, _ = getGraspDist(sdp)
+    min_angle = sdp.pose().yaw
+
+    print("sonar sweep")
+    sdp.rotate(math.radians(5)) # issue async rotate, then monitor distance
+    while True:
+        dist, _ = getGraspDist(sdp)
+        print("dist = {} cm".format(dist * 100))
+        if dist < min_dist:
+            min_dist = dist
+            min_angle = sdp.pose().yaw
+        maStatus = sdp.getMoveActionStatus()
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        time.sleep(0.05)
+    sdp.rotate(math.radians(-10)) # issue async rotate, then monitor distance
+    while True:
+        dist, _ = getGraspDist(sdp)
+        print("dist = {} cm".format(dist * 100))
+        if dist < min_dist:
+            min_dist = dist
+            min_angle = sdp.pose().yaw
+        maStatus = sdp.getMoveActionStatus()
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        time.sleep(0.05)
+    return min_dist, min_angle
+
+def finalCaptureObject(obj, sdp):
+    sdp.setSpeed(1)
+    sdp.wakeup()
+    time.sleep(6)
     
+    if obj == "bottle" or obj == "remote":
+        grasp_hold_angle = 70
+        _grasper.setWristHorizOrient()
+    else:
+        grasp_hold_angle = 65
+        _grasper.setWristHorizOrient()
+
+    _grasper.setGraspFullOpen()
+    
+    retries = 3
+    # assume it is right in front of grasper
+
+    while retries > 0: 
+        dist, _ = getGraspDist(sdp)
+        dist = min(dist, 0.30)
+        print("after rotate search sonar distance is {} cm".format(dist * 100))
+        dist = max(dist, 0.20)
+        
+        input("Press Enter to try capture moving foward")
+        moveForward(sdp, dist)
+    
+        while True:
+            dist, _ = getGraspDist(sdp)
+            print("dist = {} cm".format(dist * 100))
+
+            if dist <= 0.1:
+                sdp.cancelMoveAction()
+                break
+
+            maStatus = sdp.getMoveActionStatus()
+            if maStatus == ActionStatus.Stopped or \
+                maStatus == ActionStatus.Error or \
+                maStatus == ActionStatus.Finished:
+                break                
+            time.sleep(0.05)
+        
+        if dist >= 0.03:
+            print("Missed it")
+            input("Press Enter to back up")
+            #back up and try again
+            backup(sdp, 5)
+            retries -= 1
+            time.sleep(2)
+            if retries == 0:
+                return False  
+        else:
+            print("got it")
+            _grasper.setGrasp(grasp_hold_angle)
+            time.sleep(1)
+            _grasper.setWristVertOrient()
+            return True
+    
+def captureObject(obj, sdp):
+    input("Press Enter to capture Object")
+    sdp.setSpeed(1)
+    sdp.wakeup()
+    time.sleep(6)
+
+    _grasper.setGraspFullOpen()
+
+    retries = 3
+    while True:
+        found, p = checkForObject(obj)
+        if found:
+            print("moving close to object")
+            yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.5)
+            moveToFloatWithYawSync(sdp, xt, yt, math.radians(yaw))
+            print("finished moving closer to object")
+            time.sleep(5)
+            break
+        else:
+            print("Lost object")
+            if retries <= 0:
+                return False
+            backup(sdp, 3)
+            retries -= 1
+
+    dist, _ = getGraspDist(sdp)
+    print("after moving close, dist = {} cm".format(dist * 100))
+
+    if dist > 5.25:
+        input("Dist > 0.25, Press Enter to do sonar sweep")
+        # look for it by rotating a back and forth to find min dist
+        dist, min_angle = sonarSweepSearchForObject(sdp)
+        print("min dist = {}, min_angle = {}", dist, min_angle)
+        input("Press Enter to do go to min angle.")
+        sdp.rotateTo(math.radians(min_angle))
+        sdp.waitUntilMoveActionDone()
+
+    return finalCaptureObject(obj, sdp)    
+
 ################################################################
 # This is where goto actions are initiated and get carried out.
 # If the robot is in the process of going to a  location, but
@@ -357,6 +524,7 @@ def handleGotoLocation():
     sdp = MyClient()
     sdp_comm.connectToSdp(sdp)
 
+    retrieve_to_loc = None
     sub_goal_cleanup = None
     while _run_flag:
         if _goal == "" or _action_flag:
@@ -364,6 +532,11 @@ def handleGotoLocation():
             time.sleep(0.5)
             continue
         if _sub_goal != "":
+            part = _sub_goal.partition(":")
+            _sub_goal = part[0]
+            op = part[2] # empty means find it, retrieve means find it and return it.
+            if op == "retrieve": # save location to come back to 
+                retrieve_to_loc = sdp.pose()
             sub_goal_cleanup = None
         _error_last_goto = False
         print("I'm free and A new goal arrived: ", _goal)
@@ -432,15 +605,18 @@ def handleGotoLocation():
         objDict = {}
 
         def gotLock():
+            sdp.cancelMoveAction()
             print("got a lock on ", _sub_goal)
             _goal_queue.append(_sub_goal)
             speak("I see a " + _sub_goal)
             _move_oak_d.yawHome()
             eyes.setHome()
-            sdp.setSpeed(_user_set_speed) #restore speed after finding obj
 
+        def getOffsetDist(op):
+            return 1 if op == "retrieve" else 0.75
+        
         if _sub_goal != "":
-            if setFoundObjAsGoal(_sub_goal):
+            if setFoundObjAsGoal(_sub_goal, cam_yaw=0, offset_dist = getOffsetDist(op)):
                 gotLock()
                 sub_goal_just_found = True
                 sub_goal_cleanup = _sub_goal
@@ -470,8 +646,8 @@ def handleGotoLocation():
                     sdp.cancelMoveAction()
                     _move_oak_d.stopSweepingBackAndForth()
                     time.sleep(2)
-                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw()):
-                        gotLock()
+                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op)):
+                        gotLock() 
                         sub_goal_just_found = True
                         sub_goal_cleanup = _sub_goal
                         break
@@ -480,7 +656,7 @@ def handleGotoLocation():
                         #speak("I thought I saw a " + _sub_goal + ". I'll look again.")
                         _move_oak_d.startSweepingBackAndForth(1)
                         while _move_oak_d.isSweeping():
-                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw()):
+                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op)):
                                 gotLock()
                                 sub_goal_just_found = True
                                 sub_goal_cleanup = _sub_goal
@@ -525,6 +701,16 @@ def handleGotoLocation():
                     _deliveree = None
                 elif _goal == sub_goal_cleanup:
                     speak("I found the " + _goal)
+                    if op == "retrieve":
+                        print("now capture the object")
+                        #captured = False
+                        captured = captureObject(_goal, sdp)
+                        if not captured:
+                            speak("Sorry, I could not get the " + _goal)
+                        else:
+                            speak("I have the " + _sub_goal + ". I'll bring it back.")
+                            _goal_queue.append(retrieve_to_loc) # bring back retrieved object
+                    sdp.setSpeed(_user_set_speed) #restore speed after finding obj
                     _move_oak_d.allHome()
                 elif _goal != "person":
                     speak("I've arrived.")
@@ -817,19 +1003,23 @@ def checkForPerson():
         None
     return False, ps
 
-def setLocationOfObj(sdp, obj, p, cam_yaw=0):
-    p.z -= 0.75 # come up to the object within certain distance
+def getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
+    p.z -= offset_dist # come up to the object within certain distance
     pose = sdp.pose()
     xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
     yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
-    print("set location of ", obj, " at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
-    _locations[obj] = (xt, yt, math.radians(pose.yaw + cam_yaw + p.theta))
+    print("location near ", obj, " is at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
+    return pose.yaw, xt, yt
 
-def setFoundObjAsGoal(obj, cam_yaw=0):
+def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
+    yaw, xt, yt = getLocationNearObj(sdp, obj,p, cam_yaw, offset_dist)
+    _locations[obj] = (xt, yt, math.radians(yaw + cam_yaw + p.theta))
+
+def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75):
     global _sdp, _interrupt_action
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(_sdp, obj, p, cam_yaw)
+        setLocationOfObj(_sdp, obj, p, cam_yaw, offset_dist)
         return True
     return False
 
@@ -1210,6 +1400,11 @@ def come_here(doa):
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
 
+def backup(sdp, n=5):
+    for i in range(0,n):
+        move_imm(sdp, -1)
+        time.sleep(0.1)
+
 def set_handling_response(value):
     global _handling_resp
     with _handling_resp_lock:
@@ -1318,7 +1513,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         
         return HandleResponseResult.Handled
 
-    if "stop all" in phrase:
+    if "stop motors" in phrase or "stop all" in phrase:
         cancelAction(True)
         speak("Okay.")
         location, distance, closeEnough = where_am_i() 
@@ -1453,9 +1648,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     if "status" in phrase:
         statusReport()
         return HandleResponseResult.Handled
-    
-    if phrase.startswith("find"):
-        obj_p, _, loc = phrase.partition("find")[2].partition("in the")[0:3]
+
+    # HBRC Floor Bot Challenge III
+    # HBRC Floor Bot Challenge II
+    if phrase.startswith("find") or phrase.startswith("retrieve"):
+        op = phrase.split()[0]
+        obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
         obj = obj_p.split()[-1]
         loc = loc.strip()
         inThisRoom = loc == "room" or loc ==''
@@ -1488,8 +1686,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         else:
             _goal = loc
         _sub_goal = obj
+        if op == "retrieve":
+            _sub_goal += ":retrieve"
         return HandleResponseResult.Handled
 
+    # HBRC Floor Bot Challenge I
     if "go across the room and come back" in phrase:
         speak("Ok. I'm going across the room and coming back.")
         sdp.wakeup()
@@ -1528,7 +1729,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         Backward = -180
         Right = -90
         Left = 90
-        
+
+    if phrase.startswith("backup") or phrase.startswith("back up"):
+        backup(sdp)
+        return HandleResponseResult.Handled
+
     phi = None
     # replace dash if present after gto with space => go <direction> 
     if phrase.startswith("go-"):
@@ -2701,7 +2906,7 @@ def start_depthai_thread(model="tinyYolo", use_tracker=False):
         return
     _mdai = my_depthai.MyDepthAI(model, use_tracker)
 
-    _my_depthai_thread = Thread(target = _mdai.startUp, args=(_show_rgb_window, _show_depth_window), name="mdai", daemon=False)
+    _my_depthai_thread = Thread(target = _mdai.startUp, args=(my_depthai.BOTTOM_MOUNTED_OAK_D_ID, _show_rgb_window, _show_depth_window), name="mdai", daemon=False)
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
@@ -3003,7 +3208,7 @@ def initialize_robot():
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
-    global _run_flag, _moods, _sdp
+    global _run_flag, _moods, _sdp, _grasper
     
     cancelAction()
     _run_flag = False
@@ -3022,6 +3227,10 @@ def shutdown_robot():
     _move_oak_d.shutdown()
     print("shutting down radar")
     stop_radar()
+    if _grasper is not None:
+        print("shutting down grasper")
+        _grasper.shutdown()
+        _grasper = None
     print("shutting down aws mqtt listener")
     stop_aws_mqtt_listener()
     print("shutting down microphone array")
@@ -3121,7 +3330,7 @@ def load_locations(name):
         _locations = pickle.load(f)
 
 def run():
-    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper
     # Start 32 bit bridge server
     _sdp = MyClient()
     _lpArduino = LattePandaArduino()
@@ -3137,8 +3346,13 @@ def run():
     _move_oak_d = move_oak_d.MoveOakD()
     _move_oak_d.initialize(_lpArduino.board)
 
-    _radar = radar.Radar()
-    _radar.initialize(_lpArduino.board)
+    if _enable_movement_sensing:
+        _radar = radar.Radar()
+        _radar.initialize(_lpArduino.board)
+
+    if _enable_grasper:
+        _grasper = RoboGripper()
+        _grasper.initialize(_lpArduino.board)
 
     res = sdp_comm.connectToSdp(_sdp)
 

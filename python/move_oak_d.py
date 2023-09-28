@@ -456,6 +456,7 @@ class MoveOakD(object):
             None
 
 if __name__ == '__main__':
+    from move_oak_d import MoveOakD
     from latte_panda_arduino import LattePandaArduino
     _lpArduino = LattePandaArduino()
     _lpArduino.initialize()

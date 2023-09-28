@@ -194,9 +194,9 @@ class MyClient(Client64):
     def setUpdate(self, enable):
         return self.request32('setUpdate', enable)
 
-	@getSensorValueDecorator
-	def getSensorValue(self, id):
-		return self.request32('getSensorValue', id)
+    @getSensorValueDecorator
+    def getSensorValue(self, id):
+        return self.request32('getSensorValue', id)
 """
 USAGE:
     First launch server and then client from a terminal window,
