@@ -116,7 +116,7 @@ class OakDServo(object):
     def setHome(self):
         self.setAngle(self.home_angle)
     
-    def resume(self):
+    def suspend(self):
         self.servo.disable_reporting()
 
     def resume(self):
