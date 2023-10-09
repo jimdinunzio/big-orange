@@ -64,10 +64,13 @@ class MyDepthAI:
         self.objectDetections = []
         self.detection_lock.release()
         self.run_flag = False
+        self.inner_run_flag = False
         self.pipeline = None
         self.nnBlobPath =""
         self.labelMap = []
         self.takePictureNow = False
+        self._showRgbWindow = False
+        self._showDepthWindow = False
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -199,6 +202,7 @@ class MyDepthAI:
         
     def shutdown(self):
         self.run_flag = False
+        self.inner_run_flag = False
 
     def getPersonDetections(self):
         with self.detection_lock:
@@ -210,11 +214,30 @@ class MyDepthAI:
         
     def takePicture(self):
         self.takePictureNow = True
+
+    def rgbWindowVisible(self):
+        return self._showRgbWindow
+    
+    def depthWindowVisible(self):
+        return self._showDepthWindow
+
+    def showRgbWindow(self, value):
+        if value != self._showRgbWindow:
+            self._showRgbWindow = value
+            self.inner_run_flag = False
+
+    def showDepthWindow(self, value):
+        if value != self._showDepthWindow:
+            self._showDepthWindow = value
+            self.inner_run_flag = False            
         
     def startUp(self, device_id=TOP_MOUNTED_OAK_D_ID, showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
         self.run_flag = True
         
+        self.showRgbWindow(showRgbWindow)
+        self.showDepthWindow(showDepthWindow)
+
         self.createPipeline()
 
         found, device_info = dai.Device.getDeviceByMxId(device_id)
@@ -224,12 +247,12 @@ class MyDepthAI:
 
         while self.run_flag:
             try:
-                if showRgbWindow:
+                if self._showRgbWindow:
                     cv2.namedWindow('rgb', cv2.WINDOW_NORMAL)
                     cv2.resizeWindow('rgb', 832, 832)
                 with dai.Device(self.pipeline, device_info) as device:
                 
-                    # Output queues will be used to get the rgb frames and nn data from the outputs defined above
+                    # Output queues will be used to get the rgb frames and nn data from the outputs ffined above
                     previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
                     detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
                     #xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
@@ -243,7 +266,8 @@ class MyDepthAI:
                     fps = 0
                     color = (255, 255, 255)
                 
-                    while self.run_flag:
+                    self.inner_run_flag = True
+                    while self.inner_run_flag:
                         inPreview = previewQueue.get()                  
                         inNN = detectionNNQueue.get()
                         depth = depthQueue.get()
@@ -257,7 +281,7 @@ class MyDepthAI:
                                     
                         detections = inNN.tracklets if self.use_tracker else inNN.detections
                         
-                        if showDepthWindow:
+                        if self._showDepthWindow:
                             depthFrame = depth.getFrame()
                             depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
                             depthFrameColor = cv2.equalizeHist(depthFrameColor)
@@ -278,7 +302,7 @@ class MyDepthAI:
 
                 
                         # If the frame is available, draw bounding boxes on it and show the frame
-                        if showRgbWindow:
+                        if self._showRgbWindow:
                             frame = inPreview.getCvFrame()
                             if self.takePictureNow:
                                 self.takePictureNow = False
@@ -303,14 +327,14 @@ class MyDepthAI:
                                 str_label = str(label)
                                 if str_label == "person":
                                     self.personDetections.append(MyDetection(str_label, self.use_tracker, detection))
-                                    #if showRgbWindow:
+                                    #if self._showRgbWindow:
                                         #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
                                         #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
             
                                 else:
                                     self.objectDetections.append(MyDetection(str_label, self.use_tracker, detection))
                                 
-                                if showRgbWindow:
+                                if self._showRgbWindow:
                                     # Denormalize bounding box
                                     if self.use_tracker:
                                         x1 = int(detection.srcImgDetection.xmin * width)
@@ -333,12 +357,12 @@ class MyDepthAI:
                                     cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
                                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
                         
-                        if showRgbWindow:           
+                        if self._showRgbWindow:           
 
                             cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
                             cv2.imshow("rgb", frame)
                         
-                        if showDepthWindow:
+                        if self._showDepthWindow:
                             cv2.imshow("depth", depthFrameColor)
                         
                         cv2.waitKey(45)
@@ -350,13 +374,22 @@ class MyDepthAI:
                 time.sleep(1)
 
 if __name__ == '__main__':
-    from my_depthai import MyDepthAI, BOTTOM_MOUNTED_OAK_D_ID
+    import keyboard
+    from my_depthai import MyDepthAI, TOP_MOUNTED_OAK_D_ID
     from threading import Thread
     mdai = MyDepthAI(model="tinyYolo", use_tracker=False)
 
-    my_depthai_thread = Thread(target = mdai.startUp, args=(BOTTOM_MOUNTED_OAK_D_ID, True, False), name="mdai", daemon=False)
+    my_depthai_thread = Thread(target = mdai.startUp, args=(TOP_MOUNTED_OAK_D_ID, True, False), name="mdai", daemon=False)
     my_depthai_thread.start()
 
+    def toggleRgbWindow(a):
+        mdai.showRgbWindow(not mdai.rgbWindowVisible())
+
+    def toggleDepthWindow(a):
+        mdai.showDepthWindow(not mdai.depthWindowVisible())
+
+    keyboard.on_press_key('r', toggleRgbWindow)
+    keyboard.on_press_key('d', toggleDepthWindow)
     try:
         while True:
             time.sleep(0.1)

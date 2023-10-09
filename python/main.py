@@ -1441,7 +1441,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
-    global _show_rgb_window, _show_depth_window
     global _chatbot_openai, _chatbot_textgen
 
     # convert phrase to lower case for comparison
@@ -1952,9 +1951,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if "take a picture" in phrase:
-        if not _show_rgb_window:
-            speak("You'll need to show my view first.")
-            return HandleResponseResult.Handled
+        _mdai.showRgbWindow(True)
         _mdai.takePicture()
         time.sleep(0.5)
         speak("Ok. Here is the picture I took.")
@@ -1968,10 +1965,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if "take my picture" in phrase:
-        if not _show_rgb_window:
-            speak("You'll need to show my view first.")
-            return HandleResponseResult.Handled
-    
+        _mdai.showRgbWindow(True)
         _mic_array.rotateToDoa(doa)
         search_dir = -1 # assume we have to raise camera to get person in frame
         timeout = time.monotonic() + 10
@@ -2073,34 +2067,22 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
 
     if phrase == "show depth view":
         speak("Ok.")
-        if not _show_depth_window:
-            _show_depth_window = True
-            shutdown_my_depthai()
-            start_depthai_thread()
+        _mdai.showDepthWindow(True)
         return HandleResponseResult.Handled
 
     if phrase == "hide depth view":
         speak("Ok.")
-        if _show_depth_window:
-            _show_depth_window = False
-            shutdown_my_depthai()
-            start_depthai_thread()
+        _mdai.showDepthWindow(False)
         return HandleResponseResult.Handled
         
     if phrase == "show rgb view":
         speak("Ok.")
-        if not _show_rgb_window:
-            _show_rgb_window = True
-            shutdown_my_depthai()
-            start_depthai_thread()
+        _mdai.showRgbWindow(True)
         return HandleResponseResult.Handled
     
     if phrase == "hide rgb view":
         speak("Ok.")
-        if _show_rgb_window:
-            _show_rgb_window = False
-            shutdown_my_depthai()
-            start_depthai_thread()
+        _mdai.showRgbWindow(False)        
         return HandleResponseResult.Handled
     
     if phrase == "follow me":
@@ -2906,7 +2888,7 @@ def start_depthai_thread(model="tinyYolo", use_tracker=False):
         return
     _mdai = my_depthai.MyDepthAI(model, use_tracker)
 
-    _my_depthai_thread = Thread(target = _mdai.startUp, args=(my_depthai.BOTTOM_MOUNTED_OAK_D_ID, _show_rgb_window, _show_depth_window), name="mdai", daemon=False)
+    _my_depthai_thread = Thread(target = _mdai.startUp, args=(my_depthai.TOP_MOUNTED_OAK_D_ID, _show_rgb_window, _show_depth_window), name="mdai", daemon=False)
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
