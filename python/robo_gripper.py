@@ -1,7 +1,6 @@
 import time
 from threading import Thread
 from enum import Enum
-import math
 from copy import deepcopy
 from pyfirmata import INPUT, Board
 
@@ -18,10 +17,10 @@ def clamp(num, min_value, max_value):
         return num
 
 _WRIST_LIMITS = [0, 180]
-_GRASP_LIMITS = [0, 140]
+_GRASP_LIMITS = [0, 120]
 
-_WRIST_HOME_ = 95
-_GRASP_HOME_ = 90
+_WRIST_HOME_ = 55
+_GRASP_HOME_ = 0
 
 class RoboGripperServo(object):
     """RoboGripper Servo Class for wrist and grasp """
@@ -39,11 +38,11 @@ class RoboGripperServo(object):
         elif axis == ServoAxis.Grasp:
             self.min_angle = _GRASP_LIMITS[0]
             self.max_angle = _GRASP_LIMITS[1]
-            self.servo = board.get_pin('d:8:s')
+            self.servo = board.get_pin('d:3:s')
             self.angle = 0
             self.home_angle = _GRASP_HOME_
 
-        self.setAngle(self.home_angle)
+        self.setAngle(self.home_angle, 0)
 
     def __del__(self):
         self.servo.mode = INPUT
@@ -131,12 +130,13 @@ class RoboGripper(object):
     def shutdown(self):
         try:
             self.allHome()
-            del(self.wristServo)
             del(self.graspServo)
+            del(self.wristServo)
         except:
             None
 
 if __name__ == '__main__':
+    import robo_gripper as rg
     from robo_gripper import RoboGripper
     from latte_panda_arduino import LattePandaArduino
     _lpArduino = LattePandaArduino()
