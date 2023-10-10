@@ -207,8 +207,11 @@ class MyServer(Server32):
     def recoverLocalization(self, left, bottom, width, height):
         return self.lib.recoverLocalization(left, bottom, width, height)
 
-    def setUpdate(self, enable):
-        return self.lib.setUpdate(enable)
-    
+    def setMapUpdate(self, enable):
+        return self.lib.setMapUpdate(enable)
+
+    def getMapUpdate(self):
+        return self.lib.getMapUpdate()
+            
     def getSensorValue(self, id):
         return self.lib.getSensorValue(id)

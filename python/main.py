@@ -23,6 +23,7 @@ from robo_gripper import RoboGripper
 _show_rgb_window = False
 _show_depth_window = False
 _default_map_name = 'my house'
+_current_map_name = ''
 _hotword = "orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
@@ -834,13 +835,13 @@ def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
 # Miscellaneous
 
 def loadMap(filename):
-    global _sdp
+    global _sdp, _current_map_name
     _sdp.wakeup()
     print("Loading map and its locations")
     res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
     if (res == 0):
         # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
-        _sdp.setUpdate(False)
+        _sdp.setMapUpdate(False)
         speak("Map and locations are loaded. Mapping is off.")
         # speak("Now let me get my bearings.")
         # result = recoverLocalization(_INIT_RECT)
@@ -850,15 +851,17 @@ def loadMap(filename):
         speak("Something is wrong. I could not load the map.")
     print("Done loading map")
     load_locations(filename)
+    _current_map_name = filename
     return res
 
 def saveMap(filename):
-    global _sdp
+    global _sdp, _current_map_name
     print("saving map and its locations")
     res = _sdp.saveSlamtecMap(str.encode(filename) + b'.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
     save_locations(filename)
+    _current_map_name = filename
     return res
         
 def show_picture_mat(mat):
@@ -1911,7 +1914,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     if phrase.startswith("load map"):
         name = phrase[9:]
         if len(name) == 0:
-            name = _default_map_name
+            name = _current_map_name
+            if len(name) == 0:
+                name = _default_map_name
         speak("Ok. I will load map " + name)
         loadMap(name)
         return HandleResponseResult.Handled
@@ -1919,9 +1924,10 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     if phrase.startswith("save map"):
         name = phrase[9:]
         if len(name) == 0:
-            speak("please include the name of the map")
+            name = _current_map_name
+            if len(name) == 0:
+                speak("please include the name of the map")
             return HandleResponseResult.Handled
-            #name = _default_map_name
         speak("Ok. I will save map " + name)
         saveMap(name)
         return HandleResponseResult.Handled
@@ -1930,7 +1936,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak("Ok. I will clear my map.")
         sdp.clearSlamtecMap()
         # after clearing make sure updating is on
-        sdp.setUpdate(True)
+        sdp.setMapUpdate(True)
         return HandleResponseResult.Handled
     
     if "clear locations" in phrase:
@@ -1947,7 +1953,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak("Ok. I will disable map updating.")
         else:
             return HandleResponseResult.Handled                
-        sdp.setUpdate(enable)
+        sdp.setMapUpdate(enable)
         return HandleResponseResult.Handled
 
     if "take a picture" in phrase:
@@ -3343,7 +3349,7 @@ def run():
             _slamtec_on = True
             #loadMap(_default_map_name)
             # set not to update map by default.
-            _sdp.setUpdate(True)
+            _sdp.setMapUpdate(True)
             None
         else:
             speak("I could not connect to Slamtec. Movement is disabled.")

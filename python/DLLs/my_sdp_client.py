@@ -191,8 +191,12 @@ class MyClient(Client64):
         return self.request32('recoverLocalization', left, bottom, width, height)
     
     @getIntDecorator
-    def setUpdate(self, enable):
-        return self.request32('setUpdate', enable)
+    def setMapUpdate(self, enable):
+        return self.request32('setMapUpdate', enable)
+    
+    @noReturnDecorator
+    def getMapUpdate(self):
+        return self.request32('getMapUpdate')
 
     @getSensorValueDecorator
     def getSensorValue(self, id):
