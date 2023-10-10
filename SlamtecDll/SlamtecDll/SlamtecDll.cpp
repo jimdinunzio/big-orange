@@ -75,7 +75,8 @@ extern "C" __declspec(dllexport) int clearSlamtecMap();
 extern "C" __declspec(dllexport) int loadSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int saveSlamtecMap(const char* str_mapName);
 extern "C" __declspec(dllexport) int recoverLocalization(float left, float bottom, float width, float height);
-extern "C" __declspec(dllexport) int setUpdate(int enable);
+extern "C" __declspec(dllexport) int setMapUpdate(int enable);
+extern "C" __declspec(dllexport) bool getMapUpdate();
 extern "C" __declspec(dllexport) void freeIt(void *ptr);
 extern "C" __declspec(dllexport) SensorValueStruct getSensorValue(int id);
 
@@ -510,7 +511,7 @@ extern "C" __declspec(dllexport) int recoverLocalization(float left, float botto
 // Set whether SLAMWARE system will perform map update to the default map kind (EXPLORER).
 // SLAMWARE system enters localization enhanced mode once map update is disabled.
 
-extern "C" __declspec(dllexport) int setUpdate(int enable)
+extern "C" __declspec(dllexport) int setMapUpdate(int enable)
 {
 	int result = 0;
 	result = static_cast<int>(sdp.setMapUpdate(enable));
@@ -520,6 +521,15 @@ extern "C" __declspec(dllexport) int setUpdate(int enable)
 	}
 	
 	return result;
+}
+
+//-----------------------------------------------------------
+// Get whether SLAMWARE system will perform map update to the default map kind (EXPLORER).
+// SLAMWARE system enters localization enhanced mode once map update is disabled.
+
+extern "C" __declspec(dllexport) bool getMapUpdate()
+{
+	return static_cast<int>(sdp.getMapUpdate());
 }
 
 //-----------------------------------------------------------
