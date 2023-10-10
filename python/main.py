@@ -18,6 +18,7 @@ from aws_mqtt_listener import AwsMqttListener
 import asyncio
 import my_depthai
 from robo_gripper import RoboGripper
+from button_pad import Button4Pad
 
 # Constants
 _show_rgb_window = False
@@ -86,6 +87,7 @@ _listen_thread = None
 _eyes_thread = None
 _handle_resp_thread = None
 _radar_thread = None
+_button_pad_thread = None
 _handling_resp = False
 _handling_resp_lock = Lock()
 _sendToGoogleAssistantFn = None
@@ -111,6 +113,7 @@ _chatbot_textgen : OrangeTextGenChatbot = None
 _aws_mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
 _enable_aws_mqtt_listener = False
+_button_pad = Button4Pad()
 
 import parse
 import tts.sapi
@@ -2839,6 +2842,21 @@ def initialize_speech():
     _voice.voice.Volume = 100
     _voice.voice.SynchronousSpeakTimeout = 1 # timeout in milliseconds
 
+def start_button_pad_thread():
+    global _button_pad_thread
+    if _button_pad_thread is not None:
+        return
+    _button_pad_thread = Thread(target=_button_pad.startUp, daemon=False)
+    _button_pad_thread.start()
+
+def shutdown_button_pad_thread():
+    global _button_pad_thread
+    try:
+        _button_pad.shutdown()
+        _button_pad_thread.join()
+    except:
+        None
+
 def start_facial_recog(new_name=""):
     global _facial_recog, _facial_recog_thread
     if len(new_name) > 0:
@@ -3161,6 +3179,8 @@ def initialize_robot():
 
     _internet = True
 
+    start_button_pad_thread()
+
     start_depthai_thread()
     #start_blazepose_thread()
 
@@ -3221,6 +3241,8 @@ def shutdown_robot():
         _grasper = None
     print("shutting down aws mqtt listener")
     stop_aws_mqtt_listener()
+    print("shutting down button pad")
+    shutdown_button_pad_thread()
     print("shutting down microphone array")
     _mic_array.close()
     print("shutting down leonardo")
@@ -3317,6 +3339,48 @@ def load_locations(name):
     with open(name + ".pkl", "rb") as f:
         _locations = pickle.load(f)
 
+# ButtonPad Button Handlers
+def handleButton1Event(pressed, sdp: MyClient):
+    if pressed:
+        cancelAction(True, sdp)
+        speak("Cancelling Current Action.")
+
+def handleButton2Event(pressed, sdp: MyClient):
+    if pressed:
+        new_val = not _mdai.rgbWindowVisible()
+        text = "Showing" if new_val else "Hiding"
+        text += " RGB view."
+        speak(text)
+        _mdai.showRgbWindow(new_val)
+
+def handleButton3Event(pressed, sdp: MyClient):
+    if pressed:
+        new_val = not sdp.getMapUpdate()
+        sdp.setMapUpdate(new_val)
+        text = "Enabling" if new_value else "Disabling"
+        text += " map updating."
+        speak(text)
+
+def handleButton4Event(pressed, sdp: MyClient):
+    if pressed:
+        if len(_current_map_name) != 0:
+            speak("Ok. I will save map " + _current_map_name)
+            saveMap(_current_map_name)
+
+def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
+      for i in range(0, 4):
+        if change_mask & 1<<i != 0: 
+            pressed = button_state_mask & 1<<i != 0          
+            print("button {} {}.".format(i+1, pressed and "pressed." or "released."))
+            if i == 0:
+                handleButton1Event(pressed, sdp)
+            elif i == 1:
+                handleButton2Event(pressed, sdp)
+            elif i == 2:
+                handleButton3Event(pressed, sdp) 
+            elif i == 3:
+                handleButton4Event(pressed, sdp)
+
 def run():
     global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper
     # Start 32 bit bridge server
@@ -3342,6 +3406,8 @@ def run():
         _grasper = RoboGripper()
         _grasper.initialize(_lpArduino.board)
 
+    _button_pad.initialize(_lpArduino.board, buttonEventCb)
+           
     res = sdp_comm.connectToSdp(_sdp)
 
     if _execute:
