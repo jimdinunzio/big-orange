@@ -1,4 +1,4 @@
-from pyfirmata import ArduinoLeonardo, util
+from pyfirmata import ArduinoLeonardoLattePanda, util
 
 class LattePandaArduino:
     def __init__(self):
@@ -10,7 +10,7 @@ class LattePandaArduino:
             self._board = None
             
     def initialize(self):
-        self._board = ArduinoLeonardo('COM6')
+        self._board = ArduinoLeonardoLattePanda('COM6')
         iter = util.Iterator(self._board)
         iter.start()
 
