@@ -49,7 +49,7 @@ _YAW_LIMITS = [0, 180]
 _PITCH_LIMITS = [0, 135]
 
 _YAW_HOME_ = 90
-_PITCH_HOME_ = 100
+_PITCH_HOME_ = 105
 
 def servoToEyeYaw(yaw):
     return (yaw - 90) * (7.0 / 9.0)
@@ -451,7 +451,9 @@ class MoveOakD(object):
             self.stop_tracking()
             self.allHome()
             del(self.yawServo)
+            self.yawServo = None
             del(self.pitchServo)
+            self.pitchServo = None
         except:
             None
 
