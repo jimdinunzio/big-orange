@@ -50,6 +50,7 @@ class MyClient(Client64):
         # Specify the name of the Python module to execute on the 32-bit server (i.e., 'my_sdp_server')
         super(MyClient, self).__init__(
             module32='my_sdp_server',
+            timeout=20,
             append_environ_path=os.path.abspath(os.path.dirname(__file__))  # IMPORTANT!
         )
         self.connected = False
