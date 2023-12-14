@@ -27,8 +27,8 @@ class RoboGripperServo(object):
     def __init__(self, axis:ServoAxis, board :Board):
         self.axis = axis
         self.GRASP_FULL_OPEN = 0
-        self.WRIST_HORIZ = 90
-        self.WRIST_VERT = 0
+        self.WRIST_HORIZ = 55
+        self.WRIST_VERT = 145
         if axis == ServoAxis.Wrist:
             self.min_angle = _WRIST_LIMITS[0]
             self.max_angle = _WRIST_LIMITS[1]
@@ -131,7 +131,9 @@ class RoboGripper(object):
         try:
             self.allHome()
             del(self.graspServo)
+            self.graspServo = None
             del(self.wristServo)
+            self.wristServo = None
         except:
             None
 
