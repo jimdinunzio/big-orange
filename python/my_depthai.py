@@ -231,7 +231,7 @@ class MyDepthAI:
             self._showDepthWindow = value
             self.inner_run_flag = False            
         
-    def startUp(self, device_id=TOP_MOUNTED_OAK_D_ID, showRgbWindow=False, showDepthWindow=False):
+    def startUp(self, loc="TOP", showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
         self.run_flag = True
         
@@ -240,16 +240,24 @@ class MyDepthAI:
 
         self.createPipeline()
 
+        if loc == "TOP":
+            device_id = TOP_MOUNTED_OAK_D_ID
+        else:
+            device_id = BOTTOM_MOUNTED_OAK_D_ID
+
         found, device_info = dai.Device.getDeviceByMxId(device_id)
 
         if not found:
             raise RuntimeError("Oak-D device not found!")
 
+        rgb_win_name = "rgb"+loc
+        depth_win_name = "depth"+loc
+
         while self.run_flag:
             try:
                 if self._showRgbWindow:
-                    cv2.namedWindow('rgb', cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow('rgb', 832, 832)
+                    cv2.namedWindow(rgb_win_name, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(rgb_win_name, 832, 832)
                 with dai.Device(self.pipeline, device_info) as device:
                 
                     # Output queues will be used to get the rgb frames and nn data from the outputs ffined above
@@ -360,10 +368,10 @@ class MyDepthAI:
                         if self._showRgbWindow:           
 
                             cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-                            cv2.imshow("rgb", frame)
+                            cv2.imshow(rgb_win_name, frame)
                         
                         if self._showDepthWindow:
-                            cv2.imshow("depth", depthFrameColor)
+                            cv2.imshow(depth_win_name, depthFrameColor)
                         
                         cv2.waitKey(45)
                     
@@ -375,11 +383,11 @@ class MyDepthAI:
 
 if __name__ == '__main__':
     import keyboard
-    from my_depthai import MyDepthAI, TOP_MOUNTED_OAK_D_ID
+    from my_depthai import MyDepthAI
     from threading import Thread
     mdai = MyDepthAI(model="tinyYolo", use_tracker=False)
 
-    my_depthai_thread = Thread(target = mdai.startUp, args=(TOP_MOUNTED_OAK_D_ID, True, False), name="mdai", daemon=False)
+    my_depthai_thread = Thread(target = mdai.startUp, args=("BOTTOM", True, False), name="mdai", daemon=False)
     my_depthai_thread.start()
 
     def toggleRgbWindow(a):
