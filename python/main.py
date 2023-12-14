@@ -19,6 +19,9 @@ import asyncio
 import my_depthai
 from robo_gripper import RoboGripper
 from button_pad import Button4Pad
+from my_sdp_client import MyClient
+from my_sdp_server import *
+from pyfirmata import util as pyfirmata_util, Pin
 
 # Constants
 _show_rgb_window = True
@@ -52,13 +55,12 @@ _movement_timeout = 60
 _movement_towards_away = 30
 _chatbot_server_ip_addr = "192.168.1.41"
 _chatbot_port = 5124
-_sonar_ctr_id = 4
-_sonar_grasp_offset = -0.24 # sonar's x location (18cm) + distance to back of grasper (6cm)
+_sonar_grasp_offset = -0.066 # distance to back of grasper
 
 MicArray = typing.NewType("MicArray", object)
 
 # Globals
-_sdp = None
+_sdp : MyClient = None
 _mood = "happy"
 _person = "jim"
 _slamtec_on = False
@@ -114,6 +116,8 @@ _aws_mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
 _enable_aws_mqtt_listener = False
 _button_pad = Button4Pad()
+_grasper_sonar : Pin
+_last_grasper_sonar : float = 4.50
 
 import parse
 import tts.sapi
@@ -129,8 +133,6 @@ from word2number import w2n
 import io
 #import pygame
 #from gtts import gTTS
-from my_sdp_client import MyClient
-from my_sdp_server import *
 import cv2
 import ai_vision.detect as detect
 import ai_vision.classify as classify
@@ -286,8 +288,7 @@ def is_close_to(loc, max_dist=1.0):
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
 
-
-def cancelAction(interrupt = False, sdp = _sdp):
+def cancelAction(interrupt = False, sdp =_sdp):
     global _action_flag, _interrupt_action
     if interrupt:
         _interrupt_action = True
@@ -352,34 +353,40 @@ def batteryMonitor():
     except:
         None
 
-def getSonar(sdp, id):
-    return sdp.getSensorValue(id)
+def getGrasperSonar() -> float:
+    global _last_grasper_sonar
+    duration = _grasper_sonar.ping()
+    if duration:
+        _last_grasper_sonar = pyfirmata_util.ping_time_to_distance(duration)
+    return _last_grasper_sonar
 
-def getGraspDist(sdp):
-    sensorValue = getSonar(sdp, _sonar_ctr_id)
-    if sensorValue.value == 0:
-        return 4.50, 0 
-    dist = sensorValue.value + _sonar_grasp_offset
-    return dist, sensorValue.time
+def getGraspDist() -> float:
+    return getGrasperSonar() + _sonar_grasp_offset
 
-def testGraspDist(sdp):
-    dist, init_time_offset = getGraspDist(sdp)
-    while True:
-        dist, time_offset = getGraspDist(sdp)
-        time_offset -= init_time_offset
-        print("time = {}, dist = {} cm".format(time_offset / 1000, dist * 100))
+def testGraspDist():
+    dist = getGraspDist()
+    for i in range(0,10):
+        dist = getGraspDist()
+        print("dist = {} cm".format(dist * 100))
         time.sleep(.5)
 
-def moveToFloatWithYaw(sdp, xt, yt, yaw):
+def moveToFloatWithYawCapt(sdp, xt, yt, yaw):
     global _action_flag
     sdp.moveToFloatWithYaw(xt, yt, yaw)
+    closest_angle = yaw
+    shortest_dist = 4.5
     _action_flag = True
     while True:
-        if checkIfDoneMovingOrCaptured(sdp):
+        dist, angle, done = checkIfDoneMovingOrCaptured(sdp)
+        if dist < shortest_dist:
+            shortest_dist = dist
+            closest_angle = angle
+        if done:
             break
         time.sleep(0.1)
 
-    _action_flag = False   
+    _action_flag = False
+    return shortest_dist, closest_angle
 
 def moveForward(sdp, dist):
     print("move forward {} cm".format(dist * 100))
@@ -388,105 +395,124 @@ def moveForward(sdp, dist):
     yt = pose.y + dist * math.sin(math.radians(pose.yaw))
     sdp.moveToFloatWithYaw(xt, yt, math.radians(pose.yaw))
 
-def sonarSweep(sdp, sweep_angle, min_dist, min_angle):
-    #sdp.rotate(math.radians(sweep_angle)) # issue async rotate, then monitor distance
-    count = abs(sweep_angle)
+def sonarSweep(sdp, angle, min_dist, min_angle):
+    pose = sdp.pose()
+    sdp.moveToFloatWithYaw(pose.x, pose.y, math.radians(angle))
     while True:
-        dist, _ = getGraspDist(sdp)
+        maStatus = sdp.getMoveActionStatus()
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        dist = getGraspDist()
+        cur_angle = sdp.heading()
         if dist < min_dist:
+            min_angle = cur_angle            
             min_dist = dist
-            min_angle = sdp.pose().yaw
-            print("lower dist = {} cm, angle = {} degrees".format(dist * 100, min_angle))
-
-        # maStatus = sdp.getMoveActionStatus()
-        # if maStatus == ActionStatus.Stopped or \
-        #     maStatus == ActionStatus.Error or \
-        #     maStatus == ActionStatus.Finished:
-        #     break
-        turn_imm(sdp, sweep_angle)
-        count -= 1
-        if count <= 0:
-            break 
+            print("min_dist = {} cm, min_angle = {} deg.".format(min_dist * 100.0, min_angle))
         time.sleep(0.1)
     return min_dist, min_angle
+    
+def rotateToPrecise(sdp, angle):
+    pose = sdp.pose()
+    sdp.moveToFloatWithYaw(pose.x, pose.y, math.radians(angle))
+    sdp.waitUntilMoveActionDone()
 
 def sonarSweepSearchForObject(sdp):
-    min_dist, _ = getGraspDist(sdp)
-    min_angle = sdp.pose().yaw
+    min_dist = getGraspDist()
+    min_angle = sdp.heading()
+    pose = sdp.pose()
 
     print("sonar sweep")
-    min_dist, min_angle = sonarSweep(sdp, 10, min_dist, min_angle)
-    min_dist, min_angle = sonarSweep(sdp, -20, min_dist, min_angle)
-    min_dist, min_angle = sonarSweep(sdp, 10, min_dist, min_angle)
+    min_dist, min_angle = sonarSweep(sdp, pose.yaw + 30, min_dist, min_angle)
+    if _interrupt_action:
+        return 0,0
+    min_dist, min_angle = sonarSweep(sdp, pose.yaw - 30, min_dist, min_angle)
+    if _interrupt_action:
+        return 0,0
     return min_dist, min_angle
 
+def centerObjWithSonar(sdp):
+    orig_yaw = sdp.pose().yaw
+    for i in range(3):
+        rotateToPrecise(sdp, orig_yaw)
+        if _interrupt_action:
+            return 0
+        min_dist, min_angle = sonarSweepSearchForObject(sdp)
+        dist = min_dist
+        if min_dist > 0.35:
+            continue
+        print("turning to min_angle {}".format(min_angle))
+        rotateToPrecise(sdp, min_angle)
+        dist = getGraspDist()
+        print("now dist = {} cm".format(dist*100))
+        for i in range(3):
+            if _interrupt_action:
+                return 0
+            if dist > min_dist + .01:
+                print("readjusting angle")
+                rotateToPrecise(sdp, min_angle)
+                dist = getGraspDist()
+            else:
+                break
+        print("final dist = {} cm".format(dist*100))
+        return dist
+    rotateToPrecise(sdp, orig_yaw)
+    return dist
+
 def checkIfDoneMovingOrCaptured(sdp):
-    dist, _ = getGraspDist(sdp)
+    dist = getGraspDist()
+    angle = sdp.heading()
     print("dist = {} cm".format(dist * 100))
 
-    if dist <= 0.1:
+    if dist <= 0.02:
         sdp.cancelMoveAction()
-        return True
+        return dist, angle, True
 
     maStatus = sdp.getMoveActionStatus()
     if maStatus == ActionStatus.Stopped or \
         maStatus == ActionStatus.Error or \
         maStatus == ActionStatus.Finished:
-        return True          
+        return dist, angle, True
 
-def finalCaptureObject(obj, sdp):
+    return dist, angle, False
+
+# takes degrees
+def rotateTo(angle, sdp):
+    sdp.rotateTo(math.radians(angle))
+    sdp.waitUntilMoveActionDone()
+    
+def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
+    global _action_flag
     sdp.setSpeed(1)
-    
-    if obj == "bottle" or obj == "remote":
-        grasp_hold_angle = 70
-        _grasper.setWristHorizOrient()
-    else:
-        grasp_hold_angle = 65
-        _grasper.setWristHorizOrient()
-
-    #_grasper.setGraspFullOpen()
-    
+        
     retries = 3
     # assume it is right in front of grasper
 
     while retries > 0: 
-        dist, _ = getGraspDist(sdp)
+        if _interrupt_action:
+            return False
+        dist = getGraspDist()
         print("after moving close, dist = {} cm".format(dist * 100))
-
-        sweep_tries = 3
-        while sweep_tries > 0:
-            if dist > 0.35:
-                input("Dist > 0.35, Press Enter to do sonar sweep")
-                # look for it by rotating a back and forth to find min dist
-                dist, min_angle = sonarSweepSearchForObject(sdp)
-                print("min dist = {} cm, min_angle = {} degrees".format(dist*100.0, min_angle))
                 
-                input("Press Enter to do go to min angle.")
-                sdp.rotateTo(math.radians(min_angle))
-                sdp.waitUntilMoveActionDone()
-                dist, _ = getGraspDist(sdp)
-                # nudge forward
-                if dist > 0.35:
-                    moveForward(sdp, 0.1)
-                sweep_tries -= 1
-        
-        dist = min(dist, 0.50)
-        print("now search sonar distance is {} cm".format(dist * 100))
-        #dist = max(dist, 0.40)
-        
-        input("Press Enter to try capture moving foward")
-        moveForward(sdp, dist)
+        if dist >= 0.03 and dist < 0.35:
+            input("Press Enter to try capture moving foward")
+            moveForward(sdp, dist + 0.1 if dist > .25 else min(dist + 0.12, 0.19))
     
-        while True:
-            if checkIfDoneMovingOrCaptured(sdp):
-                break
-            time.sleep(0.05)
+            while True:
+                dist, _, done = checkIfDoneMovingOrCaptured(sdp)
+                if done:
+                    break
+                time.sleep(0.05)
         
-        if dist >= 0.03:
+        if dist > 0.03:
             print("Missed it")
+            dist = centerObjWithSonar(sdp)
+            if dist <= 0.35:
+                continue
             input("Press Enter to back up")
             #back up and try again
-            backup(sdp, 15)
+            backup(sdp, 10)
             retries -= 1
             time.sleep(2)
             if retries == 0:
@@ -494,38 +520,68 @@ def finalCaptureObject(obj, sdp):
         else:
             print("got it")
             _grasper.setGrasp(grasp_hold_angle)
-            time.sleep(1)
+            time.sleep(0.25)
             _grasper.setWristVertOrient()
             return True
     
 def captureObject(obj, sdp):
-    input("Press Enter to capture Object")
-    sdp.setSpeed(1)
-    sdp.wakeup()
-    time.sleep(6)
+    if obj == "bottle" or obj == "remote":
+        grasp_hold_angle = 70
+        _grasper.setWristHorizOrient()
+    else:
+        grasp_hold_angle = 65
+        _grasper.setWristHorizOrient()
 
     _grasper.setGraspFullOpen()
 
-    dist, _ = getGraspDist(sdp)
+    dist = getGraspDist()
+    print("capturing, dist = {} cm".format(dist*100))
     if dist > 0.35:
         retries = 3
         while True:
-            found, p = checkForObject(obj)
-            if found:
-                print("moving close to object")
-                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.3)
-                moveToFloatWithYaw(sdp, xt, yt, math.radians(yaw))
-                print("finished moving closer to object")
-                time.sleep(5)
+            if _interrupt_action:
+                return False
+            for i in range(3):
+                found, p = checkForObject(obj)
+                if not found:
+                    time.sleep(0.2)
+                    continue
                 break
+            if found:
+                input("press a key to try moving close to object")
+                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.35)
+                shortest_dist, closest_angle = moveToFloatWithYawCapt(sdp, xt, yt, math.radians(yaw))
+                print("finished moving closer to object")
+                if shortest_dist <= 0.35:
+                    print("distance <= 0.35, moving to final capture.")
+                    break
+                else:
+                    shortest_dist = centerObjWithSonar(sdp)
+                    if shortest_dist <= 0.35:
+                        break
+                    if retries <= 0:
+                        return False
+                    found, p = checkForObject(obj)
+                    if found:
+                        continue
+                    else:
+                        input("still too far and out of sight, press key to back up and try again")
+                        # backup and try again
+                        backup(sdp, 20)
+                        retries -= 1
+                        continue
             else:
                 print("Lost object")
+                shortest_dist = centerObjWithSonar(sdp)
+                if shortest_dist <= 0.35:
+                    break
                 if retries <= 0:
                     return False
-                backup(sdp, 15)
+                input("press a key to backup")
+                backup(sdp, 20)
                 retries -= 1
 
-    return finalCaptureObject(obj, sdp)    
+    return finalCaptureObject(obj, grasp_hold_angle, sdp)    
 
 def findOrRetrieveObject(loc, obj, op, sdp : MyClient):
     global _goal, _sub_goal
@@ -539,17 +595,29 @@ def findOrRetrieveObject(loc, obj, op, sdp : MyClient):
 
     if inThisRoom:
         time.sleep(3)
-        lps = sdp.getLaserScan()
-        longest_dist = 0
-        longest_angle = 0
-        for i in range(0, lps.size):
-            if lps.distance[i] > longest_dist:
-                longest_dist = lps.distance[i]
+        lps = sdp.getLaserScan()        
+        
+        # find furthest point in front of robot
+        longest_angle = math.pi
+        lps = sdp.getLaserScan()  
+        longest_dist = 0      
+        for i in range(130, 145):
+            if abs(lps.angle[i]) < longest_angle:
                 longest_angle = lps.angle[i]
+                longest_dist = lps.distance[i]
+
+        # or find the furthest point in the whole scan
+        #longest_dist = 0
+        #longest_angle = 0
+        # for i in range(0, lps.size):
+        #     if lps.distance[i] > longest_dist:
+        #         longest_dist = lps.distance[i]
+        #         longest_angle = lps.angle[i]
 
         longest_dist -= 0.75
         longest_dist = max(longest_dist, 0)
-        print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+
+        print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
         pose = sdp.pose()
         xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
         yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
@@ -570,6 +638,23 @@ def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _interrupt_action
     global _deliveree, _package, _sub_goal, _call_out_objects
     global _error_last_goto, _response_num, _locations
+
+    def setNextGoal():
+        global _goal
+        _goal = ""
+        if len(_goal_queue) > 0:
+            _goal = _goal_queue.pop(0)
+        else:
+            _move_oak_d.allHome()
+            eyes.setHome()
+        if _goal == "release_obj": # not a location goal but a command token
+            speak("I'm releasing it now.")
+            _grasper.setGraspFullOpen()
+            _grasper.allHome()
+            #switch back to upper stereo camera
+            shutdown_my_depthai()
+            start_depthai_thread(loc="TOP")
+            _goal = ""
 
     sdp = MyClient()
     sdp_comm.connectToSdp(sdp)
@@ -614,16 +699,12 @@ def handleGotoLocation():
             if coords is None:
                 speak("Sorry, I don't know how to get there.")
                 print("unknown location")
-                _goal = ""
-                if len(_goal_queue) > 0:
-                    _goal = _goal_queue.pop(0)
+                setNextGoal()
                 continue
             if _goal != "custom" and _goal != "deliver" and _goal != "person":
-                if is_close_to(_goal, 0.5): 
+                if is_close_to(_goal, 0.5) and _goal != sub_goal_cleanup: 
                     speak("I'm already at the " + _goal)
-                    _goal = ""
-                    if len(_goal_queue) > 0:
-                        _goal = _goal_queue.pop(0)
+                    setNextGoal()
                     _move_oak_d.allHome()
                     continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
@@ -667,7 +748,7 @@ def handleGotoLocation():
             return 1.25 if op.startswith("retrieve") else 0.75
         
         if _sub_goal != "":
-            if setFoundObjAsGoal(_sub_goal, cam_yaw=0, offset_dist = getOffsetDist(op)):
+            if setFoundObjAsGoal(_sub_goal, cam_yaw=0, offset_dist = getOffsetDist(op), sdp=sdp):
                 gotLock()
                 sub_goal_just_found = True
                 sub_goal_cleanup = _sub_goal
@@ -697,7 +778,7 @@ def handleGotoLocation():
                     sdp.cancelMoveAction()
                     _move_oak_d.stopSweepingBackAndForth()
                     time.sleep(2)
-                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op)):
+                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op), sdp=sdp):
                         gotLock() 
                         sub_goal_just_found = True
                         sub_goal_cleanup = _sub_goal
@@ -707,7 +788,7 @@ def handleGotoLocation():
                         #speak("I thought I saw a " + _sub_goal + ". I'll look again.")
                         _move_oak_d.startSweepingBackAndForth(1)
                         while _move_oak_d.isSweeping():
-                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op)):
+                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op), sdp=sdp):
                                 gotLock()
                                 sub_goal_just_found = True
                                 sub_goal_cleanup = _sub_goal
@@ -753,11 +834,11 @@ def handleGotoLocation():
                 elif _goal == sub_goal_cleanup:
                     speak("I found the " + _goal)
                     if op.startswith("retrieve"):
-                        speak("Now I'll retrieve it.")
                         #switch to lower stereo camera
                         shutdown_my_depthai()
                         start_depthai_thread(loc="BOTTOM")
                         print("now capture the object")
+                        speak("Now I'll retrieve it.")
                         #captured = False
                         captured = captureObject(_goal, sdp)
                         if not captured:
@@ -769,7 +850,9 @@ def handleGotoLocation():
                                 _goal_queue.append("deliver") # deliver it to person in room
                             else:
                                 speak("I'll bring it back.")
-                                _goal_queue.append(retrieve_to_loc) # bring back retrieved object
+                                _locations["origin"] = retrieve_to_loc
+                                _goal_queue.append("origin") # bring back retrieved object
+                            _goal_queue.append("release_obj")
                     sdp.setSpeed(_user_set_speed) #restore speed after finding obj
                     _move_oak_d.allHome()
                 elif _goal != "person":
@@ -800,17 +883,12 @@ def handleGotoLocation():
         _goal = ""
         _sub_goal = ""
         _move_oak_d.stopSweepingBackAndForth()
-        if len(_goal_queue) > 0:
-            _goal = _goal_queue.pop(0)
-        else:
-            _move_oak_d.allHome()
-            eyes.setHome()
-
+        setNextGoal()
         time.sleep(0.5)
     sdp.disconnect()
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
-        
+            
 ################################################################
 # Pretty print all currently active robot threads
 def pretty_print_threads():
@@ -986,7 +1064,7 @@ def searchForPerson(sdp, clockwise=True):
     # if no person in view, then slowly rotate 360 degrees and check every so often
     _action_flag = True
     
-    oldyaw = sdp.pose().yaw + 360
+    oldyaw = sdp.heading() + 360
     yaw = oldyaw
     sweep = 0
     recheck_person = False
@@ -996,7 +1074,7 @@ def searchForPerson(sdp, clockwise=True):
         if found:
             recheck_person = True
             break
-        yaw = sdp.pose().yaw + 360
+        yaw = sdp.heading() + 360
         covered = abs(yaw - oldyaw)
         if covered > 180:
             covered = 360 - covered
@@ -1036,12 +1114,15 @@ def checkForObject(obj):
             else:
                 ps = _mdai.getObjectDetections()
             if len(ps) > 0:
+                closest_z = 999
                 for a in ps:
                     if obj == a.label:
-                        p = a
+                        if p is None or p.z >= 0 and p.z < closest_z:
+                            p = a
+                            closest_z = p.z
                 # If bbox ctr of detection is away from edge then stop
                 if p is not None and p.bboxCtr[0] >= 0.0 and p.bboxCtr[0] <= 1:
-                    print(obj, " at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1])
+                    print(obj, " at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1], " z = ", p.z)
                     return True, p
                     break
         except:
@@ -1077,11 +1158,11 @@ def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     yaw, xt, yt = getLocationNearObj(sdp, obj,p, cam_yaw, offset_dist)
     _locations[obj] = (xt, yt, math.radians(yaw + cam_yaw + p.theta))
 
-def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75):
-    global _sdp, _interrupt_action
+def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=_sdp):
+    global _interrupt_action
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(_sdp, obj, p, cam_yaw, offset_dist)
+        setLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
         return True
     return False
 
@@ -1462,6 +1543,11 @@ def come_here(doa):
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
 
+def forward(sdp, n=5):
+    for i in range(0,n):
+        move_imm(sdp, 1)
+        time.sleep(0.1)
+
 def backup(sdp, n=5):
     for i in range(0,n):
         move_imm(sdp, -1)
@@ -1575,7 +1661,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if "stop motors" in phrase or "stop all" in phrase:
-        cancelAction(True)
+        cancelAction(True, sdp)
         speak("Okay.")
         location, distance, closeEnough = where_am_i() 
         if not closeEnough:
@@ -1714,11 +1800,18 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     # HBRC Floor Bot Challenge II
     if phrase.startswith("find") or phrase.startswith("retrieve"):
         op = phrase.split()[0]
-        if "bring it to me" in phrase:
+        if "and bring it to me" in phrase:
+            if "in the" in phrase:
+                obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
+                loc = loc.split("and bring it to me")[0]
+            else:
+                loc = ''
+                obj_p = phrase.partition(op)[2].partition("and bring it to me")[0]
+            obj = obj_p.split()[-1]
             op += "_to_me"
-
-        obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
-        obj = obj_p.split()[-1]
+        else:
+            obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
+            obj = obj_p.split()[-1]
         loc = loc.strip()
 
         findOrRetrieveObject(loc, obj, op, sdp)            
@@ -1750,7 +1843,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if phrase == "go recharge" or phrase == "go to dock" or phrase == "go to the dock":
-        cancelAction(interrupt = True)
+        cancelAction(True, sdp)
         _goal = "recharge"
         return HandleResponseResult.Handled
 
@@ -1870,7 +1963,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         except:
             None
         if len(words) > 2:
-            cancelAction(interrupt = True)
+            cancelAction(True, sdp)
             _goal = " ".join(words[2:]).lower()
         return HandleResponseResult.Handled
             
@@ -3245,9 +3338,9 @@ def initialize_robot():
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
-    global _run_flag, _moods, _sdp, _grasper
+    global _run_flag, _moods, _sdp, _grasper, _sdp
     
-    cancelAction()
+    cancelAction(True, _sdp)
     _run_flag = False
 
     print("stop following if doing so")
@@ -3411,7 +3504,7 @@ def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
                 handleButton4Event(pressed, sdp)
 
 def run():
-    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _grasper_sonar
     # Start 32 bit bridge server
     _sdp = MyClient()
     _lpArduino = LattePandaArduino()
@@ -3434,6 +3527,8 @@ def run():
     if _enable_grasper:
         _grasper = RoboGripper()
         _grasper.initialize(_lpArduino.board)
+
+    _grasper_sonar = _lpArduino.board.get_pin('d:5:o')
 
     _button_pad.initialize(_lpArduino.board, buttonEventCb)
            
