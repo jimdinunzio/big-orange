@@ -441,7 +441,7 @@ class FacialRecognize(DepthAI):
 
         bboxes = nn_data.detections
         if len(bboxes) == 0:
-            # try moving camera up until a face is detected
+            # try moving camera up and down until a face is detected
             if self.getPitch and self.offsetPitch:
                 self.offsetPitch(self.search_dir)
                 pitch = self.getPitch()
@@ -553,45 +553,44 @@ class FacialRecognize(DepthAI):
         with self.detection_lock:
             return deepcopy(self.detected_names)
 
-# if __name__ == "__main__":
-#     if args.video:
-#         FacialRecognize(file=args.video).run()
-#     else:
-#         FacialRecognize(camera=args.camera).run()
+if __name__ == "__main__":
 
-# add a new face to database with camera input
+    #add a new face to database with camera input
 
-# import facial_recognize as fr
-# from threading import Thread
-# f = fr.FacialRecognize(add_face=True, new_name="Jim")
-# t=Thread(target=f.run).start()
+    # import facial_recognize as fr
+    # from threading import Thread
+    # f = fr.FacialRecognize(add_face=True, new_name="Jim")
+    # t=Thread(target=f.run).start()
 
-# test facial recognition with camera input
+    #test facial recognition with camera input
 
-# import time
-# import facial_recognize as fr
-# from threading import Thread
-# from latte_panda_arduino import LattePandaArduino
-# from move_oak_d import MoveOakD
+    import time
+    import facial_recognize as fr
+    from threading import Thread
+    from latte_panda_arduino import LattePandaArduino
+    from move_oak_d import MoveOakD
 
-# def getPitch():
-#     return m.getPitch()
-# def setPitch(val):
-#     m.setPitch(val)
-# def getYaw():
-#     return m.getYaw()
-# def setYaw(val):
-#     m.setYaw(val)
+    def getPitch():
+        return m.getPitch()
+    def offsetPitch(val):
+        m.offsetPitch(val)
+    def getYaw():
+        return m.getYaw()
+    def offsetYaw(val):
+        m.offsetYaw(val)
 
-# _lpArduino = LattePandaArduino()
-# _lpArduino.initialize()
-# m = MoveOakD()
-# m.initialize(_lpArduino.board)
+    _lpArduino = LattePandaArduino()
+    _lpArduino.initialize()
+    m = MoveOakD()
+    m.initialize(_lpArduino.board)
 
-# f = fr.FacialRecognize(getPitch, setPitch, getYaw, setYaw)
-# t=Thread(target=f.run).start()
-# while 1:
-#     f.get_detected_names()
-#     time.sleep(0.100)
-
-
+    f = fr.FacialRecognize(getPitch, offsetPitch, getYaw, offsetYaw)
+    t=Thread(target=f.run).start()
+    try:
+        while True:
+            f.get_detected_names()
+            time.sleep(0.100)
+    except KeyboardInterrupt:
+        f.shutdown()
+        m.shutdown()
+        _lpArduino.shutdown()
