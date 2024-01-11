@@ -22,25 +22,28 @@ _GRASP_LIMITS = [0, 120]
 _WRIST_HOME_ = 55
 _GRASP_HOME_ = 0
 
+_WRIST_HORIZ_ = 55
+_WRIST_VERT_ = 155
+
 class RoboGripperServo(object):
     """RoboGripper Servo Class for wrist and grasp """
-    def __init__(self, axis:ServoAxis, board :Board):
+    def __init__(self, axis:ServoAxis, home, board :Board):
         self.axis = axis
         self.GRASP_FULL_OPEN = 0
-        self.WRIST_HORIZ = 55
-        self.WRIST_VERT = 145
+        self.WRIST_HORIZ = _WRIST_HORIZ_
+        self.WRIST_VERT = _WRIST_VERT_
         if axis == ServoAxis.Wrist:
             self.min_angle = _WRIST_LIMITS[0]
             self.max_angle = _WRIST_LIMITS[1]
             self.servo = board.get_pin('d:6:s')
             self.angle = 0
-            self.home_angle = _WRIST_HOME_
+            self.home_angle = home
         elif axis == ServoAxis.Grasp:
             self.min_angle = _GRASP_LIMITS[0]
             self.max_angle = _GRASP_LIMITS[1]
             self.servo = board.get_pin('d:3:s')
             self.angle = 0
-            self.home_angle = _GRASP_HOME_
+            self.home_angle = home
 
         self.setAngle(self.home_angle, 0)
 
@@ -84,10 +87,10 @@ class RoboGripper(object):
     def __del__(self):
         self.shutdown()
 
-    def initialize(self, board: Board):
+    def initialize(self, board: Board, wristHome = _WRIST_HOME_, graspHome = _GRASP_HOME_):
         self.board = board
-        self.wristServo = RoboGripperServo(ServoAxis.Wrist, self.board)
-        self.graspServo = RoboGripperServo(ServoAxis.Grasp, self.board)
+        self.wristServo = RoboGripperServo(ServoAxis.Wrist, wristHome, self.board)
+        self.graspServo = RoboGripperServo(ServoAxis.Grasp, graspHome, self.board)
 
     def allHome(self):
         self.wristServo.setHome()
@@ -127,9 +130,10 @@ class RoboGripper(object):
     def setWristHorizOrient(self):
         self.setWrist(self.wristServo.WRIST_HORIZ)
 
-    def shutdown(self):
+    def shutdown(self, sendHome = True):
         try:
-            self.allHome()
+            if sendHome:
+                self.allHome()
             del(self.graspServo)
             self.graspServo = None
             del(self.wristServo)
@@ -145,6 +149,7 @@ if __name__ == '__main__':
     _lpArduino.initialize()
     m = RoboGripper()
     m.initialize(_lpArduino.board)
+
     try:
         while(1):
             m.wristServo.setAngle(_WRIST_LIMITS[0])

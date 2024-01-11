@@ -93,8 +93,8 @@ class MyDepthAI:
                 "toaster",        "sink",       "refrigerator",  "book",          "clock",       "vase",          "scissors",
                 "teddy bear",     "hair drier", "toothbrush"
             ]
-            #self.nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
-            self.nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
+            self.nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
+            #self.nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 
         if not Path(self.nnBlobPath).exists():
             import sys
@@ -142,7 +142,7 @@ class MyDepthAI:
         #stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
         spatialDetectionNetwork.setBlobPath(self.nnBlobPath)
-        spatialDetectionNetwork.setConfidenceThreshold(0.5)
+        spatialDetectionNetwork.setConfidenceThreshold(0.7)
         spatialDetectionNetwork.input.setBlocking(False)
         spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
         spatialDetectionNetwork.setDepthLowerThreshold(100)
@@ -155,7 +155,7 @@ class MyDepthAI:
             spatialDetectionNetwork.setCoordinateSize(4)
             spatialDetectionNetwork.setAnchors(np.array([10,14, 23,27, 37,58, 81,82, 135,169, 344,319]))
             spatialDetectionNetwork.setAnchorMasks({ "side26": np.array([1,2,3]), "side13": np.array([3,4,5]) })
-            spatialDetectionNetwork.setIouThreshold(0.5)
+            spatialDetectionNetwork.setIouThreshold(0.7)
         elif self.model == "mobileNet":
             colorCam.setPreviewSize(300, 300)
 
