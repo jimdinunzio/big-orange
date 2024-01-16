@@ -65,12 +65,14 @@ class MyDepthAI:
         self.detection_lock.release()
         self.run_flag = False
         self.inner_run_flag = False
+        self.outer_run_flag = False
         self.pipeline = None
         self.nnBlobPath =""
         self.labelMap = []
         self.takePictureNow = False
         self._showRgbWindow = False
         self._showDepthWindow = False
+        self._loc = "TOP"
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -201,6 +203,7 @@ class MyDepthAI:
             spatialDetectionNetwork.out.link(xoutNN.input)
         
     def shutdown(self):
+        self.outer_run_flag = False
         self.run_flag = False
         self.inner_run_flag = False
 
@@ -221,10 +224,21 @@ class MyDepthAI:
     def depthWindowVisible(self):
         return self._showDepthWindow
 
+    def changeCamera(self, loc):
+        if loc != self._loc:
+            print("changing camera to {}".format(loc))
+            self._loc = loc
+            self.run_flag = False
+            self.inner_run_flag = False
+
+    def waitUntilChangeFinished(self):
+        while not self.inner_run_flag:
+            time.sleep(0.1)
+
     def showRgbWindow(self, value):
         if value != self._showRgbWindow:
             self._showRgbWindow = value
-            self.inner_run_flag = False
+            self.inner_run_flag = False            
 
     def showDepthWindow(self, value):
         if value != self._showDepthWindow:
@@ -233,161 +247,167 @@ class MyDepthAI:
         
     def startUp(self, loc="TOP", showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
-        self.run_flag = True
         
         self.showRgbWindow(showRgbWindow)
         self.showDepthWindow(showDepthWindow)
 
         self.createPipeline()
+        self._loc = loc
 
-        if loc == "TOP":
-            device_id = TOP_MOUNTED_OAK_D_ID
-        else:
-            device_id = BOTTOM_MOUNTED_OAK_D_ID
+        self.outer_run_flag = True
+        while self.outer_run_flag:
+            if self._loc == "TOP":
+                device_id = TOP_MOUNTED_OAK_D_ID
+            else:
+                device_id = BOTTOM_MOUNTED_OAK_D_ID
 
-        found, device_info = dai.Device.getDeviceByMxId(device_id)
+            found, device_info = dai.Device.getDeviceByMxId(device_id)
 
-        if not found:
-            raise RuntimeError("Oak-D device not found!")
+            if not found:
+                raise RuntimeError("Oak-D device not found!")
 
-        rgb_win_name = "rgb"+loc
-        depth_win_name = "depth"+loc
+            rgb_win_name = "rgb"+loc
+            depth_win_name = "depth"+loc
 
-        while self.run_flag:
-            try:
-                if self._showRgbWindow:
-                    cv2.namedWindow(rgb_win_name, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(rgb_win_name, 832, 832)
-                with dai.Device(self.pipeline, device_info) as device:
-                
-                    # Output queues will be used to get the rgb frames and nn data from the outputs ffined above
-                    previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-                    detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
-                    #xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
-                    depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
-                
-                    frame = None
-                    detections = []
-                
-                    startTime = time.monotonic()
-                    counter = 0
-                    fps = 0
-                    color = (255, 255, 255)
-                
-                    self.inner_run_flag = True
-                    while self.inner_run_flag:
-                        inPreview = previewQueue.get()                  
-                        inNN = detectionNNQueue.get()
-                        depth = depthQueue.get()
-                
-                        counter+=1
-                        current_time = time.monotonic()
-                        if (current_time - startTime) > 1 :
-                            fps = counter / (current_time - startTime)
-                            counter = 0
-                            startTime = current_time
-                                    
-                        detections = inNN.tracklets if self.use_tracker else inNN.detections
-                        
-                        if self._showDepthWindow:
-                            depthFrame = depth.getFrame()
-                            depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
-                            depthFrameColor = cv2.equalizeHist(depthFrameColor)
-                            depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
-                            #if len(detections) != 0:
-                                #boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
-                                #roiDatas = boundingBoxMapping.getConfigData()            
-                                # for roiData in roiDatas:
-                                #     roi = roiData.roi
-                                #     roi = roi.denormalize(depthFrameColor.shape[1], depthFrameColor.shape[0])
-                                #     topLeft = roi.topLeft()
-                                #     bottomRight = roi.bottomRight()
-                                #     xmin = int(topLeft.x)
-                                #     ymin = int(topLeft.y)
-                                #     xmax = int(bottomRight.x)
-                                #     ymax = int(bottomRight.y)
-                                #     cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
-
-                
-                        # If the frame is available, draw bounding boxes on it and show the frame
-                        if self._showRgbWindow:
-                            frame = inPreview.getCvFrame()
-                            if self.takePictureNow:
-                                self.takePictureNow = False
-                                pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
-                                playsound("sounds/camera-shutter.wav", block=True)
-                                cv2.imwrite("pictures_taken/" + pic_filename, frame)
-                                cv2.imshow("Snapshot", frame)
-
-                            height = frame.shape[0]
-                            width  = frame.shape[1]
-                            
-                        with self.detection_lock:
-                            self.personDetections = []
-                            self.objectDetections = []
-
-                            for detection in detections:                
-                                try:
-                                    label = self.labelMap[detection.label]
-                                except:
-                                    label = detection.label
-                                    
-                                str_label = str(label)
-                                if str_label == "person":
-                                    self.personDetections.append(MyDetection(str_label, self.use_tracker, detection))
-                                    #if self._showRgbWindow:
-                                        #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
-                                        #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-            
-                                else:
-                                    self.objectDetections.append(MyDetection(str_label, self.use_tracker, detection))
-                                
-                                if self._showRgbWindow:
-                                    # Denormalize bounding box
-                                    if self.use_tracker:
-                                        x1 = int(detection.srcImgDetection.xmin * width)
-                                        x2 = int(detection.srcImgDetection.xmax * width)
-                                        y1 = int(detection.srcImgDetection.ymin * height)
-                                        y2 = int(detection.srcImgDetection.ymax * height)
-                                        cv2.putText(frame, "{:.2f}".format(detection.srcImgDetection.confidence), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                        cv2.putText(frame, f"ID: {[detection.id]}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-                                        cv2.putText(frame, detection.status.name, (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
-                                    else:
-                                        x1 = int(detection.xmin * width)
-                                        x2 = int(detection.xmax * width)
-                                        y1 = int(detection.ymin * height)
-                                        y2 = int(detection.ymax * height)
-                                        cv2.putText(frame, "{:.2f}".format(detection.confidence), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-
-                                    cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                    cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                    cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                    cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
-                        
-                        if self._showRgbWindow:           
-
-                            cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-                            cv2.imshow(rgb_win_name, frame)
-                        
-                        if self._showDepthWindow:
-                            cv2.imshow(depth_win_name, depthFrameColor)
-                        
-                        cv2.waitKey(45)
+            self.run_flag = True
+            while self.run_flag:
+                try:
+                    if self._showRgbWindow:
+                        cv2.namedWindow(rgb_win_name, cv2.WINDOW_NORMAL)
+                        cv2.resizeWindow(rgb_win_name, 832, 832)
+                    with dai.Device(self.pipeline, device_info) as device:
                     
+                        # Output queues will be used to get the rgb frames and nn data from the outputs ffined above
+                        previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+                        detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
+                        #xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
+                        depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
+                    
+                        frame = None
+                        detections = []
+                    
+                        startTime = time.monotonic()
+                        counter = 0
+                        fps = 0
+                        color = (255, 255, 255)
+                    
+                        self.inner_run_flag = True
+                        while self.inner_run_flag:
+                            inPreview = previewQueue.get()                  
+                            inNN = detectionNNQueue.get()
+                            depth = depthQueue.get()
+                    
+                            counter+=1
+                            current_time = time.monotonic()
+                            if (current_time - startTime) > 1 :
+                                fps = counter / (current_time - startTime)
+                                counter = 0
+                                startTime = current_time
+                                        
+                            detections = inNN.tracklets if self.use_tracker else inNN.detections
+                            
+                            if self._showDepthWindow:
+                                depthFrame = depth.getFrame()
+                                depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+                                depthFrameColor = cv2.equalizeHist(depthFrameColor)
+                                depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+                                #if len(detections) != 0:
+                                    #boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
+                                    #roiDatas = boundingBoxMapping.getConfigData()            
+                                    # for roiData in roiDatas:
+                                    #     roi = roiData.roi
+                                    #     roi = roi.denormalize(depthFrameColor.shape[1], depthFrameColor.shape[0])
+                                    #     topLeft = roi.topLeft()
+                                    #     bottomRight = roi.bottomRight()
+                                    #     xmin = int(topLeft.x)
+                                    #     ymin = int(topLeft.y)
+                                    #     xmax = int(bottomRight.x)
+                                    #     ymax = int(bottomRight.y)
+                                    #     cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+
+                    
+                            # If the frame is available, draw bounding boxes on it and show the frame
+                            if self._showRgbWindow:
+                                frame = inPreview.getCvFrame()
+                                if self.takePictureNow:
+                                    self.takePictureNow = False
+                                    pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
+                                    playsound("sounds/camera-shutter.wav", block=True)
+                                    cv2.imwrite("pictures_taken/" + pic_filename, frame)
+                                    cv2.imshow("Snapshot", frame)
+
+                                height = frame.shape[0]
+                                width  = frame.shape[1]
+                                
+                            with self.detection_lock:
+                                self.personDetections = []
+                                self.objectDetections = []
+
+                                for detection in detections:                
+                                    try:
+                                        label = self.labelMap[detection.label]
+                                    except:
+                                        label = detection.label
+                                        
+                                    str_label = str(label)
+                                    if str_label == "person":
+                                        self.personDetections.append(MyDetection(str_label, self.use_tracker, detection))
+                                        #if self._showRgbWindow:
+                                            #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
+                                            #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                
+                                    else:
+                                        self.objectDetections.append(MyDetection(str_label, self.use_tracker, detection))
+                                    
+                                    if self._showRgbWindow:
+                                        # Denormalize bounding box
+                                        if self.use_tracker:
+                                            x1 = int(detection.srcImgDetection.xmin * width)
+                                            x2 = int(detection.srcImgDetection.xmax * width)
+                                            y1 = int(detection.srcImgDetection.ymin * height)
+                                            y2 = int(detection.srcImgDetection.ymax * height)
+                                            cv2.putText(frame, "{:.2f}".format(detection.srcImgDetection.confidence), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                            cv2.putText(frame, f"ID: {[detection.id]}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+                                            cv2.putText(frame, detection.status.name, (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
+                                        else:
+                                            x1 = int(detection.xmin * width)
+                                            x2 = int(detection.xmax * width)
+                                            y1 = int(detection.ymin * height)
+                                            y2 = int(detection.ymax * height)
+                                            cv2.putText(frame, "{:.2f}".format(detection.confidence), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+
+                                        cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                        cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                        cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                        cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                            
+                            if self._showRgbWindow:           
+
+                                cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                                cv2.imshow(rgb_win_name, frame)
+                            
+                            if self._showDepthWindow:
+                                cv2.imshow(depth_win_name, depthFrameColor)
+                            
+                            cv2.waitKey(45)
+                        
+                        cv2.destroyAllWindows()
+                except Exception as e:
+                    print(repr(e))
                     cv2.destroyAllWindows()
-            except Exception as e:
-                print(repr(e))
-                cv2.destroyAllWindows()
-                time.sleep(1)
+                    time.sleep(1)
 
 if __name__ == '__main__':
     import keyboard
     from my_depthai import MyDepthAI
     from threading import Thread
     mdai = MyDepthAI(model="tinyYolo", use_tracker=False)
+    _cameras = ["TOP", "BOTTOM"]
+    _cameraIndex = 0
+    loc = _cameras[_cameraIndex]
 
-    my_depthai_thread = Thread(target = mdai.startUp, args=("BOTTOM", True, False), name="mdai", daemon=False)
+    my_depthai_thread = Thread(target = mdai.startUp, args=(loc, True, False), name="mdai", daemon=False)
     my_depthai_thread.start()
 
     def toggleRgbWindow(a):
@@ -396,8 +416,15 @@ if __name__ == '__main__':
     def toggleDepthWindow(a):
         mdai.showDepthWindow(not mdai.depthWindowVisible())
 
+    def toggleCamera(a):
+        global _cameraIndex
+        _cameraIndex = not _cameraIndex
+        mdai.changeCamera(_cameras[_cameraIndex])
+    
     keyboard.on_press_key('r', toggleRgbWindow)
     keyboard.on_press_key('d', toggleDepthWindow)
+    keyboard.on_press_key('t', toggleCamera)
+    
     try:
         while True:
             time.sleep(0.1)

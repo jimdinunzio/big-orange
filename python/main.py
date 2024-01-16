@@ -342,7 +342,7 @@ def batteryMonitor():
         if batteryPercent <= 25:
             if not _reported_25:
                 _reported_25 = True
-                speak(person + ", my battery is getting low. I'll have to charge up soon.")
+                #speak(person + ", my battery is getting low. I'll have to charge up soon.")
                 _pixel_ring.setPaletteRed()
         elif batteryPercent <= 35:
             if not _reported_35:
@@ -413,6 +413,28 @@ def sonarSweep(sdp, angle, min_dist, min_angle):
         time.sleep(0.1)
     return min_dist, min_angle
     
+def sonarSweepStop(sdp, angle, min_dist, min_angle):
+    pose = sdp.pose()
+    last_dist = min_dist
+    sdp.moveToFloatWithYaw(pose.x, pose.y, math.radians(angle))
+    while True:
+        maStatus = sdp.getMoveActionStatus()
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        dist = getGraspDist()
+        cur_angle = sdp.heading()
+        if dist <= 0.40 and dist - last_dist < -0.10:
+            min_angle = cur_angle            
+            min_dist = dist
+            print("min_dist = {} cm, min_angle = {} deg.".format(min_dist * 100.0, min_angle))
+            sdp.cancelMoveAction()
+            time.sleep(0.2)
+            break
+        time.sleep(0.1)
+    return min_dist, min_angle
+
 def rotateToPrecise(sdp, angle):
     pose = sdp.pose()
     sdp.moveToFloatWithYaw(pose.x, pose.y, math.radians(angle))
@@ -424,10 +446,10 @@ def sonarSweepSearchForObject(sdp):
     pose = sdp.pose()
 
     print("sonar sweep")
-    min_dist, min_angle = sonarSweep(sdp, pose.yaw + 10, min_dist, min_angle)
+    min_dist, min_angle = sonarSweep(sdp, pose.yaw + 20, min_dist, min_angle)
     if _interrupt_action:
         return 0,0
-    min_dist, min_angle = sonarSweep(sdp, pose.yaw - 10, min_dist, min_angle)
+    min_dist, min_angle = sonarSweep(sdp, pose.yaw - 20, min_dist, min_angle)
     if _interrupt_action:
         return 0,0
     return min_dist, min_angle
@@ -440,7 +462,7 @@ def centerObjWithSonar(sdp):
             return 0
         min_dist, min_angle = sonarSweepSearchForObject(sdp)
         dist = min_dist
-        if min_dist > 0.35:
+        if min_dist > 0.4:
             continue
         print("turning to min_angle {}".format(min_angle))
         rotateToPrecise(sdp, min_angle)
@@ -459,6 +481,43 @@ def centerObjWithSonar(sdp):
         return dist
     rotateToPrecise(sdp, orig_yaw)
     return dist
+
+def sonarSweepFindObjAndStop(sdp, dir, spread_angle):
+    min_dist = getGraspDist()
+    min_angle = sdp.heading()
+    pose = sdp.pose()
+
+    spread_angle = dir * spread_angle
+
+    print("sonar sweep")
+    min_dist, min_angle = sonarSweepStop(sdp, pose.yaw + spread_angle, min_dist, min_angle)
+    if _interrupt_action:
+        return 0,0
+    min_dist, min_angle = sonarSweepStop(sdp, pose.yaw - spread_angle, min_dist, min_angle)
+    if _interrupt_action:
+        return 0,0
+    return min_dist, min_angle
+
+def findObjWithSonar(sdp):
+    orig_yaw = sdp.pose().yaw
+    spread_angle = 20
+    for i in range(3):
+        dir = random.randint(0,1)
+        if dir == 0:
+            dir = -1
+        rotateToPrecise(sdp, orig_yaw)
+        if _interrupt_action:
+            return 0
+        min_dist, dir = sonarSweepFindObjAndStop(sdp, dir, spread_angle)
+        if min_dist > 0.4:
+            spread_angle += 5
+            continue
+        dist = getGraspDist()
+        print("now dist = {} cm".format(dist*100))
+        if dist - min_dist > .02:
+            turnImm(sdp, -dir)
+        return getGraspDist()
+    return getGraspDist()
 
 def checkIfDoneMovingOrCaptured(sdp):
     dist = getGraspDist()
@@ -495,7 +554,7 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
         dist = getGraspDist()
         print("after moving close, dist = {} cm".format(dist * 100))
                 
-        if dist >= 0.03 and dist < 0.35:
+        if dist >= 0.03 and dist < 0.4:
             #input("Press Enter to try capture moving foward")
             moveForward(sdp, dist + 0.1 if dist > .25 else max(dist + 0.12, 0.25))
     
@@ -507,8 +566,8 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
         
         if dist > 0.03:
             print("Missed it")
-            dist = centerObjWithSonar(sdp)
-            if dist <= 0.35:
+            dist = findObjWithSonar(sdp)
+            if dist <= 0.4:
                 continue
 			#back up and try again
             backup(sdp, 7)
@@ -538,7 +597,7 @@ def captureObject(obj, sdp):
 
     dist = getGraspDist()
     print("capturing, dist = {} cm".format(dist*100))
-    if dist > 0.35:
+    if dist > 0.4:
         retries = 3
         while True:
             if _interrupt_action:
@@ -551,15 +610,15 @@ def captureObject(obj, sdp):
                 break
             if found:
                 #input("press a key to try moving close to object")
-                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.35)
+                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.40)
                 shortest_dist, closest_angle = moveToFloatWithYawCapt(sdp, xt, yt, math.radians(yaw))
                 print("finished moving closer to object")
-                if shortest_dist <= 0.35:
-                    print("distance <= 0.35, moving to final capture.")
+                if shortest_dist <= 0.40:
+                    print("distance <= 0.40, moving to final capture.")
                     break
                 else:
-                    shortest_dist = centerObjWithSonar(sdp)
-                    if shortest_dist <= 0.35:
+                    shortest_dist = findObjWithSonar(sdp)
+                    if shortest_dist <= 0.4:
                         break
                     if retries <= 0:
                         return False
@@ -575,7 +634,7 @@ def captureObject(obj, sdp):
             else:
                 print("Lost object")
                 shortest_dist = centerObjWithSonar(sdp)
-                if shortest_dist <= 0.35:
+                if shortest_dist <= 0.4:
                     break
                 if retries <= 0:
                     return False
@@ -658,6 +717,8 @@ def handleGotoLocation():
             _grasper.setWristHorizOrient()
             _grasper.setGraspFullOpen()
             backup(sdp, 5)
+            _move_oak_d.allHome()
+            eyes.setHome()
             #_grasper.allHome()
             _goal = ""
 
@@ -747,7 +808,7 @@ def handleGotoLocation():
             _goal_queue.append(_sub_goal)
             speak("I see a " + _sub_goal)
             _move_oak_d.yawHome()
-            eyes.setHome()
+            #eyes.setHome()
 
         def getOffsetDist(op):
             return 1.25 if op.startswith("retrieve") else 0.75
@@ -827,6 +888,8 @@ def handleGotoLocation():
             if (_goal == "deliver" or reached_goal):
                 if _goal == "deliver":
                     article = "some" if _package.endswith('s') else "a"
+                    aim_oakd(pitch=75) # aim up to see people better                
+                    eyes.setTargetPitchYaw(-70, 0)
                     speak(_deliveree + ", I have " + article + " " + _package + " for you.")
                     if _package_ontray:
                         taken = waitForObjectToBeTaken(_package)
@@ -841,15 +904,18 @@ def handleGotoLocation():
                     speak("I found the " + _goal)
                     if op.startswith("retrieve"):
                         #switch to lower stereo camera
-                        shutdown_my_depthai()
-                        start_depthai_thread(loc="BOTTOM")
+                        _mdai.changeCamera("BOTTOM")
+                        _mdai.waitUntilChangeFinished()
+                        #looking down for object
+                        eyes.setTargetPitchYaw(70, 0)
                         print("now capture the object")
                         speak("Now I'll retrieve it.")
                         #captured = False
                         captured = captureObject(_goal, sdp)
                         #switch back to upper stereo camera
-                        shutdown_my_depthai()
-                        start_depthai_thread(loc="TOP")
+                        _mdai.changeCamera("TOP")
+                        _move_oak_d.yawHome()
+                        eyes.setHome()                        
                         if not captured:
                             speak("Sorry, I could not get the " + _goal)
                         else:
@@ -1576,6 +1642,11 @@ def forward(sdp, n=5):
 def backup(sdp, n=5):
     for i in range(0,n):
         move_imm(sdp, -1)
+        time.sleep(0.1)
+
+def turnImm(sdp, dir, n=3):
+    for i in range(0,n):
+        turn_imm(sdp, dir)
         time.sleep(0.1)
 
 def set_handling_response(value):
