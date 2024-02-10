@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from queue import Queue
 import argparse
-from time import monotonic
+import time
 from copy import deepcopy
 
 import cv2
@@ -11,6 +11,7 @@ import depthai
 import numpy as np
 from imutils.video import FPS
 from threading import Lock
+from math import asin, degrees
 
 TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
 
@@ -144,17 +145,27 @@ def read_db(labels):
             db_dic[label] = [db[j] for j in db.files]
     return db_dic
 
+def get_known_faces():
+    labels = set()
+    for file in os.listdir(databases):
+        filename = os.path.splitext(file)
+        if filename[1] == ".npz":
+            label = filename[0].strip()
+            labels.add(label)
+    return labels
 
 class DepthAI:
     def __init__(
         self,
         file=None,
         camera=True,
-        debug=True,
+        compute_spatial=False,
+        debug=True
     ):
         print("Loading pipeline...")
         self.file = file
         self.camera = camera
+        self.compute_spatial = compute_spatial
         self.fps_cam = FPS()
         self.fps_nn = FPS()
         self.create_pipeline()
@@ -171,6 +182,52 @@ class DepthAI:
         self.pipeline = depthai.Pipeline()
 
         if self.camera:
+            if self.compute_spatial:
+                monoLeft = self.pipeline.create(depthai.node.MonoCamera)
+                monoRight = self.pipeline.create(depthai.node.MonoCamera)
+                stereo = self.pipeline.create(depthai.node.StereoDepth)
+                spatialLocationCalculator = self.pipeline.create(depthai.node.SpatialLocationCalculator)
+
+                xoutDepth = self.pipeline.create(depthai.node.XLinkOut)
+                xoutSpatialData = self.pipeline.create(depthai.node.XLinkOut)
+                xinSpatialCalcConfig = self.pipeline.create(depthai.node.XLinkIn)
+
+                xoutDepth.setStreamName("depth")
+                xoutSpatialData.setStreamName("spatialData")
+                xinSpatialCalcConfig.setStreamName("spatialCalcConfig")
+
+                # Properties
+                monoLeft.setResolution(depthai.MonoCameraProperties.SensorResolution.THE_400_P)
+                monoLeft.setCamera("left")
+                monoRight.setResolution(depthai.MonoCameraProperties.SensorResolution.THE_400_P)
+                monoRight.setCamera("right")
+
+                stereo.setDefaultProfilePreset(depthai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+                stereo.setLeftRightCheck(False)
+                stereo.setSubpixel(False)
+                spatialLocationCalculator.inputConfig.setWaitForMessage(False)
+
+                # Config
+                topLeft = depthai.Point2f(0.4, 0.4)
+                bottomRight = depthai.Point2f(0.6, 0.6)
+
+                config = depthai.SpatialLocationCalculatorConfigData()
+                config.depthThresholds.lowerThreshold = 100
+                config.depthThresholds.upperThreshold = 10000
+                config.roi = depthai.Rect(topLeft, bottomRight)
+
+                spatialLocationCalculator.initialConfig.addROI(config)
+
+                # Linking
+                monoLeft.out.link(stereo.left)
+                monoRight.out.link(stereo.right)
+
+                spatialLocationCalculator.passthroughDepth.link(xoutDepth.input)
+                stereo.depth.link(spatialLocationCalculator.inputDepth)
+
+                spatialLocationCalculator.out.link(xoutSpatialData.input)
+                xinSpatialCalcConfig.out.link(spatialLocationCalculator.inputConfig)
+
             # ColorCamera
             print("Creating Color Camera...")
             self.cam = self.pipeline.createColorCamera()
@@ -185,6 +242,7 @@ class DepthAI:
             self.cam_xout = self.pipeline.createXLinkOut()
             self.cam_xout.setStreamName("preview")
             self.cam.preview.link(self.cam_xout.input)
+            self.cam.setPreviewKeepAspectRatio(True) #is default, but show explicitly for doc.
 
         self.create_nns()
 
@@ -259,6 +317,9 @@ class DepthAI:
         self.device = depthai.Device(self.pipeline, device_info)
         print("Starting pipeline...")
 
+        if self.compute_spatial:
+        	self.start_spatial()
+
         self.start_nns()
 
         if self.camera:
@@ -269,6 +330,9 @@ class DepthAI:
     def start_nns(self):
         pass
 
+    def start_spatial(self):
+        pass
+    
     def put_text(self, text, dot, color=(0, 0, 255), font_scale=None, line_type=None):
         if not self.debug:
             return
@@ -313,6 +377,9 @@ class DepthAI:
     def parse_fun(self):
         pass
 
+    def compute_spatial_coords(self):
+        pass
+
     def run_video(self):
         self.run_flag = True
         cap = cv2.VideoCapture(str(Path(self.file).resolve().absolute()))
@@ -347,6 +414,8 @@ class DepthAI:
                 except StopIteration:
                     print("exception: StopIteration")
                     break
+                if self.compute_spatial:
+                    self.compute_spatial_coords()
             cv2.waitKey(50)
 
         cv2.destroyAllWindows()
@@ -373,7 +442,17 @@ class DepthAI:
         self._run_flag = v
 
     def run(self):
-        self.start_pipeline()
+        try_count = 3
+        while try_count > 0:
+            try:
+                self.start_pipeline()
+                break
+            except:
+                if try_count > 1:
+                    time.sleep(2)
+                    try_count -= 1
+                else:
+                    return
         self.fps_cam.start()
         self.fps_nn.start()
         if self.file is not None:
@@ -382,12 +461,21 @@ class DepthAI:
             self.run_camera()
         del self.device
 
+class FaceDetection:
+    def __init__(self, name : str, coords_3d : tuple = (0,0,0)):
+        self.name = name
+        self.x = coords_3d[0] / 1000.0
+        self.y = coords_3d[1] / 1000.0
+        self.z = coords_3d[2] / 1000.0
+        self.theta = degrees(-asin(self.x/self.z) if self.z != 0.0 else 0)
+    def __repr__(self):
+        return "{{name = {}, x = {}, y = {}, z = {}, theta = {}}}".format(self.name, self.x, self.y, self.z, self.theta)
 
 class FacialRecognize(DepthAI):
-    def __init__(self, getPitch=None, offsetPitch=None, getYaw=None, offsetYaw=None, file=None,
-                 camera=True, debug=True, add_face=False, new_name=""):
+    def __init__(self, getPitch=None, offsetPitch=None, getYaw=None, offsetYaw=None, compute_spatial=False,
+    			 file=None, camera=True, debug=True, add_face=False, new_name=""):
         self.cam_size = (300, 300)
-        super(FacialRecognize, self).__init__(file, camera, debug)
+        super(FacialRecognize, self).__init__(file, camera, compute_spatial, debug)
         self.face_frame_corr = Queue()
         self.face_frame = Queue()
         self.face_coords = Queue()
@@ -395,7 +483,8 @@ class FacialRecognize(DepthAI):
         self.add_face = add_face
         self.new_name = new_name
         self.detection_lock = Lock()
-        self.detected_names = []
+        self.raw_detections_list = [[],[]]
+        self.raw_detections_ready =[False, False]
         if not add_face:
             self.db_dic = read_db(self.labels)
         self.getPitch=getPitch
@@ -403,6 +492,108 @@ class FacialRecognize(DepthAI):
         self.getYaw=getYaw
         self.offsetYaw=offsetYaw
         self.search_dir=-1
+        self.detections_idx = 0
+        self.face_added = False
+
+    def was_face_added(self):
+        return self.face_added
+    
+    def other_detections_idx(self):
+        return int(not self.detections_idx)
+
+    def rgb_to_depthview(self, x, y):
+        # depth frame is 640x400, rgb preview is 300x300
+        # for rgb preview 4k camera is 3840x2160 scaled down to 533x300 then cropped
+        # based on calculations this should be 640/533 = 1.2 factor with (533-300)/2 = 116 crop offset.
+        # y seems to be just cropped 
+        # but it doesn't line up
+        out_x = 1.12 * (x + 117)
+        out_y = y + 50
+        return depthai.Point2f(out_x / 640.0, out_y / 400.0)
+
+    def compute_spatial_coords(self):
+        #print("------------------------------------------------------------")
+
+        cfg = depthai.SpatialLocationCalculatorConfig()
+        num_detections = len(self.raw_detections_list[self.detections_idx])
+        idx = 0
+        for n in self.raw_detections_list[self.detections_idx]:
+            config = depthai.SpatialLocationCalculatorConfigData()
+            config.depthThresholds.lowerThreshold = 100
+            config.depthThresholds.upperThreshold = 10000        
+            face_coords = n["face_coords"]
+            topLeft = self.rgb_to_depthview(face_coords[0], face_coords[1])
+            bottomRight = self.rgb_to_depthview(face_coords[2], face_coords[3])
+            config.roi = depthai.Rect(topLeft, bottomRight)
+            config.calculationAlgorithm = depthai.SpatialLocationCalculatorAlgorithm.MEDIAN
+            cfg.addROI(config)
+            idx += 1
+    
+        if num_detections == 0:
+            #add one dummy ROI to avoid errors
+            config = depthai.SpatialLocationCalculatorConfigData()
+            config.roi = depthai.Rect(depthai.Point2f(0,0), depthai.Point2f(0,0))
+            cfg.addROI(config)
+
+        self.spatialCalcConfigInQueue.send(cfg)
+
+        inDepth = self.depthQueue.get() # Blocking call, will wait until a new data has arrived
+
+        # Code to display the depth frame is commented out below. Used for debugging and visualization
+
+        # depthFrame = inDepth.getFrame()
+        # depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+        # depthFrameColor = cv2.equalizeHist(depthFrameColor)
+        # depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+        
+        # we submit spatial calculation above, but it will not come back until next frame,
+        # the depthData retrieved below is for the previous frame. We use a buffer of 2 and swap between them.
+        # and then the spatial data and face data will be for the same frame.
+        with self.detection_lock:
+            self.detections_idx = self.other_detections_idx()
+
+            num_detections = len(self.raw_detections_list[self.detections_idx])
+            if num_detections > 0:
+                spatialData = self.spatialCalcQueue.get().getSpatialLocations()
+                nameIdx = 0
+                for depthData in spatialData:
+                    #roi = depthData.config.roi
+                    #n = self.raw_detections_list[self.detections_idx][nameIdx]
+                    #face_coords = n["face_coords"]
+                    #topLeft = self.rgb_to_depthview(face_coords[0], face_coords[1])
+                    #bottomRight = self.rgb_to_depthview(face_coords[2], face_coords[3])
+                    #match_roi = depthai.Rect(topLeft, bottomRight)                
+                    #print("raw detectio #{}: roi = {}, {}, {}, {}".format(nameIdx, match_roi.x, match_roi.y, match_roi.width, match_roi.height))
+                    #print("spatial data #{}: roi = {}, {}, {}, {}".format(nameIdx, roi.x, roi.y, roi.width, roi.height))
+                    # roi = roi.denormalize(width=depthFrameColor.shape[1], height=depthFrameColor.shape[0])
+                    # xmin = int(roi.topLeft().x)
+                    # ymin = int(roi.topLeft().y)
+                    # xmax = int(roi.bottomRight().x)
+                    # ymax = int(roi.bottomRight().y)
+
+                    # fontType = cv2.FONT_HERSHEY_TRIPLEX
+                    # cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), self.color,  cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+                    # cv2.putText(depthFrameColor, f"X: {int(depthData.spatialCoordinates.x)} mm", (xmin + 10, ymin + 20), fontType, 0.5, self.color)
+                    # cv2.putText(depthFrameColor, f"Y: {int(depthData.spatialCoordinates.y)} mm", (xmin + 10, ymin + 35), fontType, 0.5, self.color)
+                    # cv2.putText(depthFrameColor, f"Z: {int(depthData.spatialCoordinates.z)} mm", (xmin + 10, ymin + 50), fontType, 0.5, self.color)
+                    if nameIdx < num_detections:
+                        self.raw_detections_list[self.detections_idx][nameIdx]["3d_coords"]= \
+                        (depthData.spatialCoordinates.x,
+                            depthData.spatialCoordinates.y,
+                            depthData.spatialCoordinates.z)
+                    #print("spatial coords = {}, {}, {}".format(depthData.spatialCoordinates.x, depthData.spatialCoordinates.y, depthData.spatialCoordinates.z))
+                    nameIdx += 1
+                self.raw_detections_ready[self.detections_idx] = True
+        # Show the frame
+        #cv2.imshow("depth", depthFrameColor)
+
+    def start_spatial(self):
+        # Output queue will be used to get the depth frames from the outputs defined above
+        self.depthQueue = self.device.getOutputQueue(name="depth", maxSize=4, blocking=False)
+        self.spatialCalcQueue = self.device.getOutputQueue(name="spatialData", maxSize=4, blocking=False)
+        self.spatialCalcConfigInQueue = self.device.getInputQueue("spatialCalcConfig")
+
+        self.color = (255, 255, 255)
 
     def create_nns(self):
         self.create_mobilenet_nn(
@@ -497,7 +688,7 @@ class FacialRecognize(DepthAI):
 
     def run_arcface(self):
         with self.detection_lock:
-            self.detected_names = []        
+            raw_detections = []        
             while self.face_frame_corr.qsize():
                 face_coords = self.face_coords.get()
                 face_fame = self.face_frame_corr.get()
@@ -515,6 +706,7 @@ class FacialRecognize(DepthAI):
 
                 if self.add_face:
                     create_db(face_fame, results, self.new_name)
+                    self.face_added = True
                 else:
                     conf = []
                     max_ = 0
@@ -528,9 +720,10 @@ class FacialRecognize(DepthAI):
                     conf.append((max_, label_))
                     if conf[0][0] >= 0.5:
                         detected_name = conf[0]
-                        self.detected_names.append(conf[0][1])
+                        raw_detections.append({"name": conf[0][1], "face_coords": face_coords})
                     else:
                         detected_name = (1 - conf[0][0], "UNKNOWN")
+                        raw_detections.append({"name": detected_name, "face_coords": face_coords})
                     self.put_text(
                         f"name:{detected_name[1]}",
                         (face_coords[0], face_coords[1] - 35),
@@ -541,6 +734,8 @@ class FacialRecognize(DepthAI):
                         (face_coords[0], face_coords[1] - 10),
                         (244, 0, 255),
                     )
+            self.raw_detections_ready[self.detections_idx] = False
+            self.raw_detections_list[self.detections_idx] = deepcopy(raw_detections)
         return True
 
     def parse_fun(self):
@@ -549,9 +744,35 @@ class FacialRecognize(DepthAI):
                 if self.run_arcface():
                     return True
 
-    def get_detected_names(self):
-        with self.detection_lock:
-            return deepcopy(self.detected_names)
+    def get_detections(self) -> []:
+        detections = []
+        if self.compute_spatial:
+            i = 0
+            while len(self.raw_detections_list[0]) > 0 or len(self.raw_detections_list[1]) > 0:
+                i = 0
+                with self.detection_lock:
+                    if self.raw_detections_ready[i] == True:
+                        break
+                i += 1
+                with self.detection_lock:
+                    if self.raw_detections_ready[i] == True:
+                        break
+                time.sleep(0.05)
+
+            with self.detection_lock:
+                i = 0
+                if self.raw_detections_ready[i] == False:
+                    i += 1
+                    if self.raw_detections_ready[i] == False:
+                        return detections
+
+                for rd in self.raw_detections_list[i]:
+                    detections.append(FaceDetection(rd["name"], rd.get("3d_coords", (0,0,0))))
+        else: # not self.compute_spatial
+            with self.detection_lock:
+                for rd in self.raw_detections_list[self.detections_idx]:
+                    detections.append(FaceDetection(rd["name"]))
+        return detections
 
 if __name__ == "__main__":
 
@@ -584,12 +805,20 @@ if __name__ == "__main__":
     m = MoveOakD()
     m.initialize(_lpArduino.board)
 
-    f = fr.FacialRecognize(getPitch, offsetPitch, getYaw, offsetYaw)
+    f = FacialRecognize(getPitch, offsetPitch, getYaw, offsetYaw, compute_spatial=True)
     t=Thread(target=f.run).start()
     try:
         while True:
-            f.get_detected_names()
-            time.sleep(0.100)
+            detections = f.get_detections()
+            for detection in detections:
+                if detection.x != 0 or detection.y != 0 or detection.z != 0:
+                    print("{} is seen at location x = {}, y = {}, z = {}".format(detection.name, 
+                                                                                 detection.x,
+                                                                                 detection.y,
+                                                                                 detection.z))
+                else:
+                    print("{} is seen.".format(detection.name))
+            time.sleep(1)
     except KeyboardInterrupt:
         f.shutdown()
         m.shutdown()
