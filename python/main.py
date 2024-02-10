@@ -22,11 +22,13 @@ from button_pad import Button4Pad
 from my_sdp_client import MyClient
 from my_sdp_server import *
 from pyfirmata import util as pyfirmata_util, Pin
+import facial_recognize as fr
+import re
 
 # Constants
 _show_rgb_window = True
 _show_depth_window = False
-_default_map_name = 'my house'
+_default_map_name = 'office'
 _current_map_name = ''
 _hotword = "orange"
 _google_mode = False
@@ -83,7 +85,7 @@ _package_ontray = False
 _spoken_package = ""
 _response_num = random.randint(0,2)
 _all_loaded = False
-_facial_recog = None
+_facial_recog : fr.FacialRecognize = None
 _facial_recog_thread = None
 _my_depthai_thread = None
 _listen_thread = None
@@ -142,7 +144,6 @@ from enum import Enum
 from latte_panda_arduino import LattePandaArduino
 import move_oak_d
 import eyes
-import facial_recognize as fr
 import pickle
 import speech_recognition as sr
 import socket
@@ -198,6 +199,7 @@ def getMoveActionStatus(sdp):
         print("move action error: ", errStr)
     elif status == ActionStatus.Stopped:
         print("action has been cancelled.")
+
     return status
 
 def move_imm(sdp, vel):
@@ -425,7 +427,7 @@ def sonarSweepStop(sdp, angle, min_dist, min_angle):
             break
         dist = getGraspDist()
         cur_angle = sdp.heading()
-        if dist <= 0.40 and dist - last_dist < -0.10:
+        if dist <= 0.15 and dist - last_dist < -0.10:
             min_angle = cur_angle            
             min_dist = dist
             print("min_dist = {} cm, min_angle = {} deg.".format(min_dist * 100.0, min_angle))
@@ -462,7 +464,7 @@ def centerObjWithSonar(sdp):
             return 0
         min_dist, min_angle = sonarSweepSearchForObject(sdp)
         dist = min_dist
-        if min_dist > 0.4:
+        if min_dist > 0.15:
             continue
         print("turning to min_angle {}".format(min_angle))
         rotateToPrecise(sdp, min_angle)
@@ -498,7 +500,7 @@ def sonarSweepFindObjAndStop(sdp, dir, spread_angle):
         return 0,0
     return min_dist, min_angle
 
-def findObjWithSonar(sdp):
+def findObjWithSonar(sdp, dist_thresh):
     orig_yaw = sdp.pose().yaw
     spread_angle = 20
     for i in range(3):
@@ -509,7 +511,7 @@ def findObjWithSonar(sdp):
         if _interrupt_action:
             return 0
         min_dist, dir = sonarSweepFindObjAndStop(sdp, dir, spread_angle)
-        if min_dist > 0.4:
+        if min_dist > dist_thresh:
             spread_angle += 5
             continue
         dist = getGraspDist()
@@ -553,10 +555,11 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
             return False
         dist = getGraspDist()
         print("after moving close, dist = {} cm".format(dist * 100))
-                
-        if dist >= 0.03 and dist < 0.4:
+        moved_forward = False
+        if dist >= 0.03 and dist <= 0.15:
             #input("Press Enter to try capture moving foward")
-            moveForward(sdp, dist + 0.1 if dist > .25 else max(dist + 0.12, 0.25))
+            moveForward(sdp, dist + 0.1 if dist > .15 else max(dist + 0.12, 0.25))
+            moved_foward = True
     
             while True:
                 dist, _, done = checkIfDoneMovingOrCaptured(sdp)
@@ -566,11 +569,12 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
         
         if dist > 0.03:
             print("Missed it")
-            dist = findObjWithSonar(sdp)
-            if dist <= 0.4:
+            dist = findObjWithSonar(sdp, 0.15)
+            if dist <= 0.15:
                 continue
 			#back up and try again
-            backup(sdp, 7)
+            if moved_foward:
+                backup(sdp, 7)
             retries -= 1
             time.sleep(2)
             if retries == 0:
@@ -597,7 +601,7 @@ def captureObject(obj, sdp):
 
     dist = getGraspDist()
     print("capturing, dist = {} cm".format(dist*100))
-    if dist > 0.4:
+    if dist > 0.15:
         retries = 3
         while True:
             if _interrupt_action:
@@ -610,15 +614,15 @@ def captureObject(obj, sdp):
                 break
             if found:
                 #input("press a key to try moving close to object")
-                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.40)
+                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.20)
                 shortest_dist, closest_angle = moveToFloatWithYawCapt(sdp, xt, yt, math.radians(yaw))
                 print("finished moving closer to object")
-                if shortest_dist <= 0.40:
-                    print("distance <= 0.40, moving to final capture.")
+                if shortest_dist <= 0.15:
+                    print("distance <= 0.15, moving to final capture.")
                     break
                 else:
-                    shortest_dist = findObjWithSonar(sdp)
-                    if shortest_dist <= 0.4:
+                    shortest_dist = findObjWithSonar(sdp, 0.15)
+                    if shortest_dist <= 0.15:
                         break
                     if retries <= 0:
                         return False
@@ -634,7 +638,7 @@ def captureObject(obj, sdp):
             else:
                 print("Lost object")
                 shortest_dist = centerObjWithSonar(sdp)
-                if shortest_dist <= 0.4:
+                if shortest_dist <= 0.15:
                     break
                 if retries <= 0:
                     return False
@@ -644,7 +648,34 @@ def captureObject(obj, sdp):
 
     return finalCaptureObject(obj, grasp_hold_angle, sdp)    
 
-def findOrRetrieveObject(loc, obj, op, sdp : MyClient):
+def getFurthestLaserScanFront(sdp: MyClient):
+    lps = sdp.getLaserScan()  
+    longest_angle = 0
+    longest_dist = 0
+    for i in range(0, lps.size):
+        if abs(lps.angle[i]) < math.pi / 16.0:
+            if lps.distance[i] > longest_dist:
+                longest_angle = lps.angle[i]
+                longest_dist = lps.distance[i]
+    return longest_dist, longest_angle
+
+def getFurthestLaserScan(sdp : MyClient):
+    lps = sdp.getLaserScan()
+    longest_dist = 0
+    longest_angle = 0
+    for i in range(0, lps.size):
+        if lps.distance[i] > longest_dist:
+            longest_dist = lps.distance[i]
+            longest_angle = lps.angle[i]
+    return longest_dist, longest_angle
+
+def getLocationFromAngleDist(angle, dist, sdp : MyClient):
+    pose = sdp.pose()
+    xt = pose.x + dist * math.cos(math.radians(pose.yaw) + angle)
+    yt = pose.y + dist * math.sin(math.radians(pose.yaw) + angle)
+    return xt, yt
+
+def findOrRetrieveObject(loc, obj, op, person, sdp : MyClient):
     global _goal, _sub_goal
     inThisRoom = loc == "room" or loc ==''
     if inThisRoom:
@@ -653,40 +684,27 @@ def findOrRetrieveObject(loc, obj, op, sdp : MyClient):
     if len(loc):
         response += " in the " + loc
     if op.endswith("_to_me"):
-        response += " and bring it back to you, " + _person
-
+        response += " and bring it back to you, " + person
+    elif op.endswith("_to_person"):
+        response += " and take it to " + person
     speak(response)
 
     if inThisRoom:
         time.sleep(3)
-        lps = sdp.getLaserScan()        
         
         if op == "retrieve":
             # find furthest point in front of robot
-            longest_angle = math.pi
-            lps = sdp.getLaserScan()  
-            longest_dist = 0      
-            for i in range(130, 145):
-                if abs(lps.angle[i]) < longest_angle:
-                    longest_angle = lps.angle[i]
-                    longest_dist = lps.distance[i]
-        else: # op.endswith("_to_me")
+            sdp.getLaserScan()  
+            longest_dist, longest_angle = getFurthestLaserScanFront(sdp)
+        else: # op != "retrieve"
             # or find the furthest point in the whole scan
-            longest_dist = 0
-            longest_angle = 0
-            for i in range(0, lps.size):
-                if lps.distance[i] > longest_dist:
-                    longest_dist = lps.distance[i]
-                    longest_angle = lps.angle[i]
+            longest_dist, longest_angle = getFurthestLaserScan(sdp)
 
         longest_dist -= 1.75
         longest_dist = max(longest_dist, 0)
 
         print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
-        pose = sdp.pose()
-        xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
-        yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
-        _locations["custom"] = (xt, yt)
+        _locations["custom"] = (getLocationFromAngleDist(longest_angle, longest_dist, sdp))
         sdp.setSpeed(1)
         _goal = "custom"
     else:
@@ -704,8 +722,14 @@ def handleGotoLocation():
     global _deliveree, _package, _sub_goal, _call_out_objects
     global _error_last_goto, _response_num, _locations
 
+    def moveToLocation():
+        if len(coords) == 3:
+            sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
+        else:
+            sdp.moveToFloat(coords[0], coords[1])
+
     def setNextGoal():
-        global _goal
+        global _goal, _deliveree
         _goal = ""
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
@@ -721,6 +745,13 @@ def handleGotoLocation():
             eyes.setHome()
             #_grasper.allHome()
             _goal = ""
+            _deliveree = ""
+        elif _goal == "went_to_face":
+            speak("Hello " + _deliveree)
+            _move_oak_d.allHome()
+            eyes.setHome()
+            _goal = ""
+            _deliveree = ""
 
     sdp = MyClient()
     sdp_comm.connectToSdp(sdp)
@@ -741,6 +772,12 @@ def handleGotoLocation():
                 retrieve_to_loc = (pose.x, pose.y, math.radians(pose.yaw))
             sub_goal_cleanup = None
         _error_last_goto = False
+        
+        # if finding face, extract command. Default is just find them.
+        if _goal.startswith("find_face"):
+            face_cmd = _goal.partition(":")[2]
+            _goal = "find_face"
+
         print("I'm free and A new goal arrived: ", _goal)
         if _goal == "recharge":
             speak("I'm going to the recharge station")
@@ -767,26 +804,26 @@ def handleGotoLocation():
                 print("unknown location")
                 setNextGoal()
                 continue
-            if _goal != "custom" and _goal != "deliver" and _goal != "person":
-                if is_close_to(_goal, 0.5) and _goal != sub_goal_cleanup: 
+            if _goal != "custom" and _goal != "deliver" and _goal != "person" and _goal != "find_face":
+                if is_close_to(_goal, 0.5) and _goal != sub_goal_cleanup:
                     speak("I'm already at the " + _goal)
                     setNextGoal()
                     _move_oak_d.allHome()
                     continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
-                    speak("I'm going to the " + _goal)
+                    speak("I'm going to " + _goal)
             elif _goal == "deliver" and _package_ontray:
                 speak("hello " + _deliveree)
             else:
                 speak("OK.")
             _action_flag = True
-            if len(coords) == 3:
-                sdp.moveToFloatWithYaw(coords[0], coords[1], coords[2])
-            else:
-                sdp.moveToFloat(coords[0], coords[1])
+            moveToLocation()
 
         _interrupt_action = False
         sleepTime = 0.5 if (_sub_goal == "" or _call_out_objects) else 0
+        if _goal == "find_face":
+            aim_oakd(pitch=75) # aim up to see people better                
+            eyes.setTargetPitchYaw(-70, 0)
         if _sub_goal != "":
             checkPersons = _sub_goal == 'person'
             if checkPersons:
@@ -799,9 +836,11 @@ def handleGotoLocation():
             checkPersons = _goal != "deliver" # avoid saying there's a person in the way going to a person
         checkObjects = not checkPersons        
         sub_goal_just_found = False
+        face_just_found = False
+
         idx = 0
         objDict = {}
-
+            
         def gotLock():
             sdp.cancelMoveAction()
             print("got a lock on ", _sub_goal)
@@ -810,19 +849,73 @@ def handleGotoLocation():
             _move_oak_d.yawHome()
             #eyes.setHome()
 
+        def gotFace():
+            sdp.cancelMoveAction()
+            print("got a lock on ", _deliveree)
+            _goal_queue.append(_deliveree)
+            speak("I see " + _deliveree)
+            _move_oak_d.yawHome()
+            if face_cmd == "deliver":
+                _goal_queue.append("release_obj")
+            else:
+                _goal_queue.append("went_to_face")
+            #eyes.setHome()
+
         def getOffsetDist(op):
             return 1.25 if op.startswith("retrieve") else 0.75
-        
+
+        if _goal == "find_face":
+            ret = setFoundFaceAsGoal(_deliveree, sdp=sdp)
+            if ret == True:
+                gotFace()
+                face_just_found = True
+            else:
+                _move_oak_d.startSweepingBackAndForth(0)                
+
         if _sub_goal != "":
             if setFoundObjAsGoal(_sub_goal, cam_yaw=0, offset_dist = getOffsetDist(op), sdp=sdp):
                 gotLock()
                 sub_goal_just_found = True
                 sub_goal_cleanup = _sub_goal
             else:
-                _move_oak_d.startSweepingBackAndForth()
-        while(_run_flag and _interrupt_action == False and not sub_goal_just_found):
+                _move_oak_d.startSweepingBackAndForth(0)
+
+        while(_run_flag and _interrupt_action == False and not sub_goal_just_found and not face_just_found):
 #            try:
             if _sub_goal == "":
+                if _goal == "find_face":
+                    faceDict = {}    
+                    checkForFaces(faceDict, 9, maxValueLen=9)
+                    faceDict = computePersistance(faceDict)
+                    if len(faceDict) > 0 and next(iter(faceDict)) == _deliveree and faceDict[_deliveree] > 0.05:
+                        print("spotted the face, stopping to get a look")
+                        sdp.cancelMoveAction()
+                        _move_oak_d.stopSweepingBackAndForth()
+                        time.sleep(2)
+                        ret = setFoundFaceAsGoal(_deliveree, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.0, sdp=sdp)
+                        if ret == True:
+                            gotFace()
+                            face_just_found = True
+                            break
+                        elif ret == False:
+                            print("saw the face but I lost track of it")
+                            _move_oak_d.startSweepingBackAndForth(1)
+                            while _move_oak_d.isSweeping():
+                                ret = setFoundFaceAsGoal(_deliveree, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.0, sdp=sdp)
+                                if ret == True:
+                                    gotFace()
+                                    face_just_found = True
+                                    break
+                            if face_just_found:
+                                break    
+                            print("I'll keep going.")
+                            _move_oak_d.startSweepingBackAndForth(0)
+                            moveToLocation()
+                        else: # saw wrong face
+                            print("saw the wrong face")
+                            _move_oak_d.startSweepingBackAndForth(0)
+                            moveToLocation()
+
                 if  _call_out_objects:
                     # check if object is persistant over 2 seconds ~32 checks and max dist 2 meters
                     idx = checkForObjects(_possObjObstacles, objDict, numChecks=8, maxDist=3.0, needCentered=True, checkPersons=checkPersons, idx=idx)
@@ -862,7 +955,7 @@ def handleGotoLocation():
                         if sub_goal_just_found:
                             break    
                         #speak("I'll keep going.")
-                        sdp.moveToFloat(coords[0], coords[1])
+                        moveToLocation()
 
             maStatus = getMoveActionStatus(sdp)
             if maStatus == ActionStatus.Stopped or \
@@ -872,15 +965,19 @@ def handleGotoLocation():
 #            except:
 #                break
         time.sleep(sleepTime)
-        
+        #end of while(_run_flag and _interrupt_action == False and not sub_goal_just_found)
+
+        if _move_oak_d.isSweeping():
+            _move_oak_d.stopSweepingBackAndForth()
+            _move_oak_d.yawHome()
+
         if _interrupt_action == True:
             _interrupt_action = False
-            _move_oak_d.stopSweepingBackAndForth()
             _move_oak_d.allHome()
             eyes.setHome()
             _goal_queue.clear()
 
-        if not sub_goal_just_found:
+        if not sub_goal_just_found and not face_just_found:
             # reaching this point, the robot first moved, then stopped - so check where it is now
             reached_goal = is_close_to(_goal)
 
@@ -912,6 +1009,8 @@ def handleGotoLocation():
                         speak("Now I'll retrieve it.")
                         #captured = False
                         captured = captureObject(_goal, sdp)
+                        if _interrupt_action:
+                            _interrupt_action = False
                         #switch back to upper stereo camera
                         _mdai.changeCamera("TOP")
                         _move_oak_d.yawHome()
@@ -923,30 +1022,58 @@ def handleGotoLocation():
                             if op == "retrieve_to_me":
                                 speak("Now I'll bring it to you.")
                                 _package = _goal
-                                _locations["deliver"] = _locations[_person]
+                                _locations["deliver"] = _locations[_deliveree]
                                 _goal_queue.append("deliver") # deliver it to person in room
+                                _goal_queue.append("release_obj")
+                            elif op == "retrieve_to_person":
+                                speak("Now I'll find " + _deliveree + " and take it to them.")
+                                _package = _goal
+                                _locations["find_face"] = _locations[_deliveree]
+                                del _locations[_deliveree]
+                                _goal_queue.append("find_face:deliver") # find_face of person in room
+                                shutdown_my_depthai()
+                                start_facial_recog(with_spatial=True, with_tracking=False)
                             else:
                                 speak("Now I'll bring it back.")
                                 _locations["origin"] = retrieve_to_loc
                                 _goal_queue.append("origin") # bring back retrieved object
-                            _goal_queue.append("release_obj")
+                                _goal_queue.append("release_obj")
                     sdp.setSpeed(_user_set_speed) #restore speed after finding obj
                     _move_oak_d.allHome()
-                elif _goal != "person":
+                elif _goal != "person" and _goal != "find_face":
                     speak("I've arrived.")
-            else:
+            else: # (_goal != "deliver" and not reached_goal)
                 _error_last_goto = True
                 if _goal == "deliver":
                     speak("Sorry, I could not make my delivery")
                 elif _goal != "custom":
                     speak("Sorry, I didn't make it to the " + _goal)
-                else:
+                elif _goal != "find_face":
                     speak("Sorry, I didn't make it to where you wanted.")
             if _sub_goal != "":
                 speak("and I never found a "+ _sub_goal)
                 sdp.setSpeed(_user_set_speed) #restore speed after finding obj
+            if _goal == "find_face": # didn't find face, try one last time with 360 rotation
+                print("didn't find face while going to goal. Trying 360 rotation")
+                for x in range(0,2):
+                    p = searchForFace(sdp, _deliveree, True) #bool(random.randint(0,1)
+                    if p is not None:
+                        break
+                if _interrupt_action:
+                    _interrupt_action = False
+                if p is not None:
+                    setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
+                    gotFace()
+                    face_just_found = True
+                else:
+                    speech = "Sorry, I could not find " + _deliveree
+                    if face_cmd == "deliver":
+                        speech += " to make my delivery."
+                    speak(speech)
+                    shutdown_facial_recog()
+                    start_depthai_thread()                 
+                    sdp.setSpeed(_user_set_speed)                    
 
-                
         # finally clear temp goals and _action_flags
         if _goal == "custom":
             del _locations["custom"]
@@ -955,6 +1082,12 @@ def handleGotoLocation():
             _deliveree = ""
         elif _goal == sub_goal_cleanup:
             del _locations[_goal]
+
+        if face_just_found:
+            shutdown_facial_recog()
+            start_depthai_thread()
+            del _locations["find_face"]
+            sdp.setSpeed(_user_set_speed) #restore speed after finding obj
 
         _action_flag = False # you've arrived somewhere, so no further action
         _goal = ""
@@ -1126,7 +1259,7 @@ def statusReport():
     time.sleep(5)
         
 # rotate 360 and stop if a person is spotted
-def searchForPerson(sdp, clockwise=True):
+def searchForPerson(sdp, is_clockwise=True):
     global _action_flag, _interrupt_action
 
     aim_oakd(pitch=75) # aim up to see people better
@@ -1146,7 +1279,7 @@ def searchForPerson(sdp, clockwise=True):
     sweep = 0
     recheck_person = False
     while (sweep < 380 and not _interrupt_action):
-        sdp.rotate(0.1 if clockwise else -0.1)
+        sdp.rotate(-0.1 if is_clockwise else 0.1)
         found, ps = checkForPerson()
         if found:
             recheck_person = True
@@ -1165,21 +1298,84 @@ def searchForPerson(sdp, clockwise=True):
         print("rechecking person")
         sdp.cancelMoveAction()
         time.sleep(0.3)
+        deg = 5 if is_clockwise else -5
         for j in range(1,5):
             for i in range(1,5):
-                if not found:
-                    found, ps = checkForPerson()
+                found, ps = checkForPerson()
                 if found:
-                    break
+                   break 
+            if not found:
                 # go back other way
-                deg = -5 if j % 2 == 0 else 5
                 sdp.rotate(math.radians(deg))
                 sdp.waitUntilMoveActionDone()
+                deg = -deg
             else:
                 break
             
     _action_flag = False
     return ps
+
+# rotate 360 and stop if the person's face is spotted
+def searchForFace(sdp, name, is_clockwise=True):
+    global _action_flag, _interrupt_action
+
+    aim_oakd(pitch=75) # aim up to see people better
+    eyes.setTargetPitchYaw(-70, 0)
+
+    # First see if person is already in view and if so return
+    p = findFace(name, 1)
+    if p is not None and p is not False:
+        return p
+    
+    # if correct face not in view, then slowly rotate 360 degrees and check every so often
+    _action_flag = True
+    
+    oldyaw = sdp.heading() + 360
+    yaw = oldyaw
+    sweep = 0
+    while sweep < 380:
+        p = None
+        recheck_face = False
+        while (sweep < 380 and not _interrupt_action):
+            sdp.rotate(-0.1 if is_clockwise else 0.1)
+            ps = _facial_recog.get_detections()
+            for face in ps:
+                if face.name == name:
+                    recheck_face = True
+                    break
+            if recheck_face:
+                sdp.cancelMoveAction()
+                break
+            yaw = sdp.heading() + 360
+            covered = abs(yaw - oldyaw)
+            if covered > 180:
+                covered = 360 - covered
+            sweep += covered
+            #print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
+
+            oldyaw = yaw
+            time.sleep(0.07)
+        
+        if recheck_face:
+            print("rechecking face")
+            sdp.cancelMoveAction()
+            time.sleep(0.3)
+            deg = 5 if is_clockwise else -5
+            for j in range(1,5):
+                p = findFace(name, 1)
+                if p is not None:
+                    break
+                else:
+                    # go back other way
+                    sdp.rotate(math.radians(deg))
+                    sdp.waitUntilMoveActionDone()
+                    deg = -deg
+            if p == False: # wrong face seen so keep going
+                continue
+        if p is not None:
+            break
+    _action_flag = False
+    return p
 
 def checkForObject(obj):
     ps = None
@@ -1236,7 +1432,6 @@ def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     _locations[obj] = (xt, yt, math.radians(yaw + cam_yaw + p.theta))
 
 def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=_sdp):
-    global _interrupt_action
     found, p = checkForObject(obj)
     if found:
         setLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
@@ -1268,7 +1463,7 @@ def setDeliverToPersonAsGoal(sdp):
         print("sweep got a lock on the person")
         return True
     else:
-        ps = searchForPerson(sdp, random.randint(0,1))
+        ps = searchForPerson(sdp, bool(random.randint(0,1)))
         if _interrupt_action:
             _interrupt_action = False
             return False
@@ -1354,6 +1549,19 @@ def checkForFace(numSecs=2):
     print(faceDict)
     return next(iter(faceDict)) if len(faceDict) > 0 and next(iter(faceDict.values())) > 0.25 else None
 
+def findFace(name, numSecs=2):
+    faceDict = {}
+    print("find a face")
+    spatial_dict = checkForFaces(faceDict, numSecs * _dai_fps, maxValueLen= numSecs * _dai_fps)
+    faceDict = computePersistance(faceDict)
+    print(faceDict)
+    if faceDict.get(name,0) > 0.25:
+        return spatial_dict.get(name)
+    # else if the wrong face is detected, then return False
+    elif len(faceDict) > 0 and next(iter(faceDict.values())) > 0.25:
+        return False
+    return None
+
 def computePersistance(objDict):
     def by_value(item):
         return item[1]
@@ -1362,13 +1570,14 @@ def computePersistance(objDict):
         persistObjDict[obj] = sum(objDict[obj]) / len(objDict[obj])
     return {k: persistObjDict[k] for k,v in sorted(persistObjDict.items(), reverse=True, key=by_value)}
 
-def checkForFaces(faceDict, numChecks,needCentered=False, 
+def checkForFaces(faceDict, numChecks, needCentered=False, 
                   maxValueLen=2*_dai_fps, idx=0):
     lastValueLen = 0
     if len(faceDict) > 0:
         lastValueLen = len(faceDict[next(iter(faceDict))])
         if lastValueLen < maxValueLen:
             idx = lastValueLen
+    spatial_dict = {}
     for i in range(0, numChecks):
         if idx > maxValueLen - 1:
             idx = 0
@@ -1380,19 +1589,34 @@ def checkForFaces(faceDict, numChecks,needCentered=False,
                 objValue.append(False)
             else:
                 objValue[idx] = False
-        try:
-            ps = _facial_recog.get_detected_names()
+        # try:
+        ps = _facial_recog.get_detections()
 
-            for face in ps:
-                if not faceDict.get(face):
-                    faceDict[face] = [False] * (min(lastValueLen + i + 1, maxValueLen))
-                faceDict[face][idx] = True
-        except:
-            None
-            time.sleep(_dai_fps_recip)
+        for face in ps:
+            if not faceDict.get(face.name):
+                faceDict[face.name] = [False] * (min(lastValueLen + i + 1, maxValueLen))
+            faceDict[face.name][idx] = True
+            if face.x != 0 or face.y != 0 or face.z !=0:
+                spatial_dict[face.name] = face
+        # except:
+        #     None
+        #     if i + 1 < numChecks:
+        #         time.sleep(_dai_fps_recip)
         idx += 1
-        time.sleep(_dai_fps_recip)
-    return idx
+        if i + 1 < numChecks:
+            time.sleep(_dai_fps_recip)
+    return spatial_dict
+
+def setFoundFaceAsGoal(name, cam_yaw=0, offset_dist=1, sdp=_sdp):
+    p = findFace(name, 1)
+    if p is not None and p is not False:
+        setLocationOfObj(sdp, name, p, cam_yaw, offset_dist)
+        return True
+    else:
+        if p is False:
+            return -1
+        else:
+            return False
 
 #test checkForObject code
 # import my_depthai
@@ -1615,7 +1839,7 @@ def come_here(doa):
     
     yawDelta = _mic_array.rotateToDoa(doa, sdp)
 
-    ps = searchForPerson(sdp, yawDelta < 0)
+    ps = searchForPerson(sdp, yawDelta > 0)
     if len(ps) > 0:
         z = 9999.0
         # find closest person
@@ -1892,9 +2116,72 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         statusReport()
         return HandleResponseResult.Handled
 
+    def findPerson(person=_person):
+        global _deliveree
+        # look towards sound of voice and if person spotted, record location
+        yawDelta = _mic_array.rotateToDoa(doa, sdp)
+        
+        # Remove deliveree from locations
+        if _locations.get(person):
+            _locations.pop(person)
+        # find person / deliveree
+        ps = searchForPerson(sdp, yawDelta > 0)
+        if len(ps) > 0:
+            z = 9999.0
+            # find closest person
+            for p in ps:
+                if p.z < z:
+                    z = p.z
+
+            setLocationOfObj(sdp, person, p)
+        else:
+            # if no person found then come back to this loc to look after retrieving object
+            return_to_loc, _, _ = where_am_i()
+            _locations[person] = return_to_loc 
+        _deliveree = person
+        return person
+
+    if re.match(r"^list (people|persons|faces) you know", phrase):
+        names = fr.get_known_faces()
+        print(names)
+        return HandleResponseResult.Handled
+
+    if re.match(r"^(find|look for) (mr|mister|ms|miss)", phrase):
+        # name = 3rd word until end of phrase
+        name = phrase.split()[2:]
+        name = ' '.join(name)
+
+        names = fr.get_known_faces()
+        if name not in names:
+            speak("sorry, i have not met " + name + ", and I don't know what they look like.")
+            return HandleResponseResult.Handled
+
+        sdp.wakeup()
+        speak("Ok, i'll look around for " + name)
+        shutdown_my_depthai()
+        start_facial_recog(with_spatial=True, with_tracking=False)
+        # use current location
+        _deliveree = name
+
+        longest_dist, longest_angle = getFurthestLaserScanFront(sdp)
+
+        longest_dist -= 1.75
+        longest_dist = max(longest_dist, 0)
+
+        sdp.setSpeed(1) #slow speed
+
+        print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+        _locations["find_face"] = (getLocationFromAngleDist(longest_angle, longest_dist, sdp))
+        
+        #pose = sdp.pose()
+        #_locations["find_face"] = (pose.x, pose.y, math.radians(pose.yaw))
+        _goal = "find_face"
+        return HandleResponseResult.Handled
+
     # HBRC Floor Bot Challenge III
     # HBRC Floor Bot Challenge II
     if phrase.startswith("find") or phrase.startswith("retrieve "):
+        person = ""
         op = phrase.split()[0]
         if "and bring it to me" in phrase:
             if "in the" in phrase:
@@ -1905,34 +2192,28 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
                 obj_p = phrase.partition(op)[2].partition("and bring it to me")[0]
             obj = obj_p.split()[-1]
             op += "_to_me"
-
-            # look towards sound of voice and if person spotted, record location
-            yawDelta = _mic_array.rotateToDoa(doa, sdp)
-            
-            # Remove deliveree from locations
-            if _locations.get(_person):
-                _locations.pop(_person)
-            # find person / deliveree
-            ps = searchForPerson(sdp, yawDelta < 0)
-            if len(ps) > 0:
-                z = 9999.0
-                # find closest person
-                for p in ps:
-                    if p.z < z:
-                        z = p.z
-
-                setLocationOfObj(sdp, _person, p)
+            person = findPerson(_person)
+        elif "and take it to" in phrase:
+            if "in the" in phrase:
+                obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
+                loc, person_p = loc.split("and take it to")[0,3]
             else:
-                # if no person found then come back to this loc to look after retrieving object
-                return_to_loc, _, _ = where_am_i()
-                _locations[_person] = return_to_loc 
-            _deliveree = _person                    
+                loc = ''
+                obj_p, _, person_p= phrase.partition(op)[2].partition("and take it to")[0:3]
+            obj = obj_p.split()[-1]
+            person = person_p.split()[-1]
+            names = fr.get_known_faces()
+            if person not in names:
+                speak("sorry, i have not met " + person + ", and I don't know what they look like.")
+                return HandleResponseResult.Handled
+            op += "_to_person"
+            findPerson(person)
         else: # not "bring it to me" in phrase
             obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
             obj = obj_p.split()[-1]
         loc = loc.strip()
 
-        findOrRetrieveObject(loc, obj, op, sdp)            
+        findOrRetrieveObject(loc, obj, op, person, sdp)            
         return HandleResponseResult.Handled
 
     # HBRC Floor Bot Challenge I
@@ -1940,21 +2221,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak("Ok. I'm going across the room and coming back.")
         sdp.wakeup()
         time.sleep(6)
-        lps = sdp.getLaserScan()
-        longest_dist = 0
-        longest_angle = 0
-        for i in range(0, lps.size):
-            if lps.distance[i] > longest_dist:
-                longest_dist = lps.distance[i]
-                longest_angle = lps.angle[i]
-
-        longest_dist -= 0.75
+        longest_dist, longest_angle = getFurthestLaserScan(sdp)
+        longest_dist -= 1.75
         longest_dist = max(longest_dist, 0)
-        print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+        print("other side of room: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)        
         pose = sdp.pose()
-        xt = pose.x + longest_dist * math.cos(math.radians(pose.yaw) + longest_angle)
-        yt = pose.y + longest_dist * math.sin(math.radians(pose.yaw) + longest_angle)
-        _locations["custom"] = (xt, yt)
+        _locations["custom"] = (getLocationFromAngleDist(longest_angle, longest_dist, sdp))
         _locations["origin"] = (pose.x, pose.y)
         _goal_queue.append("origin")
         _goal = "custom"
@@ -2170,7 +2442,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             name = _current_map_name
             if len(name) == 0:
                 speak("please include the name of the map")
-            return HandleResponseResult.Handled
+                return HandleResponseResult.Handled
         speak("Ok. I will save map " + name)
         saveMap(name)
         return HandleResponseResult.Handled
@@ -2467,7 +2739,8 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         shutdown_my_depthai()
         speak("Wait while I try to commit your face to memory. Please, only you.")
         start_facial_recog(new_name=new_name)
-        time.sleep(2)
+        while not _facial_recog.was_face_added():
+            time.sleep(0.2)
         speak("ok. Next time try saying, 'Orange, hello' to check my memory.")
         shutdown_facial_recog()
         start_depthai_thread()
@@ -2483,7 +2756,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
         start_facial_recog()
         ided = False
-        end = time.monotonic() + 10
+        end = time.monotonic() + 5
         while time.monotonic() < end:
             face = checkForFace(1)   
             if face is not None:
@@ -2514,8 +2787,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         _locations.pop(loc)
         return HandleResponseResult.Handled
 
-    if phrase.startswith("update location of") or phrase.startswith("set location of"):
-        loc = phrase[19:]
+    # regex for update | set | save location of
+    if re.match(r"^(update|set|save) location", phrase):
+        # loc = 3rd word until end of phrase
+        loc = phrase.split()[2:]
+        loc = ' '.join(loc)
         pose = sdp.pose()
         _locations[loc] = (pose.x, pose.y, math.radians(pose.yaw))
         print("updated location", loc, "to (", pose.x, pose.y, pose.yaw, ")")
@@ -3097,16 +3373,30 @@ def shutdown_button_pad_thread():
     except:
         None
 
-def start_facial_recog(new_name=""):
+def start_facial_recog(with_spatial=False, with_tracking=True, new_name=""):
     global _facial_recog, _facial_recog_thread
-    if len(new_name) > 0:
-        _facial_recog = fr.FacialRecognize(getPitch=_move_oak_d.getPitch, offsetPitch=_move_oak_d.offsetPitch,
-                                           getYaw =_move_oak_d.getYaw, offsetYaw=_move_oak_d.offsetYaw,
-                                           add_face=True, debug=True, new_name = new_name)
+
+    if _facial_recog_thread is not None:
+        print("facial recognize thread already running")
+        return
+    
+    if with_tracking:
+        getPitch = _move_oak_d.getPitch
+        offsetPitch = _move_oak_d.offsetPitch
+        getYaw =_move_oak_d.getYaw
+        offsetYaw=_move_oak_d.offsetYaw
     else:
-        _facial_recog = fr.FacialRecognize(getPitch=_move_oak_d.getPitch, offsetPitch=_move_oak_d.offsetPitch,
-                                           getYaw =_move_oak_d.getYaw, offsetYaw=_move_oak_d.offsetYaw,
-                                           debug=True)
+        getPitch = None
+        offsetPitch = None
+        getYaw = None
+        offsetYaw = None
+              
+    if len(new_name) > 0:
+        _facial_recog = fr.FacialRecognize(getPitch, offsetPitch, getYaw, offsetYaw,
+                                           compute_spatial=with_spatial, add_face=True, debug=True, new_name = new_name)
+    else:
+        _facial_recog = fr.FacialRecognize(getPitch, offsetPitch, getYaw, offsetYaw,
+                                           compute_spatial=with_spatial, debug=True)
 
     _facial_recog_thread = Thread(target=_facial_recog.run, name="Facial Recog", daemon=False)
     _facial_recog_thread.start()
@@ -3120,6 +3410,7 @@ def shutdown_facial_recog():
         _facial_recog_thread.join()
     except:
         None
+    _facial_recog_thread = None
 
 def start_blazepose_thread():
     global _blazepose_thread, _hp
@@ -3469,7 +3760,7 @@ def shutdown_robot():
     shutdown_my_depthai()
     print("shutting down human pose")
     shutdown_blazepose_thread()
-    print("shutting doen facial recog")
+    print("shutting down facial recog")
     shutdown_facial_recog()
     print("shutting down move oakd")
     _move_oak_d.shutdown()
@@ -3645,7 +3936,7 @@ def run():
     if _enable_grasper:
         _grasper = RoboGripper()
         _grasper.initialize(_lpArduino.board)
-        _grasper.setGrasp(120)
+        #_grasper.setGrasp(120)
         _grasper.allHome()
 
     _grasper_sonar = _lpArduino.board.get_pin('d:5:o')
