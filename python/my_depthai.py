@@ -140,6 +140,8 @@ class MyDepthAI:
 
         # setting node configs
         stereo.setConfidenceThreshold(255)
+        # Align depth map to the perspective of RGB camera, on which inference is done
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
 
         #stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
@@ -261,10 +263,18 @@ class MyDepthAI:
             else:
                 device_id = BOTTOM_MOUNTED_OAK_D_ID
 
-            found, device_info = dai.Device.getDeviceByMxId(device_id)
+            try_count = 3
+            while try_count > 0:
+                found, device_info = dai.Device.getDeviceByMxId(device_id)
 
-            if not found:
-                raise RuntimeError("Oak-D device not found!")
+                if found:
+                    break
+                else:
+                    if try_count > 1:
+                        time.sleep(2)
+                        try_count -= 1
+                    else:
+                        raise RuntimeError("Oak-D device not found!")
 
             rgb_win_name = "rgb"+loc
             depth_win_name = "depth"+loc
