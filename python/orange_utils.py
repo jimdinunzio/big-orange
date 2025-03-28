@@ -23,3 +23,4 @@ class OrangeOpType(Enum):
     GotoCommand = 16
     TakeAPictureCommand = 17
     StopAllMovement = 18
+    InitiateShutdown = 19

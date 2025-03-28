@@ -99,8 +99,9 @@ def recognize_gesture(body):
     return result
 
 class MyBlazePose:
-    def __init__(self):
+    def __init__(self, device_id):
         self.run_flag = False
+        self.device_id_ = device_id
         self.reset()
         
     def reset(self):
@@ -128,7 +129,7 @@ class MyBlazePose:
         return self.person_loc / 1000.0
 
     def run(self):
-        pose = BlazeposeDepthai(input_src='rgb', lm_model='lite', xyz=True, internal_frame_height=432, internal_fps=15)
+        pose = BlazeposeDepthai(input_src='rgb', lm_model='lite', xyz=True, internal_frame_height=432, internal_fps=15, device_id=self.device_id_)
         renderer = BlazeposeRenderer(pose)
 
         self.target = None
