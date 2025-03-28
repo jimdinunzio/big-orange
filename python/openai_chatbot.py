@@ -1,11 +1,28 @@
 import os
 import openai
+import base64
+
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 #roles: system, user, or assistant
 # user is the role that gives instructions or asks questions
 # system is the role that responds. content contains description of that role (e.g. friendly assistant)
 # assistant is the role that 
+
+# messages=[
+#         {
+#             "role": "user",
+#             "content": [
+#                 { "type": "text", "text": "what's in this image?" },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": {
+#                         "url": f"data:image/jpeg;base64,{base64_image}",
+#                     },
+#                 },
+#             ],
+#         }
+#     ],
 
 class OpenAiChatbot:
     def __init__(self, mname, init_prompt, intro_line, name1_label, name2_label, prompt_messages):
@@ -21,8 +38,24 @@ class OpenAiChatbot:
     def get_intro_line(self):
         return self.intro_line
     
-    def get_response(self, input):
-        self.messages.append({"role": "user", "content": input})
+    def get_response(self, input, image=None):
+        if image is None:
+            self.messages.append({"role": "user", "content": input})
+        else:
+            base64_image = base64.b64encode(image).decode('utf-8')
+            messsage = {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": input },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                        },
+                    },
+                ],
+            }
+            self.messages.append(messsage)
 
         completion = openai.ChatCompletion.create(
             model=self.mname,
@@ -67,4 +100,3 @@ class OpenAiChatbot:
                 log += f"{self.name2_label}: {msg['content']}\n"
         return log
             
-

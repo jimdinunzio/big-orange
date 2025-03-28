@@ -1926,6 +1926,8 @@ def handle_response_async(sdp, phrase, doa, check_hot_word = True):
     _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, doa, check_hot_word), name = "handle_response_async", daemon=False)
     _handle_resp_thread.start()
 
+
+
 ###############################################################
 # Command Handler
 def handle_response(sdp, phrase, doa, check_hot_word = True):
@@ -1938,9 +1940,24 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
     # convert phrase to lower case for comparison
     phrase = phrase.lower().strip()      
 
+    class ImageCallback:
+        def __init__(self):
+            self._image = None
+    
+        def get_picture_cb(self, frame):
+            # resize the image's larger dimension to 512 pixels while keeping the aspect ratio
+            if frame.shape[0] > frame.shape[1]:
+                frame = cv2.resize(frame, (int(512 * frame.shape[1] / frame.shape[0]), 512))
+            else:
+                frame = cv2.resize(frame, (512, int(512 * frame.shape[0] / frame.shape[1])))
+            _, self._image = cv2.imencode(".jpg", frame)
+
+        def get_image(self):
+            return self._image
 
     if _chatbot_openai:
         print("handling openai chat speech")
+        image = None
         if len(phrase) > 0:
             if phrase == "reset chat":
                 _chatbot_openai.init_chat_log()
@@ -1950,9 +1967,21 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             elif phrase == "show log":
                 print(_chatbot_openai.get_log())
                 return HandleResponseResult.Handled
-        
+
+            if "you see" in phrase.lower():
+                imageCallback = ImageCallback()
+                _mdai.setGetPictureCb(imageCallback.get_picture_cb)
+                timeout = time.monotonic() + 5
+                while imageCallback.get_image() is None and time.monotonic() < timeout:
+                    time.sleep(0.1)
+                if imageCallback.get_image() is None:
+                    speak("I'm sorry, I can't see anything.")
+                    return HandleResponseResult.Handled
+                image = imageCallback.get_image()
+
             print(f"Human: {phrase}")
-            response = _chatbot_openai.get_response(phrase)
+            response = _chatbot_openai.get_response(phrase, image)
+
             if len(response) > 0:
                 print(f"Orange: {response}")
                 speak(response)
@@ -2004,7 +2033,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         
         return HandleResponseResult.Handled
 
-    if "stop motors" in phrase or "stop all" in phrase:
+    if "stop motors" in phrase or "stop all" in phrase or "stop stop" in phrase:
         cancelAction(True, sdp)
         speak("Okay.")
         location, distance, closeEnough = where_am_i() 
@@ -2180,6 +2209,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak("sorry, i have not met " + name + ", and I don't know what they look like.")
             return HandleResponseResult.Handled
 
+        _mic_array.rotateToDoa(doa, sdp)
         sdp.wakeup()
         speak("Ok, i'll look around for " + name)
         shutdown_my_depthai()
@@ -2209,6 +2239,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         orig_yaw = sdp.pose().yaw
         phrase = phrase.replace("retrieved", "retrieve")
         op = phrase.split()[0]
+        # fix common error of speech recognizer
+        phrase = phrase.replace("in bring it to me", "and bring it to me")
+        phrase = phrase.replace("in take it to", "and take it to")
         if "and bring it to me" in phrase:
             if "in the" in phrase:
                 obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
@@ -2655,7 +2688,17 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak("Ok. I stopped tracking you.")
         return HandleResponseResult.Handled
 
+    if phrase == "look over here":
+        _mic_array.rotateToDoa(doa, sdp)
+        return HandleResponseResult.Handled
+
+    if phrase == "never mind" or phrase == "forget it":
+        speak("ok.")
+        return HandleResponseResult.Handled
+
     if phrase == "go there":
+        speak("Ok. Let me look where you are pointing.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+        _mic_array.rotateToDoa(doa, sdp)
         shutdown_my_depthai()
         start_blazepose_thread()
 
@@ -2738,14 +2781,14 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
 
             la_heading = math.atan2(look_at_v[1], look_at_v[0])
             
-            speak("ok, I am going", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+            speak("I am going", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
             time.sleep(.5)
             print("going to location (", xt_w, ", ", yt_w, " @ heading ", math.degrees(la_heading))
             _move_oak_d.allHome()
             _locations["custom"] = (float(xt_w), float(yt_w), float(la_heading))
             _goal = "custom"
-            shutdown_blazepose_thread()
-            start_depthai_thread()
+        shutdown_blazepose_thread()
+        start_depthai_thread()
         return HandleResponseResult.Handled
 
     new_name = ""
@@ -2862,21 +2905,21 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak(_chatbot_openai.intro_line)
         return HandleResponseResult.Handled
 
-    if "open chat" in phrase:
-        _chatbot_textgen = OrangeTextGenChatbot()
-        speak(_chatbot_textgen.intro_line)
-        return HandleResponseResult.Handled
+    # if "open chat" in phrase:
+    #     _chatbot_textgen = OrangeTextGenChatbot()
+    #     speak(_chatbot_textgen.intro_line)
+    #     return HandleResponseResult.Handled
 
-    if "open chat local" in phrase:
-        conn = _chatbot_socket.connect()
-        intro = ""
-        if conn:
-            intro = _chatbot_socket.get_response()
-        if _chatbot_socket.is_connected():
-            speak(intro)
-        else:
-            speak("sorry, i'm unable to open a chat right now.")
-        return HandleResponseResult.Handled
+    # if "open chat local" in phrase:
+    #     conn = _chatbot_socket.connect()
+    #     intro = ""
+    #     if conn:
+    #         intro = _chatbot_socket.get_response()
+    #     if _chatbot_socket.is_connected():
+    #         speak(intro)
+    #     else:
+    #         speak("sorry, i'm unable to open a chat right now.")
+    #     return HandleResponseResult.Handled
          
     if phrase.startswith("et = "):
         global _set_energy_threshold
@@ -3164,9 +3207,9 @@ def listen():
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended.")
-        # except sr.WaitTimeoutError:
-        #     adj_spch_recog_ambient(r, mic)
-        #     return "", 0
+        except sr.WaitTimeoutError:
+            adj_spch_recog_ambient(r, mic)
+            return "", 0
         except Exception as e:
             print(e)
             return "", 0
@@ -3444,7 +3487,7 @@ def start_blazepose_thread():
     if _blazepose_thread is not None:
         return
 
-    _hp = hp.MyBlazePose()
+    _hp = hp.MyBlazePose(device_id=my_depthai.TOP_MOUNTED_OAK_D_ID)
 
     _blazepose_thread = Thread(target = _hp.run, name="hp", daemon=False)
     _blazepose_thread.start()
@@ -3726,7 +3769,15 @@ def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=Non
         return connected_ssid, signal
     elif opType == OrangeOpType.SpeechEnergyThreshold:
         return _get_energy_threshold()
-        
+    elif opType == OrangeOpType.InitiateShutdown:
+        global _run_flag
+        shutdown_eyes_thread()
+        speak("Okay, I'm shutting down.")
+        print("\nClosing these active threads:")
+        pretty_print_threads()
+        # Have them terminate and close
+        _run_flag = False
+             
 ################################################################   
 # This is where data gets initialized from information stored on disk
 # and threads get started
@@ -3773,7 +3824,7 @@ def initialize_robot():
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
-    global _run_flag, _moods, _sdp, _grasper, _sdp
+    global _run_flag, _moods, _sdp, _grasper, _sdp, _lpArduino
     
     cancelAction(True, _sdp)
     _run_flag = False
@@ -3804,6 +3855,7 @@ def shutdown_robot():
     _mic_array.close()
     print("shutting down leonardo")
     _lpArduino.shutdown()
+    _lpArduino = None
 
     # TBD join threads
     

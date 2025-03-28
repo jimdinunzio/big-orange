@@ -73,6 +73,7 @@ class MyDepthAI:
         self._showRgbWindow = False
         self._showDepthWindow = False
         self._loc = "TOP"
+        self._get_picture_cb = None
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -220,6 +221,9 @@ class MyDepthAI:
     def takePicture(self):
         self.takePictureNow = True
 
+    def setGetPictureCb(self, get_picture_cb):
+         self._get_picture_cb = get_picture_cb
+
     def rgbWindowVisible(self):
         return self._showRgbWindow
     
@@ -345,6 +349,9 @@ class MyDepthAI:
                                     playsound("sounds/camera-shutter.wav", block=True)
                                     cv2.imwrite("pictures_taken/" + pic_filename, frame)
                                     cv2.imshow("Snapshot", frame)
+                                if self._get_picture_cb is not None:
+                                    self._get_picture_cb(frame)
+                                    self._get_picture_cb = None
 
                                 height = frame.shape[0]
                                 width  = frame.shape[1]
@@ -430,10 +437,16 @@ if __name__ == '__main__':
         global _cameraIndex
         _cameraIndex = not _cameraIndex
         mdai.changeCamera(_cameras[_cameraIndex])
+
+    def shutdown(a):
+        mdai.shutdown()
+        my_depthai_thread.join()
+        exit()
     
     keyboard.on_press_key('r', toggleRgbWindow)
     keyboard.on_press_key('d', toggleDepthWindow)
     keyboard.on_press_key('t', toggleCamera)
+    keyboard.on_press_key('q', shutdown)
     
     try:
         while True:
