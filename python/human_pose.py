@@ -99,7 +99,7 @@ def recognize_gesture(body):
     return result
 
 class MyBlazePose:
-    def __init__(self, device_id):
+    def __init__(self, device_id=None):
         self.run_flag = False
         self.device_id_ = device_id
         self.reset()

@@ -2380,6 +2380,8 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             dist *= 0.0254
         elif unit == "yard" or unit == "yards":
             dist /= 1.094
+        elif unit == "ft" or unit == "feet":
+            dist /= 3.281
         else:
             print("unknown unit")
             return HandleResponseResult.NotHandledUnknown
@@ -2696,6 +2698,35 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         speak("ok.")
         return HandleResponseResult.Handled
 
+    if phrase == "dance with me":
+        speak("Ok. Let me spin up a tune.")
+        _mic_array.rotateToDoa(doa, sdp)
+        eyes.setTargetPitchYaw(-70, 0)
+        _move_oak_d.setPitch(70) # pitch up to see person better
+        speak("Ok. Let's dance.")
+        _sdp.setSpeed(3)
+        timeout = time.monotonic() + 30
+        dir = random.randint(0,1)
+        if dir == 0:
+            dir = -1
+        orig_yaw = sdp.pose().yaw
+        spread_angle = 30
+        # play an mp3 music file file.mp3
+        playsound("C:/Users/LattePanda/Music/07 If This is It.wav", block=False)
+        timeout = time.monotonic() + 30
+
+        while time.monotonic() < timeout:
+            turnImm(sdp, dir, 20)
+            turnImm(sdp, -dir, 20)
+            #rotateToPrecise(sdp, orig_yaw + spread_angle)
+            #rotateToPrecise(sdp, orig_yaw - spread_angle)
+            
+        speak("ok. i'm tired and need to rest a minute. Thank you.")
+        _sdp.setSpeed(_user_set_speed)
+        _move_oak_d.allHome()
+        eyes.setHome()
+        return HandleResponseResult.Handled
+    
     if phrase == "go there":
         speak("Ok. Let me look where you are pointing.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
         _mic_array.rotateToDoa(doa, sdp)
@@ -3538,12 +3569,12 @@ def shutdown_eyes_thread():
     except:
         None
 
-def start_tracking():
+def start_tracking(trackTurnBase=True):
     # shutdown current depth ai model
     shutdown_my_depthai()
     # start up the mobilenet with tracker. Yolo doesn't work as well.
     start_depthai_thread(model="mobileNet", use_tracker=True)    
-    _move_oak_d.start_tracking(_mdai, trackTurnBase=True)
+    _move_oak_d.start_tracking(_mdai, trackTurnBase=trackTurnBase)
 
 def stop_tracking():
     _move_oak_d.stop_tracking()
@@ -3737,7 +3768,20 @@ def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=Non
     elif opType == OrangeOpType.LastSpeechSpoken:
         return _last_phrase
     elif opType == OrangeOpType.IpAddress:
-        return socket.gethostbyname(socket.gethostname())
+        # return the ip address of the robot's LAN adapter
+        ip = subprocess.check_output(["ipconfig"], text=True).split('\n')
+        ip_address = ""
+        line_num = 0
+        for line_num, line in enumerate(ip):
+            if "Wireless LAN adapter Wi-Fi" in line:
+                break
+        for line in ip[line_num:]:
+            if "IPv4 Address" in line:
+                ip_address = line.split(':')[1].strip()
+                break
+        if ip_address == "":
+            ip_address = "???"
+        return ip_address
     elif opType == OrangeOpType.GoogleSpeech:
         return _google_mode
     elif opType == OrangeOpType.ToggleGoogleSpeech:
@@ -4027,7 +4071,7 @@ def run():
         if (res == 0):
             _slamtec_on = True
             _sdp.setMapUpdate(True)
-            loadMap(_default_map_name)
+            #loadMap(_default_map_name)
             None
         else:
             speak("I could not connect to Slamtec. Movement is disabled.")
