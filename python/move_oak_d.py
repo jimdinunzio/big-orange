@@ -8,7 +8,7 @@ from threading import Lock
 from copy import deepcopy
 import my_sdp_client
 import sdp_comm
-from pyfirmata import INPUT, Board
+from pyFirmata.pyfirmata import INPUT, Board
 
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""

@@ -1,8 +1,12 @@
 import os
-import openai
 import base64
+from openai import OpenAI
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
+if api_key is None:
+    raise ValueError("OPENAI_API_KEY environment variable not set. Please set it to your OpenAI API key.")
+
+client = OpenAI()
 
 #roles: system, user, or assistant
 # user is the role that gives instructions or asks questions
@@ -57,7 +61,7 @@ class OpenAiChatbot:
             }
             self.messages.append(messsage)
 
-        completion = openai.ChatCompletion.create(
+        completion = client.chat.completions.create(
             model=self.mname,
             #top_p=1.0,                # range 0 to 1.0, default 1.0, alternative to temp, 0.1 means only top 10% probability mass are considered
             #temperature=0.9,          # range: 0.0 to 2.0, default 0.8  Higher values like 0.8 make output more random, lower more deterministic

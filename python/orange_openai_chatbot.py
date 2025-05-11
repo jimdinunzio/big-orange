@@ -20,8 +20,8 @@ if __name__ == "__main__":
     inp = ""
     
     #load jpeg image and convert to base64
-    with open("C:/Users/LattePanda/Pictures/Camera Roll/WIN_20210118_22_22_48_Pro.jpg", "rb") as image_file:
-        image = image_file.read()
+    # with open("C:/Users/LattePanda/Pictures/Camera Roll/WIN_20210118_22_22_48_Pro.jpg", "rb") as image_file:
+    #     image = image_file.read()
 
     print(chat_bot.intro_line)
     while inp != "bye":
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         if inp == ".log":
             print(chat_bot.get_log())
             continue
-        answer = chat_bot.get_response(inp, image)
+        answer = chat_bot.get_response(inp)
         chat_bot.add_to_chat_log(answer)
         print(answer)
         

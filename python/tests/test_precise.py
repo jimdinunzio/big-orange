@@ -1,11 +1,19 @@
+import sys
+import os
+
+# allow importing from parent directory
+sys.path.append(os.path.abspath(os.path.join('..')))
+
+os.chdir(os.path.abspath(os.path.join('..')))
+
 import speech_recognition as sr
 import time
 import collections
 import math
-import os
 import pyaudio
 import speech_recognition as sr
 from speaker_pixel_ring import SpeakerPixelRing
+
 
 def test():
     SAMPLING_RATE = 16000
@@ -26,6 +34,7 @@ def test():
 
     try:
         with mic as source:
+            print("Say something!")
             pl = r.PreciseListener(source, pConfig)
             stream = p.open(format=source.format,
                             channels=1,
@@ -33,7 +42,7 @@ def test():
                             output=True)
             try:
                 while True:
-                    buffer, delta_time = pl.wait_for_hot_word(source)
+                    buffer, delta_time = pl.wait_for_hot_word()
                     print(f"delta_time = {delta_time}")
                     # Play samples from the buffer (3)
                     #stream.write(buffer)

@@ -14,7 +14,7 @@ __author__      = "Borja López Soilán <neopolus@kami.es>"
 import time
 import sys
 #sys.path.insert(0, '../') # We want to import the local pyfirmata
-from pyfirmata import util
+from pyFirmata.pyfirmata import util
 
 from latte_panda_arduino import LattePandaArduino
 _lpArduino = LattePandaArduino()

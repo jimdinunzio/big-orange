@@ -1,12 +1,18 @@
 from array import ArrayType
-from blazepose.BlazeposeDepthaiEdge import BlazeposeDepthai
-from blazepose.BlazeposeRenderer import BlazeposeRenderer
-from blazepose.mediapipe_utils import KEYPOINT_DICT
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), 'depthai_blazepose'))
+from BlazeposeDepthaiEdge import BlazeposeDepthai
+from BlazeposeRenderer import BlazeposeRenderer
+from mediapipe_utils import KEYPOINT_DICT
 import time
 from math import acos, degrees
 
 #Based on http://geomalgorithms.com/a05-_intersect-1.html
 import numpy as np
+import sys
+import os
 
 epsilon=1e-6
 

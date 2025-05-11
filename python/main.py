@@ -21,7 +21,7 @@ from robo_gripper import RoboGripper
 from button_pad import Button4Pad
 from my_sdp_client import MyClient
 from my_sdp_server import *
-from pyfirmata import util as pyfirmata_util, Pin
+from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 import facial_recognize as fr
 import re
 
@@ -58,6 +58,7 @@ _movement_towards_away = 30
 _chatbot_server_ip_addr = "192.168.1.41"
 _chatbot_port = 5124
 _sonar_grasp_offset = -0.063 # distance to back of grasper
+_maps_dir = "maps"
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -113,7 +114,7 @@ _grasper : RoboGripper = None
 _enable_grasper = True
 _blazepose_thread = None
 _chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
-_chatbot_openai : OrangeOpenAiChatbot = None
+_chatbot_openai : OrangeOpenAiChatbot = OrangeOpenAiChatbot()
 _chatbot_textgen : OrangeTextGenChatbot = None
 _aws_mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
@@ -137,8 +138,8 @@ import io
 #import pygame
 #from gtts import gTTS
 import cv2
-import ai_vision.detect as detect
-import ai_vision.classify as classify
+# import ai_vision.detect as detect
+# import ai_vision.classify as classify
 #import winspeech
 from enum import Enum
 from latte_panda_arduino import LattePandaArduino
@@ -1207,7 +1208,8 @@ def loadMap(filename):
     global _sdp, _current_map_name
     _sdp.wakeup()
     print("Loading map and its locations")
-    res = _sdp.loadSlamtecMap(str.encode(filename) + b'.stcm')
+    filepath = os.path.join(_maps_dir, filename)
+    res = _sdp.loadSlamtecMap(str.encode(filepath) + b'.stcm')
     if (res == 0):
         # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
         _sdp.setMapUpdate(False)
@@ -1219,14 +1221,15 @@ def loadMap(filename):
     else:
         speak("Something is wrong. I could not load the map.")
     print("Done loading map")
-    load_locations(filename)
+    load_locations(filepath)
     _current_map_name = filename
     return res
 
 def saveMap(filename):
     global _sdp, _current_map_name
+    filepath = os.path.join(_maps_dir, filename)
     print("saving map and its locations")
-    res = _sdp.saveSlamtecMap(str.encode(filename) + b'.stcm')
+    res = _sdp.saveSlamtecMap(str.encode(filepath) + b'.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
     save_locations(filename)
@@ -1955,83 +1958,45 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         def get_image(self):
             return self._image
 
-    if _chatbot_openai:
-        print("handling openai chat speech")
-        image = None
-        if len(phrase) > 0:
-            if phrase == "reset chat":
-                _chatbot_openai.init_chat_log()
-                speak("chatbot reset.")
-                return HandleResponseResult.Handled
-            
-            elif phrase == "show log":
-                print(_chatbot_openai.get_log())
-                return HandleResponseResult.Handled
-
-            if "you see" in phrase.lower():
-                imageCallback = ImageCallback()
-                _mdai.setGetPictureCb(imageCallback.get_picture_cb)
-                timeout = time.monotonic() + 5
-                while imageCallback.get_image() is None and time.monotonic() < timeout:
-                    time.sleep(0.1)
-                if imageCallback.get_image() is None:
-                    speak("I'm sorry, I can't see anything.")
-                    return HandleResponseResult.Handled
-                image = imageCallback.get_image()
-
-            print(f"Human: {phrase}")
-            response = _chatbot_openai.get_response(phrase, image)
-
-            if len(response) > 0:
-                print(f"Orange: {response}")
-                speak(response)
-                _chatbot_openai.add_to_chat_log(response)
-            else:
-                speak("I got nothing on that.")
-
-            if "goodbye" in phrase.lower():
-                _chatbot_openai = None
-                speak("chat has ended.")
-        
-        return HandleResponseResult.Handled        
+           
 
     # send text to chatbot and get response if connected
-    if _chatbot_socket.is_connected():
-        print("handling chat speech")
-        if len(phrase) > 0:
-            speak_response = True
+    # if _chatbot_socket.is_connected():
+    #     print("handling chat speech")
+    #     if len(phrase) > 0:
+    #         speak_response = True
 
-            if phrase == "reset chat":
-                phrase = ".reset"
-            elif phrase == "restart chat":
-                phrase = ".restart"
-                speak_response = False
-            elif phrase == "show log":
-                phrase = ".log"
-                speak_response = False
+    #         if phrase == "reset chat":
+    #             phrase = ".reset"
+    #         elif phrase == "restart chat":
+    #             phrase = ".restart"
+    #             speak_response = False
+    #         elif phrase == "show log":
+    #             phrase = ".log"
+    #             speak_response = False
         
-            if phrase[0] != '.':
-                print(f"Human: {phrase}")
+    #         if phrase[0] != '.':
+    #             print(f"Human: {phrase}")
             
-            result = _chatbot_socket.send_msg(phrase)
-            if result:
-                response = _chatbot_socket.get_response()
-                if len(response) > 0:
-                    if speak_response:
-                        print("Orange: ", end='')
-                        speak(response)
+    #         result = _chatbot_socket.send_msg(phrase)
+    #         if result:
+    #             response = _chatbot_socket.get_response()
+    #             if len(response) > 0:
+    #                 if speak_response:
+    #                     print("Orange: ", end='')
+    #                     speak(response)
 
-                    print(response)
-                else:
-                    speak("I got nothing on that.")
-            else:
-                speak("I'm sorry, I can't continue the chat at the moment.")
+    #                 print(response)
+    #             else:
+    #                 speak("I got nothing on that.")
+    #         else:
+    #             speak("I'm sorry, I can't continue the chat at the moment.")
 
-            if "goodbye" in phrase.lower() or phrase == ".restart":
-                _chatbot_socket.close()
-                speak("chat has ended.")
+    #         if "goodbye" in phrase.lower() or phrase == ".restart":
+    #             _chatbot_socket.close()
+    #             speak("chat has ended.")
         
-        return HandleResponseResult.Handled
+    #     return HandleResponseResult.Handled
 
     if "stop motors" in phrase or "stop all" in phrase or "stop stop" in phrase:
         cancelAction(True, sdp)
@@ -2100,9 +2065,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             else:
                 speak("I got nothing on that.")
 
-            if "goodbye" in phrase.lower():
+            if "stop chat" in phrase.lower():
                 _chatbot_textgen = None
-                speak("chat has ended.")
+                speak("chat cloud has ended.")
 
         return HandleResponseResult.Handled      
 
@@ -2599,41 +2564,41 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak("Sorry, I could not change my speed this time.")
         return HandleResponseResult.Handled
     
-    if "you see" in phrase:
-        results = detect.detect_objects(top_count=3)
-        print(results)
-        if results is not None:
-            res_count = len(results) 
-            if res_count > 0 and results[0].percent >= 40:
-                reply_str = "I see a " + results[0].label
-                if res_count == 2 and results[1].percent >= 40:
-                    reply_str += " and a " + results[1].label
-                elif res_count > 2:
-                    for i in range(1, res_count - 1):
-                        if results[i].percent >= 40:
-                            reply_str += ", a " +results[i].label
-                    if results[res_count - 1].percent >= 40:
-                        reply_str += " and a " + results[res_count - 1].label
-            else:
-                reply_str = "I don't see anything I recognize."
-            speak(reply_str)
-        return HandleResponseResult.Handled
+    # if "you see" in phrase:
+    #     results = detect.detect_objects(top_count=3)
+    #     print(results)
+    #     if results is not None:
+    #         res_count = len(results) 
+    #         if res_count > 0 and results[0].percent >= 40:
+    #             reply_str = "I see a " + results[0].label
+    #             if res_count == 2 and results[1].percent >= 40:
+    #                 reply_str += " and a " + results[1].label
+    #             elif res_count > 2:
+    #                 for i in range(1, res_count - 1):
+    #                     if results[i].percent >= 40:
+    #                         reply_str += ", a " +results[i].label
+    #                 if results[res_count - 1].percent >= 40:
+    #                     reply_str += " and a " + results[res_count - 1].label
+    #         else:
+    #             reply_str = "I don't see anything I recognize."
+    #         speak(reply_str)
+    #     return HandleResponseResult.Handled
     
-    if "identify this" in phrase:
-        model = classify.ModelType.General
-        if "bird" in phrase:
-            model = classify.ModelType.Birds
-        elif "insect" in phrase:
-            model = classify.ModelType.Insects
-        elif "plant" in phrase:
-            model = classify.ModelType.Plants
-        results = classify.classify(model)
-        print(results)
-        if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
-            speak("it looks like a " + results[0].label)
-        else:
-            speak("Sorry, I do not know what it is.")
-        return HandleResponseResult.Handled
+    # if "identify this" in phrase:
+    #     model = classify.ModelType.General
+    #     if "bird" in phrase:
+    #         model = classify.ModelType.Birds
+    #     elif "insect" in phrase:
+    #         model = classify.ModelType.Insects
+    #     elif "plant" in phrase:
+    #         model = classify.ModelType.Plants
+    #     results = classify.classify(model)
+    #     print(results)
+    #     if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
+    #         speak("it looks like a " + results[0].label)
+    #     else:
+    #         speak("Sorry, I do not know what it is.")
+    #     return HandleResponseResult.Handled
     
     if "clear windows" in phrase:
         cv2.destroyAllWindows()
@@ -2922,7 +2887,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         return HandleResponseResult.Handled
 
     if "open weather chat" in phrase:
-        p = os.path.join(os.path.abspath(''),'virtual-assistant')
+        p = os.path.join(os.path.abspath(''),'riva-sample-apps/virtual-assistant')
         os.chdir(p)
         result = os.system('riva_weather')
         os.chdir('..')
@@ -2931,11 +2896,18 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak("Sorry, I could not open the weather chat.")
         return HandleResponseResult.Handled
 
-    if "open chat cloud" in phrase:
-        _chatbot_openai = OrangeOpenAiChatbot()
-        speak(_chatbot_openai.intro_line)
+    if "enable chat bot" in phrase:
+        if _chatbot_openai is None:
+            _chatbot_openai = OrangeOpenAiChatbot()
+            speak("chat cloud enabled.")
+        #speak(_chatbot_openai.intro_line)
         return HandleResponseResult.Handled
 
+    if "disable chat bot" in phrase:
+        _chatbot_openai = None
+        speak("chatbot disabled.")
+        return HandleResponseResult.Handled
+    
     # if "open chat" in phrase:
     #     _chatbot_textgen = OrangeTextGenChatbot()
     #     speak(_chatbot_textgen.intro_line)
@@ -3059,6 +3031,46 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         turn(deg)
         return HandleResponseResult.Handled
     
+    # if not handled by old school parsing send it to the chatbot
+    if _chatbot_openai:
+        print("sending speach to chatbot")
+        image = None
+        if len(phrase) > 0:
+            if phrase == "reset chat":
+                _chatbot_openai.init_chat_log()
+                speak("chatbot reset.")
+                return HandleResponseResult.Handled
+            
+            elif phrase == "show log":
+                print(_chatbot_openai.get_log())
+                return HandleResponseResult.Handled
+
+            if "you see" in phrase or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
+                imageCallback = ImageCallback()
+                _mdai.setGetPictureCb(imageCallback.get_picture_cb)
+                timeout = time.monotonic() + 5
+                while imageCallback.get_image() is None and time.monotonic() < timeout:
+                    time.sleep(0.1)
+                if imageCallback.get_image() is None:
+                    speak("I'm sorry, I can't see anything.")
+                    return HandleResponseResult.Handled
+                image = imageCallback.get_image()
+
+            print(f"Human: {phrase}")
+            try:
+                response = _chatbot_openai.get_response(phrase, image)
+            except Exception as e:
+                print("Error in getting response: ", e)
+                response = "Sorry, I could not get a response."
+
+            if len(response) > 0:
+                print(f"Orange: {response}")
+                speak(response)
+                _chatbot_openai.add_to_chat_log(response)
+            else:
+                speak("I got nothing on that.")
+        
+        return HandleResponseResult.Handled 
     return HandleResponseResult.NotHandledUnknown # not handled
 
 ###############################################################
@@ -3201,7 +3213,7 @@ def listen():
         #logging.info('Connecting to %s', api_endpoint)
 
     # create a recognizer object
-    r = sr.Recognizer()
+    r : sr.Recognizer = sr.Recognizer()
 
     # create a microphone object
     mic = sr.Microphone(sample_rate=16000)
@@ -3246,22 +3258,22 @@ def listen():
             return "", 0
 
         # recognize speech using Vosk Speech Recognition
-        # try:
-        result = r.recognize_vosk(audio, arg2=None, alts=3)
-        print(result)
-        phrase = json.loads(result)
-        phrase = phrase["alternatives"][0]["text"].strip()          
-        print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
-        _last_speech_heard = phrase
-        # except sr.UnknownValueError:
-        #     phrase = ""
-        #     print("What?")
-        # except sr.RequestError as e:
-        #     phrase = ""
-        #     print("Recognizer error; {0}".format(e))
-        # except:
-        #     phrase = ""
-        #     print("Unknown speech recognition error.")
+        try:
+            result = r.recognize_vosk(audio, arg2=None, alts=3)
+            print(result)
+            phrase = json.loads(result)
+            phrase = phrase["alternatives"][0]["text"].strip()          
+            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+            _last_speech_heard = phrase
+        except sr.UnknownValueError:
+            phrase = ""
+            print("What?")
+        except sr.RequestError as e:
+            phrase = ""
+            print("Recognizer error; {0}".format(e))
+        except:
+            phrase = ""
+            print("Unknown speech recognition error.")
         return phrase, doa
 
     def listenFromGoogleSpeechRecog(r, mic, sr):
@@ -3323,9 +3335,9 @@ def listen():
             setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
-            speak("sorry, i could not do what you wanted.")
+           speak("sorry, i could not do what you wanted.")
         finally:
-            finallyFunc()
+           finallyFunc()
 
     def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
@@ -3404,7 +3416,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp, precise_config=None if _chatbot_openai or _chatbot_socket.is_connected() else precise_config)
+                listenFromVosk(sdp, precise_config=None if _chatbot_socket.is_connected() else precise_config)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
@@ -4010,7 +4022,7 @@ def handleButton3Event(pressed, sdp: MyClient):
     if pressed:
         new_val = not sdp.getMapUpdate()
         sdp.setMapUpdate(new_val)
-        text = "Enabling" if new_value else "Disabling"
+        text = "Enabling" if new_val else "Disabling"
         text += " map updating."
         speak(text)
 
@@ -4019,6 +4031,8 @@ def handleButton4Event(pressed, sdp: MyClient):
         if len(_current_map_name) != 0:
             speak("Ok. I will save map " + _current_map_name)
             saveMap(_current_map_name)
+        else:
+            speak("please ask me to save map <name>.")
 
 def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
       for i in range(0, 4):

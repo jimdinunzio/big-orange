@@ -1,4 +1,10 @@
-from tuning import Tuning
+import sys
+import os
+
+# allow importing from parent directory
+sys.path.append(os.path.abspath(os.path.join('..')))
+
+from mic_array_tuning import Tuning
 import usb.core
 import usb.util
 import time

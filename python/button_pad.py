@@ -1,5 +1,5 @@
 from threading import Thread
-from pyfirmata import INPUT, Board
+from pyFirmata.pyfirmata import INPUT, Board
 import time
 import my_sdp_client
 import sdp_comm
