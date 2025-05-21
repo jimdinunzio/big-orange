@@ -20,7 +20,7 @@ def take_picture(filename):
     camera = cv2.VideoCapture(camera_port)
     time.sleep(0.5)  # If you don't wait, the image will be dark
     return_value, image = camera.read()
-    playsound("sounds/camera-shutter.wav")
+    playsound("sounds\/camera-shutter.wav")
     print("saveing picture to " + "pictures_taken/"+filename)
     cv2.imwrite("pictures_taken/"+filename, image)
     del(camera)  # so that others can use the camera as soon as possible

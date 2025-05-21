@@ -346,7 +346,7 @@ class MyDepthAI:
                                 if self.takePictureNow:
                                     self.takePictureNow = False
                                     pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
-                                    playsound("sounds/camera-shutter.wav", block=True)
+                                    playsound("sounds\/camera-shutter.wav", block=True)
                                     cv2.imwrite("pictures_taken/" + pic_filename, frame)
                                     cv2.imshow("Snapshot", frame)
                                 if self._get_picture_cb is not None:
