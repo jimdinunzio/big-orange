@@ -84,7 +84,8 @@ class PixelRing:
         """
         close the interface
         """
-        usb.util.dispose_resources(self.dev)
+        if usb is not None:
+            usb.util.dispose_resources(self.dev)
 
 
 def find(vid=0x2886, pid=0x0018):
@@ -134,3 +135,4 @@ if __name__ == '__main__':
             break
 
     pixel_ring.off()
+    pixel_ring.close()

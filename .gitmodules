@@ -13,9 +13,6 @@
 [submodule "python/usb_4_mic_array"]
 	path = python/usb_4_mic_array
 	url = https://github.com/respeaker/usb_4_mic_array.git
-[submodule "python/mycroft-precise"]
-	path = python/mycroft-precise
-	url = https://github.com/jimdinunzio/mycroft-precise
 [submodule "firmata_arduino"]
 	path = firmata_arduino
 	url = https://github.com/jimdinunzio/arduino/

@@ -39,6 +39,7 @@ def test():
     #r.energy_threshold = 100
     #r.dynamic_energy_threshold = False
 
+    r.prime_vosk()
     while True:
         with sr.Microphone() as source:
             print("Say something!")

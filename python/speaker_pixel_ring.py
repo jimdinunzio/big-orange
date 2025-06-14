@@ -59,6 +59,14 @@ class SpeakerPixelRing:
 
         self.pixel_ring.customize(n*[0x10,0x0A,0x05,0x00] + m*[0x70,0x08,0x00,0x00] + (self.LIGHT_COUNT-n-m)*[0,0,0,0])
 
+    def setColoredVolume(self, v):
+        n = min(v, self.cutoff)
+        m = max(0, v - self.cutoff)
+        self.pixel_ring.customize(n*[0x10,0x0A,0x05,0x00] + m*[0x70,0x08,0x00,0x00] + (self.LIGHT_COUNT-n-m)*[0,0,0,0])
+
+    def setRedVolume(self):
+        self.pixel_ring.customize(self.LIGHT_COUNT*[0xFF,0x00,0x00,0x00])
+
     def setVolume(self,v):
         self.pixel_ring.set_volume(v)
 

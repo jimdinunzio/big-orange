@@ -223,8 +223,10 @@ def turn_imm(sdp, vel):
 #        sdp.cancelMoveAction()
 
 ################################################################
-def turn(degrees, sdp = _sdp):
+def turn(degrees, sdp=None):
     global _action_flag
+    if sdp is None:
+        sdp = _sdp
     if degrees == 0:
         return
     # if already in action, ignore this
@@ -267,7 +269,9 @@ def nearest_location(x, y):
 # if the robot is within half a meter of the goal, then success:
 # return the closest location and the distance to it and if it is close enough
 
-def where_am_i(sdp = _sdp):
+def where_am_i(sdp=None):
+    if sdp is None:
+        sdp = _sdp
     try:
         pose = sdp.pose()
     except:
@@ -282,11 +286,12 @@ def where_am_i(sdp = _sdp):
 
 def is_close_to(loc, max_dist=1.0):
     if _locations.get(loc) is None:
+        print("is_close_to: location not found: ", loc)
         return -1
-        
     try:
         pose = _sdp.pose()
     except:
+        print("is_close_to: error getting pose.")
         return -1
     dist = distance_A_to_B(pose.x, pose.y, _locations[loc][0], _locations[loc][1])
     return dist <= max_dist
@@ -294,8 +299,10 @@ def is_close_to(loc, max_dist=1.0):
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
 
-def cancelAction(interrupt = False, sdp =_sdp):
+def cancelAction(interrupt = False, sdp=None):
     global _action_flag, _interrupt_action
+    if sdp is None:
+        sdp = _sdp
     if interrupt:
         _interrupt_action = True
     for attempt in range(3):
@@ -1462,7 +1469,9 @@ def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     yaw, xt, yt = getLocationNearObj(sdp, obj,p, cam_yaw, offset_dist)
     _locations[obj] = (xt, yt, math.radians(yaw + cam_yaw + p.theta))
 
-def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=_sdp):
+def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=None):
+    if sdp is None:
+        sdp = _sdp
     found, p = checkForObject(obj)
     if found:
         setLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
@@ -1638,7 +1647,9 @@ def checkForFaces(faceDict, numChecks, needCentered=False,
             time.sleep(_dai_fps_recip)
     return spatial_dict
 
-def setFoundFaceAsGoal(name, cam_yaw=0, offset_dist=1, sdp=_sdp):
+def setFoundFaceAsGoal(name, cam_yaw=0, offset_dist=1, sdp=None):
+    if sdp is None:
+        sdp = _sdp
     p = findFace(name, 1)
     if p is not None and p is not False:
         setLocationOfObj(sdp, name, p, cam_yaw, offset_dist)
@@ -1993,7 +2004,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
 
         if "stop moving" in phrase or "stop motors" in phrase or "stop stop" in phrase:
             cancelAction(True, sdp)
-            speak("Okay.")
+            speak("Stopping.")
             location, distance, closeEnough = where_am_i() 
             if not closeEnough:
                 speak("I'm closest to the " + location)
@@ -2022,13 +2033,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             return HandleResponseResult.Handled
 
         # check if the hot word is in the string, and take the words after it, otherwise ignore speech
-        if check_hot_word and not tried_closest_cmd:
-            hot_word_idx = phrase.rfind(_hotword)
-            if hot_word_idx >= 0:
-                phrase = phrase[hot_word_idx + len(_hotword):].strip()
-                print("cmd extracted: ", phrase)
-            else:
-                return HandleResponseResult.NotHandledNoHotWord
+        # if check_hot_word and not tried_closest_cmd:
+        #     hot_word_idx = phrase.rfind(_hotword)
+        #     if hot_word_idx >= 0:
+        #         phrase = phrase[hot_word_idx + len(_hotword):].strip()
+        #         print("cmd extracted: ", phrase)
+        #     else:
+        #         return HandleResponseResult.NotHandledNoHotWord
 
         # some verbal commands are handled inside the listen thread
         if phrase == "":
@@ -2703,18 +2714,25 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
                     shutdown_blazepose_thread()
                     start_depthai_thread()
                     return HandleResponseResult.Handled                
-                        
+
+                def safe_asin(x):
+                    return math.asin(max(-1.0, min(1.0, x)))
+            
                 person = _hp.get_person_loc()
                 x_cam = loc[0]
                 z_cam = loc[2]
-                theta = -math.asin(x_cam/z_cam) if z_cam != 0.0 else 0
+                print("x_cam = {}, z_cam = {}".format(x_cam, z_cam))
+
+                theta = -safe_asin(x_cam/z_cam) if z_cam != 0.0 else 0
                 cam_yaw = _move_oak_d.getYaw()
                 xt_w = pose.x + z_cam * math.cos(math.radians(pose.yaw + cam_yaw) + theta)
                 yt_w = pose.y + z_cam * math.sin(math.radians(pose.yaw + cam_yaw) + theta)
 
                 px_cam = person[0]
                 pz_cam = person[2]
-                pTheta = -math.asin(px_cam/pz_cam) if pz_cam != 0.0 else 0
+                print("px_cam = {}, pz_cam = {}".format(px_cam, pz_cam))
+
+                pTheta = -safe_asin(px_cam/pz_cam) if pz_cam != 0.0 else 0
                 px_w = pose.x + pz_cam * math.cos(math.radians(pose.yaw + cam_yaw) + pTheta)
                 py_w = pose.y + pz_cam * math.sin(math.radians(pose.yaw + cam_yaw) + pTheta)
 
@@ -2761,7 +2779,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             _move_oak_d.allHome()
             return HandleResponseResult.Handled
 
-        if phrase.startswith("hello") or phrase.startswith("hi"):
+        if phrase.startswith("hello") or phrase.startswith("hi "):
             _mic_array.rotateToDoa(doa, sdp)
             #_move_oak_d.setPitch(70) # pitch up to see person better
             eyes.setTargetPitchYaw(-70, 0)
@@ -2998,6 +3016,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         tried_closest_cmd = True
         if closest_command is not None:
             phrase = closest_command
+            speak("I assume you meant " + phrase + ".")
             print("trying again with closest command \"{}\", dist = {}".format(phrase, dist))
         else:
             break
@@ -3261,7 +3280,7 @@ def listen():
     r : sr.Recognizer = sr.Recognizer()
 
     # create a microphone object
-    mic = sr.Microphone(sample_rate=16000)
+    mic = sr.Microphone(sample_rate=16000, chunk_size=512)
 
     def get_energy_threshold():
         return r.energy_threshold
@@ -3278,26 +3297,34 @@ def listen():
     global _get_energy_threshold
     _get_energy_threshold = get_energy_threshold
         
+    # prime the Vosk recognizer 
+    r.prime_vosk()
+
     speak("Hello, My name is Orange. Pleased to be at your service.")
 
-    def on_prediction(conf):
-        #print('!' if conf > 0.7 else '.', end='', flush=True)
-        _pixel_ring.setPrediction(conf)
-
-    def listenFromVoskSpeechRecog(r, mic, sr, precise_config):
+    HEY_ORANGE_KEYWORD_IDX = 0
+    STOP_NOW_KEYWORD_IDX = 1
+    
+    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, porcupine_config : sr.Recognizer.PorcupineListener.Config):
         global _last_speech_heard
         # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
                 _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, phrase_time_limit = 8, mycroft_precise_config=precise_config, is_speech_cb=_mic_array.getIsSpeech)
+                audio = r.listen(source, phrase_time_limit = 8, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended.")
         except sr.WaitTimeoutError:
             adj_spch_recog_ambient(r, mic)
             return "", 0
+        except sr.ReturnAfterKeywordDetection as e:
+            phrase = ""
+            if e.args[0] == STOP_NOW_KEYWORD_IDX:
+                phrase = "stop moving"
+            return phrase, 0
+
         except Exception as e:
             print(e)
             return "", 0
@@ -3374,10 +3401,11 @@ def listen():
     # global _sendToGoogleAssistantFn
     # _sendToGoogleAssistantFn = sendToGoogleAssistant
 
-    def listenFromVosk(sdp, precise_config=None, finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromVosk(sdp, porcupine_config : sr.Recognizer.PorcupineListener.Config, finallyFunc=lambda:None, check_hot_word=True):
         try:
-            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, precise_config)
-            setPixelRingTrace()
+            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, porcupine_config)
+            if phrase != "stop moving":
+                setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
         except:
            speak("sorry, i could not do what you wanted.")
@@ -3451,7 +3479,34 @@ def listen():
     _starting_up = False
     _pixel_ring.setEndStartup() # restore pixel ring to default sound sensitive mode after boot up
 
-    precise_config = r.PreciseListener.Config(model_file_path='models/hey-orange.pb', on_prediction=on_prediction)
+    def on_detection(index):
+        if index == HEY_ORANGE_KEYWORD_IDX:
+            for i in range(1, 12):
+                _pixel_ring.setColoredVolume(i)
+                time.sleep(0.005)
+        elif index == STOP_NOW_KEYWORD_IDX:
+            _pixel_ring.setRedVolume()
+    
+    def on_listen_timeout(index):
+        if index == HEY_ORANGE_KEYWORD_IDX:
+            for i in range(11, -1, -1):
+                _pixel_ring.setColoredVolume(i)
+                time.sleep(0.005)
+
+    keyword_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "Hey-Orange_en_windows_v3_0_0.ppn"))
+    access_key = os.getenv("PORCUPINE_ACCESS_KEY")
+    if access_key is None:
+        porcupine_config = None
+        print("No Porcupine access key set. Hot word detection will not be available.")
+        keyword_path = None
+    else:
+        from pvporcupine import KEYWORD_PATHS
+        porcupine_config = r.PorcupineListener.Config(access_key=access_key, 
+                                                      keyword_paths=[keyword_path, KEYWORD_PATHS['grapefruit']],
+                                                      keyword_types=[r.PorcupineListener.KeywordType.LISTEN, r.PorcupineListener.KeywordType.IMMEDIATE],
+                                                      sensitivities=[0.25, 0.5],
+                                                      on_detection=on_detection,
+                                                      on_det_timeout=on_listen_timeout)
 
     while _run_flag:
         #local_listener = None
@@ -3461,7 +3516,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp, precise_config=None if _chatbot_socket.is_connected() else precise_config)
+                listenFromVosk(sdp, porcupine_config=porcupine_config)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
@@ -4099,6 +4154,7 @@ def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
 
 def run():
     global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _grasper_sonar
+
     # Start 32 bit bridge server
     _sdp = MyClient()
     _lpArduino = LattePandaArduino()
@@ -4134,10 +4190,13 @@ def run():
         if (res == 0):
             _slamtec_on = True
             _sdp.setMapUpdate(True)
+            pose = _sdp.pose()
+            _locations["home"] = (pose.x, pose.y, math.radians(pose.yaw))
             #loadMap(_default_map_name)
             None
         else:
             speak("I could not connect to Slamtec. Movement is disabled.")
+    
     
         robot()
     else:

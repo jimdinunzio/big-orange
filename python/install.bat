@@ -12,7 +12,7 @@ REM For Google Assistant related code
 REM conda install google-auth
 REM conda install google-auth-oauthlib
 REM pip install google-assistant-grpc
-REM conda install click
+pip install --upgrade click
 
 REM For TTS (Text To Speech)
 pip install git+https://github.com/DeepHorizons/tts
@@ -24,12 +24,7 @@ pip install parse
 REM For Loading shared objects (and specifically 64-bit python bridge to 32-bit DLL)
 pip install msl.loadlib
 
-REM Speech Recognition with support for multiple engines online and offline
-REM Then apply modifications from fork
-pip install speechrecognition==3.8.1
-
-REM Not sure if need this anymore
-conda install pyaudio
+pip install pyaudio
 
 REM for coral Edge TPU
 REM pip3 install https://dl.google.com/coral/python/tflite_runtime-2.1.0.post1-cp37-cp37m-win_amd64.whl
@@ -38,8 +33,7 @@ REM conda install Pillow
 REM For Depth AI
 pip install depthai==2.30.0.0
 
-REM For Respeaker Mic Array V2.0 see git/usb_4_mic_array/requirements.txt
-pip install -r python\usb_4_mic_array\requirements.txt
+
 
 REM For Alexa Skill integration
 pip install awsiotsdk
@@ -47,6 +41,9 @@ pip install awsiotsdk
 pip install -r python\pyFirmata\requirements.txt
 
 pip install -r python\depthai_blazepose\requirements.txt
+# for windows pip doesn't install all the binary dependencies, but conda does.
+pip uninstall open3d
+conda install -c conda-forge open3d
 
 pip install playsound
 pip install opencv-python
@@ -60,21 +57,24 @@ cd python\speech_recognition
 python setup.py install
 cd ..
 
-REM Install these prerequisites using conda for the Mycroft Precise wake word detection because pip couldn't do it alone
-conda install -c conda-forge hdf5
-conda install -c conda-forge netcdf4
+REM For Respeaker Mic Array V2.0 see git/usb_4_mic_array/requirements.txt
+pip install -r python\usb_4_mic_array\requirements.txt
 
-conda install tensorflow=1.13.1
+REM Install these prerequisites using conda for the Mycroft Precise wake word detection because pip couldn't do it alone
+@REM conda install -c conda-forge hdf5
+@REM conda install -c conda-forge netcdf4
+
+@REM conda install tensorflow=1.13.1
 REM For Mycroft Precise wake word detection
 
-cd mycroft-precise
-python setup.py install
+@REM cd mycroft-precise
+@REM python setup.py install
 
-cd runner
-python setup.py install
-cd ..
+@REM cd runner
+@REM python setup.py install
+@REM cd ..
 
-pip install vosk==0.3.32
+pip install vosk
 
 REM Install voices for Windows SAPI from .reg files in windows-10-voices-add
 
