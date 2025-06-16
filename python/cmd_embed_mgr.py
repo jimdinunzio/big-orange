@@ -4,6 +4,7 @@ import pickle
 class CmdEmbedMgr:
     def __init__(self, ollama_url="http://localhost:11434/api/embed"):
         self.commands = [
+            "what is your name",
             "stop moving",
             "who are you",
             "what did you say",
@@ -15,6 +16,7 @@ class CmdEmbedMgr:
             "where are you",
             "what time is it",
             "list people you know",
+            "list faces you know",
             "go across the room and come back",
             "go recharge",
             "go to your dock",
@@ -26,6 +28,8 @@ class CmdEmbedMgr:
             "list your threads",
             "open your eyes",
             "close your eyes",
+            "battery",
+            "voltage",
             "load map",
             "save map",
             "clear map",
