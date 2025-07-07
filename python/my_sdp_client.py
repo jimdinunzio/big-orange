@@ -84,6 +84,14 @@ class MyClient(Client64):
         self.request32('back')
 
     @noReturnDecorator
+    def moveTosFloatWithYaw(self, locations, yaw):
+        self.request32('moveTosFloatWithYaw', locations, yaw)
+
+    @noReturnDecorator
+    def moveTosFloat(self, locations):
+        self.request32('moveTosFloat', locations)
+
+    @noReturnDecorator
     def moveToFloatWithYaw(self, x, y, yaw):
         self.request32('moveToFloatWithYaw', x, y, yaw)
 

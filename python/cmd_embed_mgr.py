@@ -1,5 +1,6 @@
 import requests
 import pickle
+import numpy as np
 
 class CmdEmbedMgr:
     def __init__(self, ollama_url="http://localhost:11434/api/embed"):
@@ -14,6 +15,7 @@ class CmdEmbedMgr:
             "who are you with",
             "how are you",
             "where are you",
+            "where are you going",
             "what time is it",
             "list people you know",
             "list faces you know",
@@ -30,6 +32,8 @@ class CmdEmbedMgr:
             "close your eyes",
             "battery",
             "voltage",
+            "show map",
+            "hide map",
             "load map",
             "save map",
             "clear map",
@@ -38,7 +42,7 @@ class CmdEmbedMgr:
             "disable mapping",            
             "take a picture",
             "take my picture",
-            "close windows",
+            "close pictures",
             "all loaded",
             "all taken",
             "open depth window",
@@ -53,7 +57,6 @@ class CmdEmbedMgr:
             "never mind",
             "dance with me",
             "go where I am pointing",
-            "hello",
             "list locations",
             "come here",
             "local speech",
@@ -65,8 +68,6 @@ class CmdEmbedMgr:
             "disable chat bot",
         ]
         
-        self.commands_embeddings = []
-        self.commands_norm = []
         self.session = None
         self.ollama_url = ollama_url
         self.open_ollama_session()
@@ -89,7 +90,8 @@ class CmdEmbedMgr:
         return response.json()["embeddings"][0]
 
     def get_embeddings(self, texts, model="nomic-embed-text"):
-        data = {"model": model, "input": texts, "keep_alive": 60}
+        qualified_texts = ["User gave a command to robot: " + text for text in texts]
+        data = {"model": model, "input": qualified_texts, "keep_alive": 60}
         response = self.session.post(self.ollama_url, json=data)
         return response.json()["embeddings"]
 
@@ -97,15 +99,23 @@ class CmdEmbedMgr:
         return sum((a - b) ** 2 for a, b in zip(embeddings1, embeddings2)) ** 0.5
 
     def cosine_dist_embeddings(self, embeddings1, embeddings2):
-        dot_product = sum(a * b for a, b in zip(embeddings1, embeddings2))
-        norm_a = sum(a ** 2 for a in embeddings1) ** 0.5
-        norm_b = sum(b ** 2 for b in embeddings2) ** 0.5
+        embeddings1 = np.array(embeddings1)
+        embeddings2 = np.array(embeddings2)
+        dot_product = np.dot(embeddings1, embeddings2)
+        norm_a = np.linalg.norm(embeddings1)
+        norm_b = np.linalg.norm(embeddings2)
+        if norm_a == 0 or norm_b == 0:
+            return 1.0
         return 1 - (dot_product / (norm_a * norm_b))
 
     def cosine_dist_embeddings_cmd(self, embedding, cmd_idx):
-        dot_product = sum(a * b for a, b in zip(embedding, self.commands_embeddings[cmd_idx]))
-        norm_a = sum(a ** 2 for a in embedding) ** 0.5
-        norm_b = self.commands_norm[cmd_idx]
+        embedding = np.array(embedding)
+        cmd_embedding = np.array(self.commands_embeddings[cmd_idx])
+        dot_product = np.dot(embedding, cmd_embedding)
+        norm_a = np.linalg.norm(embedding)
+        norm_b = self.commands_norm_np[cmd_idx]
+        if norm_a == 0 or norm_b == 0:
+            return 1.0
         return 1 - (dot_product / (norm_a * norm_b))
 
     def test_embeddings(self, string1, string2):
@@ -114,18 +124,17 @@ class CmdEmbedMgr:
         distance = self.cosine_dist_embeddings(embedding1, embedding2)
         return distance
 
-    def find_closest_command(self, string, threshold=0.3):
-        """Find the closest command to the given string, or return None if no match."""
-        embedding = self.get_embedding(string)
+    def find_closest_command(self, string):
+        """Find the closest command to the given string."""
+        embedding = self.get_embedding("User gave a command to robot: " + string)
         min_distance = float('inf')
-        closest_command = None
-        for i in range(len(self.commands)):
-            distance = self.cosine_dist_embeddings_cmd(embedding, i)
-            if distance < min_distance:
-                min_distance = distance
-                closest_command = self.commands[i]
-        if min_distance > threshold:
-            return None, min_distance
+        embedding_np = np.array(embedding)
+        dot_products = self.commands_embeddings_np @ embedding_np
+        norm_a = np.linalg.norm(embedding_np)
+        cosine_distances = 1 - (dot_products / (norm_a * self.commands_norm_np))
+        min_idx = np.argmin(cosine_distances)
+        closest_command = self.commands[min_idx]
+        min_distance = cosine_distances[min_idx]
         return closest_command, min_distance
 
     def load_cmds_embeddings(self, filename="commands_embeddings.pkl"):
@@ -137,7 +146,8 @@ class CmdEmbedMgr:
             return False
         self.commands = list(cmd_embeddings_dict.keys())
         self.commands_embeddings = list(cmd_embeddings_dict.values())
-        self.commands_norm = [sum(a ** 2 for a in cmd_emb) ** 0.5 for cmd_emb in self.commands_embeddings]
+        self.commands_embeddings_np = np.array(self.commands_embeddings)
+        self.commands_norm_np = np.linalg.norm(self.commands_embeddings_np, axis=1)
         return True
 
     def save_cmds_embeddings(self, filename="commands_embeddings.pkl"):
@@ -147,7 +157,9 @@ class CmdEmbedMgr:
         return True
 
     def generate_cmd_embeddings_and_save(self):
+        print("generating command embeddings")
         self.commands_embeddings = self.get_embeddings(self.commands)
+        print("saving command embeddings")
         self.save_cmds_embeddings()
 
     def analyze_command_distances(self):

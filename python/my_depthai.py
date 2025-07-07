@@ -74,6 +74,7 @@ class MyDepthAI:
         self._showDepthWindow = False
         self._loc = "TOP"
         self._get_picture_cb = None
+        self._closePictures = False
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -218,6 +219,9 @@ class MyDepthAI:
         with self.detection_lock:
             return deepcopy(self.objectDetections)
         
+    def closePictures(self):
+        self._closePictures = True
+
     def takePicture(self):
         self.takePictureNow = True
 
@@ -260,6 +264,7 @@ class MyDepthAI:
         self.createPipeline()
         self._loc = loc
 
+        self.pictures_shown = []
         self.outer_run_flag = True
         while self.outer_run_flag:
             if self._loc == "TOP":
@@ -348,7 +353,9 @@ class MyDepthAI:
                                     pic_filename = "capture_" + time.ctime().replace(' ', '-', -1).replace(":","-",-1) +".jpg"
                                     playsound("sounds\/camera-shutter.wav", block=True)
                                     cv2.imwrite("pictures_taken/" + pic_filename, frame)
-                                    cv2.imshow("Snapshot", frame)
+                                    win_name = "snapshot_{:03d}".format(len(self.pictures_shown))
+                                    cv2.imshow(win_name, frame)
+                                    self.pictures_shown.append(win_name)
                                 if self._get_picture_cb is not None:
                                     self._get_picture_cb(frame)
                                     self._get_picture_cb = None
@@ -407,6 +414,12 @@ class MyDepthAI:
                             if self._showDepthWindow:
                                 cv2.imshow(depth_win_name, depthFrameColor)
                             
+                            if self._closePictures:
+                                for win in self.pictures_shown:
+                                    cv2.destroyWindow(win)
+                                self.pictures_shown.clear()
+                                self._closePictures = False
+                                
                             cv2.waitKey(45)
                         
                         cv2.destroyAllWindows()

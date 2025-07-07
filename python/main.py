@@ -25,6 +25,8 @@ from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 import facial_recognize as fr
 import re
 from cmd_embed_mgr import CmdEmbedMgr
+import pyautogui
+from my_langgraph import RobotPlannerGraph
 
 # Constants
 _show_rgb_window = False
@@ -61,6 +63,8 @@ _chatbot_port = 5124
 _sonar_grasp_offset = -0.063 # distance to back of grasper
 _maps_dir = "maps"
 _sounds_dir = "sounds"
+_closest_cmd_dist_thresh = 0.2
+_closest_cmd_dist_low_conf = 0.13
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -125,6 +129,8 @@ _button_pad = Button4Pad()
 _grasper_sonar : Pin
 _last_grasper_sonar : float = 4.50
 _cmdEmbedMgr : CmdEmbedMgr = None
+_map_proc : subprocess.Popen = None
+_langgraph : RobotPlannerGraph
 
 import parse
 import tts.sapi
@@ -284,7 +290,7 @@ def where_am_i(sdp=None):
         closeEnough = False
     return location, distance, closeEnough
 
-def is_close_to(loc, max_dist=1.0):
+def is_close_to(loc, max_dist=1.0, max_heading_diff=math.radians(15)):
     if _locations.get(loc) is None:
         print("is_close_to: location not found: ", loc)
         return -1
@@ -294,7 +300,9 @@ def is_close_to(loc, max_dist=1.0):
         print("is_close_to: error getting pose.")
         return -1
     dist = distance_A_to_B(pose.x, pose.y, _locations[loc][0], _locations[loc][1])
-    return dist <= max_dist
+    heading_diff = 0 if len(_locations[loc]) < 3 else _locations[loc][2] - math.radians(pose.yaw)
+
+    return dist <= max_dist and heading_diff <= max_heading_diff
 
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
@@ -1132,6 +1140,52 @@ def handleGotoLocation():
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
             
+def move_through_locations_thread(done_callback=None):
+    global _action_flag
+    sdp = MyClient()
+    sdp_comm.connectToSdp(sdp)
+
+    while(_run_flag and _interrupt_action == False):
+        maStatus = getMoveActionStatus(sdp)
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        time.sleep(0.5)
+
+    sdp.disconnect()
+    sdp.shutdown_server32(kill_timeout=1)
+    _action_flag = False
+    if done_callback is not None:
+        done_callback(maStatus)
+
+def move_through_locations(sdp, locations: list, final_yaw: float, done_callback=None):
+    global _action_flag
+    """
+    Function to move robot along a series of locations.
+
+    Args:
+        locations (list): List of dictionaries with 'x' and 'y' values for each locations.
+        Maximum number of locations is defined by MAX_NUM_ROBOT_LOCATIONS. anymore will be ignored.
+
+        final_yaw in degrees (float): The desired orientation after reaching the final locations.
+
+    """
+    print("Moving through the following locations with yaw {}:".format(final_yaw))
+    locs = LOCATIONS()
+    print(locations)
+    locs.count = min(MAX_NUM_ROBOT_LOCATIONS, len(locations))
+    for i in range(0, locs.count):
+        locs.values[i].x = locations[i]['x']
+        locs.values[i].y = locations[i]['y']
+
+    _action_flag = True
+    sdp.moveTosFloatWithYaw(locs, math.radians(final_yaw))
+    # start thread to monitor the move action status
+    move_thread = threading.Thread(target=move_through_locations_thread, args=(done_callback,))
+    move_thread.start()
+
+    
 ################################################################
 # Pretty print all currently active robot threads
 def pretty_print_threads():
@@ -1242,21 +1296,10 @@ def saveMap(filename):
     res = _sdp.saveSlamtecMap(str.encode(filepath) + b'.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
-    save_locations(filename)
+    save_locations(filepath)
     _current_map_name = filename
     return res
-        
-def show_picture_mat(mat):
-    cv2.imshow("Snapshot", mat)
-    cv2.waitKey(10000)
-    cv2.destroyWindow("Snapshot")
-    
-def show_picture(filepath):
-    img = cv2.imread(filepath)
-    cv2.imshow("Snapshot", img)
-    cv2.waitKey(10000)
-    cv2.destroyWindow("Snapshot")
-        
+                
 def init_camera():
     camera_port = 0
     camera = cv2.VideoCapture(camera_port)
@@ -1949,18 +1992,18 @@ def handling_response():
     with _handling_resp_lock:
         return _handling_resp or _handle_resp_thread is not None and _handle_resp_thread.is_alive()
 
-def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False):
+def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False, listenResponseFn=None):
     if handling_response():
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
     try:
-        handled_result = handle_response(sdp, phrase, doa, check_hot_word)
+        handled_result = handle_response(sdp, phrase, doa, check_hot_word, listenResponseFn=listenResponseFn)
         if handled_result == HandleResponseResult.NotHandledUnknown:
-            if assist:
-                _sendToGoogleAssistantFn(phrase.split(_hotword)[-1])
-            else:
-                speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
+            # if assist:
+            #     _sendToGoogleAssistantFn(phrase.split(_hotword)[-1])
+            # else:
+            speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
     finally:
         set_handling_response(False)
 
@@ -1973,12 +2016,12 @@ def handle_response_async(sdp, phrase, doa, check_hot_word = True):
 
 ###############################################################
 # Command Handler
-def handle_response(sdp, phrase, doa, check_hot_word = True):
+def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : typing.Union[typing.Callable[[object, int], str], None] = None):
     global _run_flag, _goal, _listen_flag, _last_phrase
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
-    global _chatbot_openai, _chatbot_textgen, _deliveree
+    global _chatbot_openai, _chatbot_textgen, _deliveree, _map_proc
 
     class ImageCallback:
         def __init__(self):
@@ -2086,6 +2129,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             speak(answer)
             return HandleResponseResult.Handled
                     
+        if phrase == "where are you going?":
+            if _action_flag == True and _goal != "":
+                speak("I'm going to the " + _goal)
+            else:
+                speak("I'm happy where I am at the moment.")
+            return HandleResponseResult.Handled
+                
         if phrase == "what time is it":
             day = time.strftime("%A", time.localtime())
             month = time.strftime("%B", time.localtime())
@@ -2450,13 +2500,41 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             sdp.setMapUpdate(False)
             return HandleResponseResult.Handled
 
+        if "show map" in phrase:
+            # launch robostudio
+            path = os.path.join(os.path.abspath('../../../DLLs/RoboStudio_2.1.1_rtm'), "RoboStudio.exe")
+            # Launch RoboStudio and keep track of the process so it can be killed later
+            _map_proc = subprocess.Popen([path, "--autofollow", "--fps", "10", "192.168.11.1"])
+            # To kill later, call: proc.terminate() or proc.kill()
+            time.sleep(1.5)
+            coordinates = [
+                (159, 59),
+                (13, 152),
+                (127, 206),
+                (183, 314),
+                (243, 110)
+            ]
+
+            # Click each coordinate
+            for x, y in coordinates:
+                pyautogui.click(x=x, y=y)
+                time.sleep(0.25)
+            return HandleResponseResult.Handled
+
+        if "hide map" in phrase:
+            if _map_proc is not None:
+                _map_proc.terminate()
+                _map_proc = None
+            return HandleResponseResult.Handled
+        
         if "take a picture" in phrase:
             if not _mdai.rgbWindowVisible():
-                speak("I have to open the RGB window first.")
+                speak("I have to open the RGB window first. Hold on.")
                 _mdai.showRgbWindow(True)
                 _mdai.waitUntilChangeFinished()
                 # wait for camera exposure to adjust
-                time.sleep(0.5)
+                time.sleep(1.5)
+                speak("Ok. Taking picture.")
             _mdai.takePicture()
             time.sleep(0.5)
             speak("Ok. Here is the picture I took.")
@@ -2557,8 +2635,8 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
         #         speak("Sorry, I do not know what it is.")
         #     return HandleResponseResult.Handled
         
-        if "close windows" in phrase:
-            cv2.destroyAllWindows()
+        if "close pictures" in phrase:
+            _mdai.closePictures()
             return HandleResponseResult.Handled
 
         if phrase == "all loaded":
@@ -2616,7 +2694,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             _mic_array.rotateToDoa(doa, sdp)
             return HandleResponseResult.Handled
 
-        if phrase == "never mind" or phrase == "forget it":
+        if "never mind" in phrase or "nevermind" in phrase or "forget it" in phrase:
             speak("ok.")
             return HandleResponseResult.Handled
 
@@ -2779,7 +2857,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             _move_oak_d.allHome()
             return HandleResponseResult.Handled
 
-        if phrase.startswith("hello") or phrase.startswith("hi "):
+        if phrase.startswith("hello") or phrase.startswith("nice to meet you"):
             _mic_array.rotateToDoa(doa, sdp)
             #_move_oak_d.setPitch(70) # pitch up to see person better
             eyes.setTargetPitchYaw(-70, 0)
@@ -2991,7 +3069,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
                             phrase_split[1] != "off") or phrase_split[0] == "rotate"):
             try:
                 deg = int(w2n.word_to_num(phrase_split[1]))
-                if split_len >= 4 and phrase_split[3] == "clockwise":
+                if split_len >= 4 and "counter" not in phrase_split[3]:
                     deg = -deg
             except:
                 if phrase_split[1] == "around":
@@ -3010,13 +3088,32 @@ def handle_response(sdp, phrase, doa, check_hot_word = True):
             print("error - closest command did not parse. check parser and command list")
             return HandleResponseResult.NotHandledUnknown
 
+        print("parser failed, check if langgraph system tool would apply")
+        #if unrecognized movment command, try the Langgraph system with tools
+        if "move " in phrase or "dr " in phrase or "drive " in phrase:
+            _langgraph.send_input(phrase)
+            return HandleResponseResult.Handled
+        
         print("parser failed, looking up closest command")
         # if not understood, try to match the command using the embeddings manager
         closest_command, dist = _cmdEmbedMgr.find_closest_command(phrase)
+        print("closest command is '{}' with distance: {}", closest_command, dist)
+        low_conf = dist < _closest_cmd_dist_thresh and dist > _closest_cmd_dist_low_conf
+        if dist >= _closest_cmd_dist_thresh:
+            closest_command = None
+        elif low_conf:
+            #ask user if correct
+            speak("Did you mean, "+ closest_command + "?")
+            if listenResponseFn is not None:
+                response = listenResponseFn(sdp, 5)
+                if response != "yes":
+                    return HandleResponseResult.NotHandledUnknown
+            
         tried_closest_cmd = True
         if closest_command is not None:
             phrase = closest_command
-            speak("I assume you meant " + phrase + ".")
+            if not low_conf:
+                speak("I assume you meant " + phrase + ".")
             print("trying again with closest command \"{}\", dist = {}".format(phrase, dist))
         else:
             break
@@ -3304,15 +3401,17 @@ def listen():
 
     HEY_ORANGE_KEYWORD_IDX = 0
     STOP_NOW_KEYWORD_IDX = 1
+    GET_RESPONSE_IDX = 2
     
-    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, porcupine_config : sr.Recognizer.PorcupineListener.Config):
+    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, porcupine_config : typing.Union[sr.Recognizer.PorcupineListener.Config, None], timeout=None) -> tuple[str, float]:
         global _last_speech_heard
-        # obtain audio from the microphone
+      # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
-                _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, phrase_time_limit = 8, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
+                if porcupine_config is not None:
+                    _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
+                audio = r.listen(source, timeout = timeout, phrase_time_limit = 8, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended.")
@@ -3401,12 +3500,20 @@ def listen():
     # global _sendToGoogleAssistantFn
     # _sendToGoogleAssistantFn = sendToGoogleAssistant
 
+    def listenFromVoskResponse(sdp, timeout=5):
+        on_detection(GET_RESPONSE_IDX)
+        try:
+            phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, None, timeout=5)
+        except:
+            speak("sorry, i am having trouble understanding.")
+        return phrase
+
     def listenFromVosk(sdp, porcupine_config : sr.Recognizer.PorcupineListener.Config, finallyFunc=lambda:None, check_hot_word=True):
         try:
             phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, porcupine_config)
             if phrase != "stop moving":
                 setPixelRingTrace()
-            handle_response_sync(sdp, phrase, doa, check_hot_word)
+            handle_response_sync(sdp, phrase, doa, check_hot_word, listenResponseFn=listenFromVoskResponse)
         except:
            speak("sorry, i could not do what you wanted.")
         finally:
@@ -3486,7 +3593,11 @@ def listen():
                 time.sleep(0.005)
         elif index == STOP_NOW_KEYWORD_IDX:
             _pixel_ring.setRedVolume()
-    
+        elif index == GET_RESPONSE_IDX:
+            for i in range(1, 12):
+                _pixel_ring.setBlueVolume(i)
+                time.sleep(0.0075)
+                
     def on_listen_timeout(index):
         if index == HEY_ORANGE_KEYWORD_IDX:
             for i in range(11, -1, -1):
@@ -3939,7 +4050,7 @@ def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=Non
 # and threads get started
 def initialize_robot():
     global _moods, _internet, _eyes_flag, _facial_recog
-    global _listen_thread, _cmdEmbedMgr
+    global _listen_thread, _cmdEmbedMgr, _langgraph
 
     _internet = True
 
@@ -3978,6 +4089,8 @@ def initialize_robot():
 
     if _enable_aws_mqtt_listener:
         start_aws_mqtt_listener()
+    
+    _langgraph = RobotPlannerGraph.create_langgraph(move_through_locations)
 
 ################################################################
 # This is where data gets saved to disk
@@ -4180,7 +4293,7 @@ def run():
         #_grasper.setGrasp(120)
         _grasper.allHome()
 
-    _grasper_sonar = _lpArduino.board.get_pin('d:5:o')
+    _grasper_sonar = _lpArduino.board.get_pin('d:13:o')
 
     _button_pad.initialize(_lpArduino.board, buttonEventCb)
            

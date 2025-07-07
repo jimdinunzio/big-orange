@@ -113,17 +113,17 @@ if __name__ == '__main__':
 
     while True:
         try:
-            for v in range(0,12):
-                pixel_ring.set_volume(v)
-                time.sleep(.05)
-            time.sleep(1)
-            for v in range(11, -1, -1):
-                pixel_ring.set_volume(v)
-                time.sleep(.05)
-            time.sleep(3)            
-            # pixel_ring.wakeup(180)
+            # for v in range(0,12):
+            #     pixel_ring.set_volume(v)
+            #     time.sleep(.05)
+            # time.sleep(1)
+            # for v in range(11, -1, -1):
+            #     pixel_ring.set_volume(v)
+            #     time.sleep(.05)
+            # time.sleep(3)            
+            # # pixel_ring.wakeup(180)
             # time.sleep(3)
-            # pixel_ring.listen()
+            pixel_ring.listen()
             # time.sleep(3)
             # pixel_ring.think()
             # time.sleep(3)

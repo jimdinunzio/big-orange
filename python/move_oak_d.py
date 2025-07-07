@@ -46,10 +46,10 @@ def clamp(num, min_value, max_value):
         return num
 
 _YAW_LIMITS = [0, 180]
-_PITCH_LIMITS = [0, 135]
+_PITCH_LIMITS = [0, 145]
 
 _YAW_HOME_ = 90
-_PITCH_HOME_ = 105
+_PITCH_HOME_ = 115
 
 def servoToEyeYaw(yaw):
     return (yaw - 90) * (7.0 / 9.0)
@@ -64,13 +64,13 @@ class OakDServo(object):
         if axis == ServoAxis.Pitch:
             self.min_angle = _PITCH_LIMITS[0]
             self.max_angle = _PITCH_LIMITS[1]
-            self.servo = board.get_pin('d:9:s')
+            self.servo = board.get_pin('d:11:s')
             self.angle = 0
             self.home_angle = _PITCH_HOME_
         elif axis == ServoAxis.Yaw:
             self.min_angle = _YAW_LIMITS[0]
             self.max_angle = _YAW_LIMITS[1]
-            self.servo = board.get_pin('d:10:s')
+            self.servo = board.get_pin('d:5:s')
             self.angle = 0
             self.home_angle = _YAW_HOME_
 
@@ -467,25 +467,24 @@ if __name__ == '__main__':
     m.yawServo.setAngle(15)
     try:
         while(1):
-            for pos in range(_YAW_LIMITS[0], _YAW_LIMITS[1]): # goes from 0 degrees to 180 degrees in steps of 1 degree
-                m.yawServo.setAngle(pos, 0)
-                time.sleep(0.015)                       # waits 15ms for the servo to reach the position
+            m.yawServo.setAngle(_YAW_LIMITS[0])
             time.sleep(.5)
-            for pos in range(_YAW_LIMITS[1], _YAW_LIMITS[0], -1): # goes from 180 degrees to 0 degrees
-                m.yawServo.setAngle(pos, 0)
-                time.sleep(0.015)                       # waits 15ms for the servo to reach the position
-            time.sleep(.5)        
+            m.yawServo.setAngle(_YAW_LIMITS[1])
+            time.sleep(.5)
+            m.yawServo.setAngle(_YAW_LIMITS[0])
+            time.sleep(.5)
             m.yawServo.setHome()
-            m.pitchServo.setAngle(0)
-            for pos in range(_PITCH_LIMITS[0], _PITCH_LIMITS[1]):
-                m.pitchServo.setAngle(pos, 0)              # tell servo to go to position in variable 'pos'
-                time.sleep(0.015)
             time.sleep(.5)
-            for pos in range(_PITCH_LIMITS[1], _PITCH_LIMITS[0], -1): # goes from 180 degrees to 0 degrees
-                m.pitchServo.setAngle(pos, 0)              # tell servo to go to position in variable 'pos'
-                time.sleep(0.015)
+            m.pitchServo.setAngle(0)
+            time.sleep(.5)
+            m.pitchServo.setAngle(_PITCH_LIMITS[0])              # tell servo to go to position in variable 'pos'
+            time.sleep(.5)
+            m.pitchServo.setAngle(_PITCH_LIMITS[1])              # tell servo to go to position in variable 'pos'
+            time.sleep(.5)
+            m.pitchServo.setAngle(_PITCH_LIMITS[0])              # tell servo to go to position in variable 'pos'
             time.sleep(.5)
             m.pitchServo.setHome()
+            time.sleep(.5)
             m.yawServo.setAngle(15)
     except (KeyboardInterrupt):
         print("KeyboardInterrupt, closing board.")

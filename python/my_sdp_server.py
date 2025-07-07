@@ -11,11 +11,14 @@ from msl.loadlib import Server32
 from ctypes import *
 from enum import Enum
 
+MAX_NUM_ROBOT_LOCATIONS = 10
+MAX_NUM_LASER_POINTS = 360
+
 class LASER_POINTS(Structure):
 	"""Structure to hold laser points"""
 	_fields_ = [("size", c_int),
-                ("angle", c_float * 360), 
-                ("distance", c_float * 360)]
+                ("angle", c_float * MAX_NUM_LASER_POINTS), 
+                ("distance", c_float * MAX_NUM_LASER_POINTS)]
 
 class POSE(Structure):
     """Structure to hold x and y coords, and yaw angle in degrees"""
@@ -23,6 +26,16 @@ class POSE(Structure):
                 ("y", c_float),
                 ("yaw", c_float)]
 
+class LOCATION(Structure):
+    """Structure to hold x and y coords"""
+    _fields_ = [("x", c_double),
+                ("y", c_double)]
+    
+class LOCATIONS(Structure):
+    """Structure to hold a pointer to an array of LOCATIONS"""
+    _fields_ = [("count", c_int),
+                ("values", LOCATION * MAX_NUM_ROBOT_LOCATIONS)]
+    
 class MOVEOPTIONS(Structure):
     """Structure to hold Move Options for movement commands"""
     _fields_ = [("flag", c_int),
@@ -82,6 +95,8 @@ class MyServer(Server32):
         self.lib.waitUntilMoveActionDone.restype = ActionStatus
         self.lib.moveToFloatWithYaw.argtypes = c_float, c_float, c_float
         self.lib.moveToFloatWithYaw.restype = None
+        self.lib.moveTosFloatWithYaw.argtypes = LOCATIONS, c_float
+        self.lib.moveTosFloat.argtypes = LOCATIONS,
         self.lib.moveToFloat.argtypes = c_float, c_float
         self.lib.moveToFloat.restype = None
         self.lib.home.restype = None
@@ -121,6 +136,12 @@ class MyServer(Server32):
 
     def back(self):
         self.lib.back()
+
+    def moveTosFloatWithYaw(self, locations, yaw):
+        self.lib.moveTosFloatWithYaw(locations, yaw)    
+
+    def moveTosFloat(self, locations):
+        self.lib.moveTosFloat(locations)
 
     def moveToFloat(self, x, y):
         self.lib.moveToFloat(x, y)

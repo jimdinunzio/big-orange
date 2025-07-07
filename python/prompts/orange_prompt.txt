@@ -55,6 +55,8 @@ MY COMMANDS:
     "list your threads",
     "open your eyes",
     "close your eyes",
+    "show map",
+    "hide map",
     "load map",
     "save map",
     "clear map",
