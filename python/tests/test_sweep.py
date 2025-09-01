@@ -13,7 +13,7 @@ import sdp_comm
 import math
 import time
 from latte_panda_arduino import LattePandaArduino
-from pyFirmata import util as pyfirmata_util, Pin
+from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 
 _sonar_grasp_offset = -0.063 # distance to back of grasper
 _last_grasper_sonar : float = 4.50
@@ -80,7 +80,7 @@ def main():
     
     _lpArduino = LattePandaArduino()
     _lpArduino.initialize()
-    _grasper_sonar = _lpArduino.board.get_pin('d:5:o')
+    _grasper_sonar = _lpArduino.board.get_pin('d:13:o')
     sdp_comm.connectToSdp(sdp)
     sdp.setSpeed(1)
 

@@ -1,7 +1,7 @@
 import requests
 
 session = None
-ollama_url = "http://localhost:11434/api/embed"
+ollama_url = "http://192.168.55.1:11434/api/embed"
 
 def open_ollama_session():
     global session

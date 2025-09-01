@@ -3,10 +3,10 @@ import pickle
 import numpy as np
 
 class CmdEmbedMgr:
-    def __init__(self, ollama_url="http://localhost:11434/api/embed"):
+    def __init__(self, ollama_url="http://192.168.55.1:11434/api/embed"):
         self.commands = [
             "what is your name",
-            "stop moving",
+            "stop now",
             "who are you",
             "what did you say",
             "goodbye",
@@ -33,7 +33,7 @@ class CmdEmbedMgr:
             "battery",
             "voltage",
             "show map",
-            "hide map",
+            "close map",
             "load map",
             "save map",
             "clear map",
@@ -59,13 +59,13 @@ class CmdEmbedMgr:
             "go where I am pointing",
             "list locations",
             "come here",
-            "local speech",
-            "cloud speech",
+            "reset memory",
+            "show chat log",
+            #"local speech",
+            #"cloud speech",
             #"enable radar",
             #"disable radar",
             #"open weather chat",
-            "enable chat bot",
-            "disable chat bot",
         ]
         
         self.session = None

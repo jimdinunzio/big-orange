@@ -11,11 +11,7 @@ import sdp_comm
 import subprocess
 import typing
 from speaker_pixel_ring import SpeakerPixelRing
-from chatbot_socket_client import ChatbotSocketClient
-from orange_openai_chatbot import OrangeOpenAiChatbot
-from orange_textgen_chatbot import OrangeTextGenChatbot
 from aws_mqtt_listener import AwsMqttListener
-import asyncio
 import my_depthai
 from robo_gripper import RoboGripper
 from button_pad import Button4Pad
@@ -58,13 +54,11 @@ _dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 _movement_timeout = 60
 _movement_towards_away = 30
-_chatbot_server_ip_addr = "192.168.1.41"
-_chatbot_port = 5124
 _sonar_grasp_offset = -0.063 # distance to back of grasper
 _maps_dir = "maps"
 _sounds_dir = "sounds"
-_closest_cmd_dist_thresh = 0.2
-_closest_cmd_dist_low_conf = 0.13
+_closest_cmd_dist_thresh = 0.15
+_closest_cmd_dist_low_conf = 0.12
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -119,10 +113,7 @@ _enable_movement_sensing = False
 _grasper : RoboGripper = None
 _enable_grasper = True
 _blazepose_thread = None
-_chatbot_socket = ChatbotSocketClient(_chatbot_server_ip_addr, _chatbot_port)
-_chatbot_openai : OrangeOpenAiChatbot = OrangeOpenAiChatbot()
-_chatbot_textgen : OrangeTextGenChatbot = None
-_aws_mqtt_listener = AwsMqttListener()
+_mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
 _enable_aws_mqtt_listener = False
 _button_pad = Button4Pad()
@@ -130,7 +121,7 @@ _grasper_sonar : Pin
 _last_grasper_sonar : float = 4.50
 _cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
-_langgraph : RobotPlannerGraph
+_langgraph : RobotPlannerGraph = None
 
 import parse
 import tts.sapi
@@ -1223,13 +1214,16 @@ def setPixelRingTrace():
 ###############################################################
 # Speech Related
 
-def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value):
+def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value, add_to_memory=True):
     global _last_phrase, _voice
 
     try:
-        print(phrase)
+        print("speaking: ", phrase)
         _pixel_ring.setSpeak()
         _voice.say(phrase, flag)
+        # add robot response to memory
+        if add_to_memory and _langgraph is not None:
+            _langgraph.add_to_memory(robot_response=phrase)
         setPixelRingTrace()
     except Exception:
         print("Speak has timed out.")
@@ -1997,12 +1991,11 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
+    _langgraph.add_to_memory(user_input=phrase)
     try:
         handled_result = handle_response(sdp, phrase, doa, check_hot_word, listenResponseFn=listenResponseFn)
         if handled_result == HandleResponseResult.NotHandledUnknown:
-            # if assist:
-            #     _sendToGoogleAssistantFn(phrase.split(_hotword)[-1])
-            # else:
+            # add the human speech to memory
             speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
     finally:
         set_handling_response(False)
@@ -2021,7 +2014,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
-    global _chatbot_openai, _chatbot_textgen, _deliveree, _map_proc
+    global _deliveree, _map_proc
 
     class ImageCallback:
         def __init__(self):
@@ -2521,7 +2514,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 time.sleep(0.25)
             return HandleResponseResult.Handled
 
-        if "hide map" in phrase:
+        if "close map" in phrase:
             if _map_proc is not None:
                 _map_proc.terminate()
                 _map_proc = None
@@ -2598,43 +2591,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             if speed != sdp.setSpeed(speed):
                 speak("Sorry, I could not change my speed this time.")
             return HandleResponseResult.Handled
-        
-        # if "you see" in phrase:
-        #     results = detect.detect_objects(top_count=3)
-        #     print(results)
-        #     if results is not None:
-        #         res_count = len(results) 
-        #         if res_count > 0 and results[0].percent >= 40:
-        #             reply_str = "I see a " + results[0].label
-        #             if res_count == 2 and results[1].percent >= 40:
-        #                 reply_str += " and a " + results[1].label
-        #             elif res_count > 2:
-        #                 for i in range(1, res_count - 1):
-        #                     if results[i].percent >= 40:
-        #                         reply_str += ", a " +results[i].label
-        #                 if results[res_count - 1].percent >= 40:
-        #                     reply_str += " and a " + results[res_count - 1].label
-        #         else:
-        #             reply_str = "I don't see anything I recognize."
-        #         speak(reply_str)
-        #     return HandleResponseResult.Handled
-        
-        # if "identify this" in phrase:
-        #     model = classify.ModelType.General
-        #     if "bird" in phrase:
-        #         model = classify.ModelType.Birds
-        #     elif "insect" in phrase:
-        #         model = classify.ModelType.Insects
-        #     elif "plant" in phrase:
-        #         model = classify.ModelType.Plants
-        #     results = classify.classify(model)
-        #     print(results)
-        #     if len(results) > 0 and results[0].percent > 40 and "background" not in results[0]:
-        #         speak("it looks like a " + results[0].label)
-        #     else:
-        #         speak("Sorry, I do not know what it is.")
-        #     return HandleResponseResult.Handled
-        
+                
         if "close pictures" in phrase:
             _mdai.closePictures()
             return HandleResponseResult.Handled
@@ -2913,13 +2870,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             Thread(target = come_here, args=(doa,), name="Come Here", daemon=False).start()
             return HandleResponseResult.Handled
 
-        if "local speech" in phrase:
-            switch_to_local_speech()
-            return HandleResponseResult.Handled
+        # if "local speech" in phrase:
+        #     switch_to_local_speech()
+        #     return HandleResponseResult.Handled
 
-        if "cloud speech" in phrase:
-            switch_to_cloud_speech()
-            return HandleResponseResult.Handled
+        # if "cloud speech" in phrase:
+        #     switch_to_cloud_speech()
+        #     return HandleResponseResult.Handled
 
         if "enable radar" in phrase:
             speak("ok, i've enabled radar.")
@@ -2940,34 +2897,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             if result != 0:
                 speak("Sorry, I could not open the weather chat.")
             return HandleResponseResult.Handled
-
-        if "enable chat bot" in phrase:
-            if _chatbot_openai is None:
-                _chatbot_openai = OrangeOpenAiChatbot()
-                speak("chat cloud enabled.")
-            #speak(_chatbot_openai.intro_line)
-            return HandleResponseResult.Handled
-
-        if "disable chat bot" in phrase:
-            _chatbot_openai = None
-            speak("chatbot disabled.")
-            return HandleResponseResult.Handled
-        
-        # if "open chat" in phrase:
-        #     _chatbot_textgen = OrangeTextGenChatbot()
-        #     speak(_chatbot_textgen.intro_line)
-        #     return HandleResponseResult.Handled
-
-        # if "open chat local" in phrase:
-        #     conn = _chatbot_socket.connect()
-        #     intro = ""
-        #     if conn:
-        #         intro = _chatbot_socket.get_response()
-        #     if _chatbot_socket.is_connected():
-        #         speak(intro)
-        #     else:
-        #         speak("sorry, i'm unable to open a chat right now.")
-        #     return HandleResponseResult.Handled
             
         # parse var    
         if phrase.startswith("et = "):
@@ -3080,19 +3009,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # if chatbot command is recognized then skip to chatbot
-        if _chatbot_openai and (phrase == "reset chat" or phrase == "show chat log" or "you see" in phrase 
-                                or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase):
+        if phrase == "reset memory" or phrase == "show chat log" or "you see" in phrase \
+            or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
             break
 
         if tried_closest_cmd:
             print("error - closest command did not parse. check parser and command list")
             return HandleResponseResult.NotHandledUnknown
-
-        print("parser failed, check if langgraph system tool would apply")
-        #if unrecognized movment command, try the Langgraph system with tools
-        if "move " in phrase or "dr " in phrase or "drive " in phrase:
-            _langgraph.send_input(phrase)
-            return HandleResponseResult.Handled
         
         print("parser failed, looking up closest command")
         # if not understood, try to match the command using the embeddings manager
@@ -3106,9 +3029,10 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             speak("Did you mean, "+ closest_command + "?")
             if listenResponseFn is not None:
                 response = listenResponseFn(sdp, 5)
+                # if not yes let the agent handle it
                 if response != "yes":
-                    return HandleResponseResult.NotHandledUnknown
-            
+                    break
+
         tried_closest_cmd = True
         if closest_command is not None:
             phrase = closest_command
@@ -3119,117 +3043,53 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             break
         # end of parse while(true)
 
-    # if not handled by old school parsing send it to the chatbot
-    if _chatbot_openai:
-        print("sending speech to chatbot")
-        image = None
-        if len(phrase) > 0:
-            if phrase == "reset chat":
-                _chatbot_openai.init_chat_log()
-                speak("chatbot reset.")
-                return HandleResponseResult.Handled
-            
-            elif phrase == "show chat log":
-                print(_chatbot_openai.get_log())
-                return HandleResponseResult.Handled
+    # if not handled by old school parsing send it to the Langgraph Agent with tools 
+    print("sending speech to Langgraph Agent")
+    image = None
+    response = ""
+    if len(phrase) > 0:
+        if phrase == "reset memory":
+            _langgraph.reset_memory()
+            speak("I'm clearing my memory of this discussion.")
+            return HandleResponseResult.Handled
+        
+        elif phrase == "show chat log":
+            print(_langgraph.print_message_history())
+            return HandleResponseResult.Handled
 
-            if "you see" in phrase or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
+        if "you see" in phrase or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
+            if _langgraph.has_vision:
                 imageCallback = ImageCallback()
                 _mdai.setGetPictureCb(imageCallback.get_picture_cb)
                 timeout = time.monotonic() + 5
+                if not _mdai.rgbWindowVisible():
+                    speak("I have to open the RGB window first. Hold on.")
+                    _mdai.showRgbWindow(True)
+                    _mdai.waitUntilChangeFinished()
+                    # wait for camera exposure to adjust
+                    time.sleep(1.5)                
                 while imageCallback.get_image() is None and time.monotonic() < timeout:
                     time.sleep(0.1)
                 if imageCallback.get_image() is None:
-                    speak("I'm sorry, I can't see anything.")
+                    speak("I'm sorry, I can't see anything. Maybe you left the lens cap on or my rgb window is not open")
                     return HandleResponseResult.Handled
                 image = imageCallback.get_image()
-
-            print(f"Human: {phrase}")
-            try:
-                response = _chatbot_openai.get_response(phrase, image)
-            except Exception as e:
-                print("Error in getting response: ", e)
-                response = "Sorry, I could not get a response."
-
-            if len(response) > 0:
-                print(f"Orange: {response}")
-                speak(response)
-                _chatbot_openai.add_to_chat_log(response)
             else:
-                speak("I got nothing on that.")
+                speak("I'm sorry, I can't currently interpret what I'm seeing.")
+                return HandleResponseResult.Handled
 
-    # send text to chatbot and get response if connected
-    # if _chatbot_socket.is_connected():
-    #     print("handling chat speech")
-    #     if len(phrase) > 0:
-    #         speak_response = True
+        try:
+            response, tools_log = _langgraph.send_input(phrase, image=image)
+        except Exception as e:
+            print("Error in getting response: ", e)
+            response = "Sorry, I could not get a response."
 
-    #         if phrase == "reset chat":
-    #             phrase = ".reset"
-    #         elif phrase == "restart chat":
-    #             phrase = ".restart"
-    #             speak_response = False
-    #         elif phrase == "show log":
-    #             phrase = ".log"
-    #             speak_response = False
-        
-    #         if phrase[0] != '.':
-    #             print(f"Human: {phrase}")
-            
-    #         result = _chatbot_socket.send_msg(phrase)
-    #         if result:
-    #             response = _chatbot_socket.get_response()
-    #             if len(response) > 0:
-    #                 if speak_response:
-    #                     print("Orange: ", end='')
-    #                     speak(response)
+        if len(response) > 0:
+            speak(response, add_to_memory=False)
+        else:
+            speak("I got nothing on that.")
 
-    #                 print(response)
-    #             else:
-    #                 speak("I got nothing on that.")
-    #         else:
-    #             speak("I'm sorry, I can't continue the chat at the moment.")
-
-    #         if "goodbye" in phrase.lower() or phrase == ".restart":
-    #             _chatbot_socket.close()
-    #             speak("chat has ended.")
-        
-    #     return HandleResponseResult.Handled
-    # if _chatbot_textgen:
-    #     print("handling textgen chat speech")
-    #     if len(phrase) > 0:
-    #         if phrase == "reset chat":
-    #             _chatbot_textgen.init_chat_log()
-    #             speak("chatbot reset.")
-    #             return HandleResponseResult.Handled
-            
-    #         elif phrase == "show log":
-    #             print(_chatbot_textgen.get_log())
-    #             return HandleResponseResult.Handled
-        
-    #         print(f"Human: {phrase}")
-
-    #         async def speak_response(inp):
-    #             response = ""
-    #             async for sent in _chatbot_textgen.get_response_stream(inp):
-    #                 if len(sent) > 0:
-    #                     speak(sent)
-    #                     response += sent
-    #             return response
-
-    #         response = asyncio.run(speak_response(phrase))
-
-    #         if len(response) > 0:
-    #             print(f"Orange: {response}")
-    #         else:
-    #             speak("I got nothing on that.")
-
-    #         if "stop chat" in phrase.lower():
-    #             _chatbot_textgen = None
-    #             speak("chat cloud has ended.")
-
-    #     return HandleResponseResult.Handled      
-
+        print("Tools Log: ", tools_log)
         
         return HandleResponseResult.Handled 
     return HandleResponseResult.NotHandledUnknown # not handled
@@ -3423,9 +3283,11 @@ def listen():
             if e.args[0] == STOP_NOW_KEYWORD_IDX:
                 phrase = "stop moving"
             return phrase, 0
-
-        except Exception as e:
+        except Exception as e:                
             print(e)
+            if e.__context__:
+                print(e.__context__)
+                raise e.__context__
             return "", 0
 
         # recognize speech using Vosk Speech Recognition
