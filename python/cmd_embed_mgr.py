@@ -6,7 +6,7 @@ class CmdEmbedMgr:
     def __init__(self, ollama_url="http://192.168.55.1:11434/api/embed"):
         self.commands = [
             "what is your name",
-            "stop now",
+            "stop motors",
             "who are you",
             "what did you say",
             "goodbye",

@@ -5,13 +5,16 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
+from langchain_core.messages.tool import ToolMessage
 
 from langchain_openai import ChatOpenAI
 from typing import Annotated
 import base64
 import requests
+import ast
 
 def is_server_running(url):
+#    return False
     try:
         response = requests.get(url, timeout=2)
         return response.status_code == 200
@@ -53,7 +56,10 @@ class RobotPlannerGraph:
         # Define the tools list
         tools = [
             self.tools.get_pose_tool(),
-            self.tools.get_move_through_locations_tool()
+            self.tools.get_move_through_locations_tool(),
+            self.tools.get_check_move_progress(),
+            self.tools.get_num_pictures_in_album_tool(),
+            self.tools.get_nth_picture_from_album_tool()
         ]
 
         # Check if vision LLM server is running
@@ -75,6 +81,7 @@ class RobotPlannerGraph:
             self.llm_text_tools = ChatOpenAI(
                 base_url="http://192.168.55.1:11434/v1/",  # tools LM endpoint
                 model="qwen2.5:7b-instruct",
+                #model="mistral:7b-instruct",
                 api_key="YOUR_API_KEY_HERE",
                 temperature=0.0,
                 max_tokens=200,
@@ -104,35 +111,90 @@ class RobotPlannerGraph:
         # Define the graph
         self.builder = StateGraph(State)
         
-        self.image_triggers = ["in the picture", "this image", "that photo", "what is shown"]
+        self.image_triggers = ["in that picture", "in that image", "in that photo", "what is shown"]
 
         # MultiLLMPlanner node
         def multi_llm_planner(state: State):
             last_msg = state["messages"][-1]
+            
+            def validate_and_fix_response(response):
+                """Validate and fix tool call formatting if needed."""
+                if isinstance(response, AIMessage):
+                    content = response.content
+                    if isinstance(content, str):
+                        if "<tool_call>" in content:
+                            # Extract tool name and arguments
+                            import re
+                            tool_match = re.search(r'<tool_call>(.*?)</tool_call>', content, re.DOTALL)
+                            if tool_match:
+                                # Convert to proper LangGraph tool call format
+                                response.content = content.replace(tool_match.group(0), 
+                                    f"I need to use {tool_match.group(1)}")
+                    elif isinstance(content, list):
+                        # Handle list content type (e.g., for multi-modal responses)
+                        new_content = []
+                        for item in content:
+                            if isinstance(item, dict):
+                                new_content.append(item)  # Keep dict items as is
+                            elif isinstance(item, str) and "<tool_call>" in item:
+                                import re
+                                tool_match = re.search(r'<tool_call>(.*?)</tool_call>', item, re.DOTALL)
+                                if tool_match:
+                                    new_content.append(f"I need to use {tool_match.group(1)}")
+                                else:
+                                    new_content.append(item)
+                            else:
+                                new_content.append(item)
+                        response.content = new_content
+                return response
+            
             if self.all_in_one_llm is not None:
-                #print("last message:", last_msg)
                 return {"messages": [self.all_in_one_llm.invoke(state["messages"])]}
-            # If vision LLM is available and last Human message contains an image, use vision LLM
+            use_vision = False
             if self.llm_vision:
-                if isinstance(last_msg, HumanMessage) and isinstance(last_msg.content, list):
-                    for part in last_msg.content:
-                        # check if part.get("text") contains any of the image triggers
-                        if isinstance(part, dict):
-                            if part.get("type") == "text":
-                                text = part.get("text", "").lower()
-                                if any(trigger in text for trigger in self.image_triggers):
-                                    use_vision = True
-                                    break
-                            if (part.get("type") == "image_url"):
+                # Check for image triggers in HumanMessage
+                if isinstance(last_msg, HumanMessage):
+                    if isinstance(last_msg.content, list):
+                        for part in last_msg.content:
+                            if isinstance(part, dict):
+                                if part.get("type") == "text":
+                                    text = part.get("text", "").lower()
+                                    if any(trigger in text for trigger in self.image_triggers):
+                                        use_vision = True
+                                        break
+                    elif isinstance(last_msg.content, str):
+                        text = last_msg.content.lower()
+                        if any(trigger in text for trigger in self.image_triggers):
+                            use_vision = True
+                # Check for image_url in AIMessage (tool output)
+                elif isinstance(last_msg, ToolMessage):
+                    content = last_msg.content
+                    if isinstance(content, str):
+                        try:
+                            content_dict = ast.literal_eval(content)
+                        except Exception:
+                            content_dict = None
+                    else:
+                        content_dict = content
+                    if isinstance(content_dict, dict) and content_dict.get("type") == "image_url":
+                        #state["messages"].append(HumanMessage(content=[content_dict]))
+                        state["messages"][-1]=HumanMessage(content=[content_dict])
+                        use_vision = True
+                    elif isinstance(content_dict, list):
+                        for part in content_dict:
+                            if isinstance(part, dict) and part.get("type") == "image_url":
+                                #state["messages"].append(HumanMessage(content=[part]))
+                                state["messages"][-1]=HumanMessage(content=[part])
                                 use_vision = True
-                                break
-                    if use_vision:
-                        print("Using vision LLM")
-                        return {"messages": [self.llm_vision.invoke(state["messages"])]}
-            # Otherwise, use text/tools LLM
+                                break        
+                if use_vision:
+                    print("Using vision LLM")
+                    return {"messages": [self.llm_vision.invoke(state["messages"])]}
+            
+            # Default to text/tools LLM
             print("Using text/tools LLM")
-            #print("last message:", state["messages"][-1])
-            return {"messages": [self.llm_text_tools.invoke(state["messages"])]}
+            response = self.llm_text_tools.invoke(state["messages"])
+            return {"messages": [validate_and_fix_response(response)]}
 
         self.builder.add_node("planner", multi_llm_planner)
         tool_node = ToolNode(tools=tools)
@@ -165,18 +227,62 @@ class RobotPlannerGraph:
     def get_graph(self):        return self.graph
 
     def print_message_history(self):
-        """Pretty print the messages stored in LangGraph InMemorySaver."""
+        """Pretty print the messages stored in LangGraph InMemorySaver, truncating image_url 'url' fields."""
         state = self.memory.get(self.config)
         messages = state.get("channel_values", {}).get("messages", [])
 
         print("=" * 40)
         print("Conversation History:")
 
+        def truncate_image_url(obj):
+            """Create a display copy of obj with truncated image URLs."""
+            if isinstance(obj, dict):
+                if obj.get("type") == "image_url":
+                    # Copy and truncate the url
+                    img_url = obj["image_url"].get("url", "")
+                    short_url = img_url[:30] + "..." if len(img_url) > 33 else img_url
+                    new_obj = obj.copy()
+                    new_obj["image_url"] = obj["image_url"].copy()
+                    new_obj["image_url"]["url"] = short_url
+                    return new_obj
+                # Deep copy for nested dicts
+                return {k: truncate_image_url(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [truncate_image_url(item) for item in obj]
+            return obj
+
+        def get_display_content(msg):
+            """Create a display copy of the message content with truncated URLs."""
+            if not hasattr(msg, "content"):
+                return msg
+            
+            content = msg.content
+            if isinstance(content, (dict, list)):
+                return truncate_image_url(content)
+            elif isinstance(content, str):
+                try:
+                    content_dict = ast.literal_eval(content)
+                    if isinstance(content_dict, (dict, list)):
+                        return truncate_image_url(content_dict)
+                except:
+                    pass
+            return content
+
         for msg in messages[2:]:  # Skip the first two messages (system messages)
             if hasattr(msg, "pretty_print") and callable(msg.pretty_print):
-                msg.pretty_print()
+                # Create a display copy of the message
+                import copy
+                display_msg = copy.copy(msg)
+                if hasattr(display_msg, "content"):
+                    display_msg.content = get_display_content(msg)
+                display_msg.pretty_print()
             else:
-                print(msg)  # fallback for non-message objects
+                if isinstance(msg, dict):
+                    print(truncate_image_url(msg))
+                else:
+                    # For non-dict messages, show the message with truncated content
+                    display_content = get_display_content(msg)
+                    print(f"{msg.__class__.__name__}: {display_content}")
 
         print("=" * 40)
 
@@ -215,15 +321,24 @@ class RobotPlannerGraph:
 
         response = ""
         tool_call_log = ""
-        for event in self.get_graph().stream({"messages": [message]}, config=self.config):
-            for value in event.values():
-                for msg in value["messages"]:
-                    msg.pretty_print()
+        try:
+            for event in self.get_graph().stream({"messages": [message]}, config=self.config):
+                if not event:
+                    continue
+                for value in event.values():
+                    if not value or "messages" not in value:  # Check if value is None or missing messages
+                        continue
+                    for msg in value["messages"]:
+                        msg.pretty_print()
 
-                last = value["messages"][-1]
-                if isinstance(last, AIMessage):
-                    response += last.content + "\n"
-                    tool_call_log += last.pretty_repr() + "\n"
+                    last = value["messages"][-1]
+                    if isinstance(last, AIMessage):
+                        response += last.content + "\n"
+                        tool_call_log += last.pretty_repr() + "\n"
+        except Exception as e:
+            print(f"Error in send_input: {e}")
+            return "I encountered an error processing your request.", ""
+
         return response, tool_call_log
 
     @property

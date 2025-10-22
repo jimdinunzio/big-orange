@@ -255,6 +255,13 @@ class MyDepthAI:
             self._showDepthWindow = value
             self.inner_run_flag = False            
         
+    def safe_startUp(self, *args, **kwargs):
+        try:
+            self.startUp(*args, **kwargs)
+        except Exception as e:
+            print("Exception in depthai thread:", e)
+            print("depthai thread exiting.")
+
     def startUp(self, loc="TOP", showRgbWindow=False, showDepthWindow=False):
         # Connect and start the pipeline
         

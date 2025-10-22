@@ -11,7 +11,7 @@ from msl.loadlib import Server32
 from ctypes import *
 from enum import Enum
 
-MAX_NUM_ROBOT_LOCATIONS = 10
+MAX_NUM_ROBOT_LOCATIONS = 20
 MAX_NUM_LASER_POINTS = 360
 
 class LASER_POINTS(Structure):

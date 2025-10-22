@@ -23,6 +23,9 @@ import re
 from cmd_embed_mgr import CmdEmbedMgr
 import pyautogui
 from my_langgraph import RobotPlannerGraph
+import traceback
+from move_through_locations_alert import post_alert
+from typing import Dict, List, Callable, Tuple
 
 # Constants
 _show_rgb_window = False
@@ -300,20 +303,28 @@ def is_close_to(loc, max_dist=1.0, max_heading_diff=math.radians(15)):
 
 def cancelAction(interrupt = False, sdp=None):
     global _action_flag, _interrupt_action
-    if sdp is None:
-        sdp = _sdp
-    if interrupt:
-        _interrupt_action = True
-    for attempt in range(3):
-        try:
-            sdp.cancelMoveAction()
+
+    retval = 0
+    # if no action then nothing to do
+    if _action_flag:
+        if sdp is None:
+            sdp = _sdp
+        
+        if interrupt:
+            _interrupt_action = True
             _action_flag = False
-        except:            
-            print("An error occurred canceling the action, trying again.")
-            time.sleep(0.1)
-        else:
-            break
-    return
+
+        if sdp.getMoveActionStatus() == ActionStatus.Running:
+            retval = 1
+            for attempt in range(3):
+                try:
+                    sdp.cancelMoveAction()
+                except:            
+                    print("An error occurred canceling the action, trying again.")
+                    time.sleep(0.1)
+                else:
+                    break
+    return retval
 
 def startrun():
     global _run_flag
@@ -1150,26 +1161,42 @@ def move_through_locations_thread(done_callback=None):
     if done_callback is not None:
         done_callback(maStatus)
 
-def move_through_locations(sdp, locations: list, final_yaw: float, done_callback=None):
+def move_through_locations(sdp, locations: List[Dict[str, float]], final_yaw: float, done_callback=None):
     global _action_flag
     """
-    Function to move robot along a series of locations.
-
+    Function to move robot series of delta offsets from robot POV
+    
     Args:
-        locations (list): List of dictionaries with 'x' and 'y' values for each locations.
+        locations (list): List of dictionaries with 'dx' and 'dy' values for each delta offset.
+        where +x axis is forward and +y axis is left from robot POV.
         Maximum number of locations is defined by MAX_NUM_ROBOT_LOCATIONS. anymore will be ignored.
 
         final_yaw in degrees (float): The desired orientation after reaching the final locations.
 
     """
     print("Moving through the following locations with yaw {}:".format(final_yaw))
+    scale = 100
     locs = LOCATIONS()
-    print(locations)
     locs.count = min(MAX_NUM_ROBOT_LOCATIONS, len(locations))
-    for i in range(0, locs.count):
-        locs.values[i].x = locations[i]['x']
-        locs.values[i].y = locations[i]['y']
+    pose = sdp.pose()
+    abs_points = [(pose.x * scale, pose.y * scale)]
 
+    for i in range(0, locs.count):
+        # Calculate world coordinates for each delta (dx, dy) in robot's local frame
+        dx = locations[i]['dx']
+        dy = locations[i]['dy']
+        yaw_rad = math.radians(pose.yaw)
+        # Transform (dx, dy) from robot frame to world frame using current yaw, a rotation
+        locs.values[i].x = pose.x + dx
+        locs.values[i].y = pose.y + dy
+        abs_points.append((locs.values[i].x * scale, locs.values[i].y * scale))
+        pose.x = locs.values[i].x
+        pose.y = locs.values[i].y
+
+    approved = post_alert(abs_points)
+    if not approved:
+        return "Movement cancelled by user because it does not match the intended shape."
+    
     _action_flag = True
     sdp.moveTosFloatWithYaw(locs, math.radians(final_yaw))
     # start thread to monitor the move action status
@@ -1213,6 +1240,10 @@ def setPixelRingTrace():
 
 ###############################################################
 # Speech Related
+
+def stop_speaking():
+    speak("", flag = tts.flags.SpeechVoiceSpeakFlags.PurgeBeforeSpeak.value or
+          tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
 
 def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value, add_to_memory=True):
     global _last_phrase, _voice
@@ -1958,6 +1989,7 @@ def come_here(doa):
             _interrupt_action = False
         else:
             speak("sorry, i could not find you.")
+            move_oak_d.pitchHome()
     sdp.disconnect()
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
@@ -1991,7 +2023,8 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
-    _langgraph.add_to_memory(user_input=phrase)
+    if _langgraph is not None:
+        _langgraph.add_to_memory(user_input=phrase)
     try:
         handled_result = handle_response(sdp, phrase, doa, check_hot_word, listenResponseFn=listenResponseFn)
         if handled_result == HandleResponseResult.NotHandledUnknown:
@@ -2039,14 +2072,15 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
         phrase = phrase.lower().strip() 
 
         if "stop moving" in phrase or "stop motors" in phrase or "stop stop" in phrase:
-            cancelAction(True, sdp)
-            speak("Stopping.")
-            location, distance, closeEnough = where_am_i() 
-            if not closeEnough:
-                speak("I'm closest to the " + location)
-            else:
-                ans = "I am now near the " + location + " location."
-                speak(ans)
+            retval = cancelAction(True, sdp)
+            if retval == 1:
+                speak("Stopping.")
+                location, distance, closeEnough = where_am_i() 
+                if not closeEnough:
+                    speak("I'm closest to the " + location)
+                else:
+                    ans = "I am now near the " + location + " location."
+                    speak(ans)
             return HandleResponseResult.Handled
         
         if (phrase == "what's your name" or
@@ -2368,6 +2402,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
 
         # parse var
         if "go to" in phrase:
+            if not _slamtec_on:
+                speak("I'm sorry, movement is disabled.")
+                return HandleResponseResult.Handled
             words = phrase.split()
             try:
                 words.remove("the")
@@ -3057,7 +3094,10 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             print(_langgraph.print_message_history())
             return HandleResponseResult.Handled
 
-        if "you see" in phrase or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
+        if not "album" in phrase and not re.search(r"that (photo|picture|image)", phrase) \
+            and ("you see" in phrase or "describe this" in phrase or "identify this" in phrase \
+            or "what is this" in phrase or "using your camera" in phrase):
+            
             if _langgraph.has_vision:
                 imageCallback = ImageCallback()
                 _mdai.setGetPictureCb(imageCallback.get_picture_cb)
@@ -3078,14 +3118,21 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 speak("I'm sorry, I can't currently interpret what I'm seeing.")
                 return HandleResponseResult.Handled
 
+        if _langgraph is None:
+            print("Error: no langgraph agent")
+            return HandleResponseResult.NotHandledUnknown
+
+        response = ""
+        tools_log = ""    
         try:
             response, tools_log = _langgraph.send_input(phrase, image=image)
         except Exception as e:
             print("Error in getting response: ", e)
+            traceback.print_exc()
             response = "Sorry, I could not get a response."
 
         if len(response) > 0:
-            speak(response, add_to_memory=False)
+            speak(response, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
         else:
             speak("I got nothing on that.")
 
@@ -3281,6 +3328,8 @@ def listen():
         except sr.ReturnAfterKeywordDetection as e:
             phrase = ""
             if e.args[0] == STOP_NOW_KEYWORD_IDX:
+                # also stop speaking immediately
+                stop_speaking()
                 phrase = "stop moving"
             return phrase, 0
         except Exception as e:                
@@ -3375,9 +3424,12 @@ def listen():
             phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, porcupine_config)
             if phrase != "stop moving":
                 setPixelRingTrace()
-            handle_response_sync(sdp, phrase, doa, check_hot_word, listenResponseFn=listenFromVoskResponse)
-        except:
-           speak("sorry, i could not do what you wanted.")
+            try:
+                handle_response_sync(sdp, phrase, doa, check_hot_word, listenResponseFn=listenFromVoskResponse)
+            except Exception as e:
+                print(str(e))
+                traceback.print_exc()
+                speak("sorry, i could not do what you wanted.")
         finally:
            finallyFunc()
 
@@ -3389,7 +3441,9 @@ def listen():
             #adj_spch_recog_ambient(r, mic)
             setPixelRingTrace()
             handle_response_sync(sdp, phrase, doa, check_hot_word)
-        except:
+        except Exception as e:
+            print(str(e))
+            traceback.print_exc()
             speak("sorry, i could not do what you wanted.")
         finally:
             finallyFunc()
@@ -3466,7 +3520,8 @@ def listen():
                 _pixel_ring.setColoredVolume(i)
                 time.sleep(0.005)
 
-    keyword_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "Hey-Orange_en_windows_v3_0_0.ppn"))
+    keyword_path_wake = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "Hey-Orange_en_windows_v3_0_0.ppn"))
+    keyword_path_stop = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "stop-now_en_windows_v3_0_0.ppn"))
     access_key = os.getenv("PORCUPINE_ACCESS_KEY")
     if access_key is None:
         porcupine_config = None
@@ -3475,7 +3530,7 @@ def listen():
     else:
         from pvporcupine import KEYWORD_PATHS
         porcupine_config = r.PorcupineListener.Config(access_key=access_key, 
-                                                      keyword_paths=[keyword_path, KEYWORD_PATHS['grapefruit']],
+                                                      keyword_paths=[keyword_path_wake, keyword_path_stop],
                                                       keyword_types=[r.PorcupineListener.KeywordType.LISTEN, r.PorcupineListener.KeywordType.IMMEDIATE],
                                                       sensitivities=[0.25, 0.5],
                                                       on_detection=on_detection,
@@ -3504,6 +3559,7 @@ def listen():
                 # "RobotHotword", lambda phrase, listener, hotword=_hotword, r=r, 
                 # sr=sr: local_hotword_recog_cb(sdp, phrase, doa, listener, hotword, r, sr))
         except Exception as e:
+            traceback.print_exc()
             print(e)
 
         #while _run_flag and local_listener is not None and not _google_mode:
@@ -3628,7 +3684,7 @@ def start_depthai_thread(model="tinyYolo", use_tracker=False, loc="TOP"):
         return
     _mdai = my_depthai.MyDepthAI(model, use_tracker)
 
-    _my_depthai_thread = Thread(target = _mdai.startUp, args=(loc, _show_rgb_window, _show_depth_window), name="mdai", daemon=False)
+    _my_depthai_thread = Thread(target = _mdai.safe_startUp, args=(loc, _show_rgb_window, _show_depth_window), name="mdai", daemon=False)
     _my_depthai_thread.start()
 
 def shutdown_my_depthai():
@@ -3952,8 +4008,14 @@ def initialize_robot():
     if _enable_aws_mqtt_listener:
         start_aws_mqtt_listener()
     
-    _langgraph = RobotPlannerGraph.create_langgraph(move_through_locations)
-
+    _langgraph = None
+    while _langgraph is None:
+        _langgraph = RobotPlannerGraph.create_langgraph(move_through_locations)
+        if _langgraph is None:
+            print("LangGraph could not be created, retrying in 5 seconds.")
+            time.sleep(5)
+            print("retrying creating language graph")
+    print("LangGraph created.")
 ################################################################
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
@@ -4127,7 +4189,7 @@ def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
             elif i == 3:
                 handleButton4Event(pressed, sdp)
 
-def run():
+def run(no_move=False):
     global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _grasper_sonar
 
     # Start 32 bit bridge server
@@ -4158,8 +4220,12 @@ def run():
     _grasper_sonar = _lpArduino.board.get_pin('d:13:o')
 
     _button_pad.initialize(_lpArduino.board, buttonEventCb)
-           
-    res = sdp_comm.connectToSdp(_sdp)
+
+    if no_move:
+        res = -1   
+        sdp_comm.setSlamtecOn(False)    
+    else:
+        res = sdp_comm.connectToSdp(_sdp)
 
     if _execute:
         if (res == 0):
@@ -4170,7 +4236,7 @@ def run():
             #loadMap(_default_map_name)
             None
         else:
-            speak("I could not connect to Slamtec. Movement is disabled.")
+            speak("Movement is disabled.")
     
     
         robot()
@@ -4181,24 +4247,26 @@ def run():
 #import getopt
 
 def main(argv):
-    # try:
-    #     opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
-    # except getopt.GetoptError:
-    #     print 'test.py -i <inputfile> -o <outputfile>'
-    #     sys.exit(2)
-    # for opt, arg in opts:
-    #     if opt == '-h':
-    #         print 'test.py -i <inputfile> -o <outputfile>'
-    #         sys.exit()
-    #     elif opt in ("-i", "--ifile"):
-    #         inputfile = arg
-    #     elif opt in ("-o", "--ofile"):
-    #         outputfile = arg
-    # print 'Input file is "', inputfile
-    # print 'Output file is "', outputfile
-    
+    import getopt
+    no_move = False
+    try:
+        opts, args = getopt.getopt(argv, "hn", ["help", "no-move"])
+    except getopt.GetoptError:
+        print('Usage: python main.py [-n|--no-move]')
+        sys.exit(2)
+        
+    for opt, arg in opts:
+        if opt in ('-h', '--help'):
+            print('Usage: python main.py [-n|--no-move]')
+            print('Options:')
+            print('  -n, --no-move    Disable actual movement commands')
+            sys.exit()
+        elif opt in ("-n", "--no-move"):
+            no_move = True
+            print("Movement commands disabled")
+                
     while 1:
-        run()
+        run(no_move=no_move)
         if not _restart_flag:
            break 
 

@@ -3,7 +3,15 @@ from ctypes import create_string_buffer
 _sdp_ip_address = b"192.168.11.1"
 _sdp_port = 1445
 
+_slamtec_on = True
+
+def setSlamtecOn(value):
+    global _slamtec_on
+    _slamtec_on = value
+
 def connectToSdp(sdp):
+    if not _slamtec_on:
+        return -1
     errStr = create_string_buffer(255)
     res = sdp.connectSlamtec(_sdp_ip_address, _sdp_port, errStr.raw, 255)
     if res == 1 :
