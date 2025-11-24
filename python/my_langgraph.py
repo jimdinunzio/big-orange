@@ -1,6 +1,5 @@
 from langgraph.graph import START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from typing_extensions import TypedDict
@@ -9,9 +8,11 @@ from langchain_core.messages.tool import ToolMessage
 
 from langchain_openai import ChatOpenAI
 from typing import Annotated
+from threading import Thread
 import base64
 import requests
 import ast
+import tts.flags
 
 def is_server_running(url):
 #    return False
@@ -39,10 +40,11 @@ class State(TypedDict):
     messages: Annotated[list, add_messages]
 
 class RobotPlannerGraph:
-    def __init__(self, robot_tools, thread_id="1"):
+    def __init__(self, robot_tools, thread_id="1", speak_function=None):
         self.tools = robot_tools
         self.thread_id = thread_id
         self._has_vision = False
+        self.speak_function = speak_function
 
         prompt_name ="orange_prompt_short"
         init_prompt = ""
@@ -51,24 +53,19 @@ class RobotPlannerGraph:
         
         self.init_messages = [SystemMessage(content=init_prompt),]
     
-        self.config = {"configurable": {"thread_id": thread_id}}
+        self.config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 100}
+        self._stream_thread = None
 
-        # Define the tools list
-        tools = [
-            self.tools.get_pose_tool(),
-            self.tools.get_move_through_locations_tool(),
-            self.tools.get_check_move_progress(),
-            self.tools.get_num_pictures_in_album_tool(),
-            self.tools.get_nth_picture_from_album_tool()
-        ]
+        # Get all available tools from RobotTools
+        tools = self.tools.get_all_tools()
 
         # Check if vision LLM server is running
         text_tools_llm_url = "http://192.168.55.1:11434"
-        local_text_tools_llm_avail = is_server_running(text_tools_llm_url)
+        local_text_tools_llm_avail = False # is_server_running(text_tools_llm_url)
         self.all_in_one_llm = None
 
         if not local_text_tools_llm_avail:
-            # Initialize the chat model for planning
+            # Initialize the chat model for planning with bind_tools for standard dispatch
             self.all_in_one_llm = ChatOpenAI(
                 model="gpt-4.1",
                 max_tokens=200,
@@ -77,7 +74,7 @@ class RobotPlannerGraph:
             self._has_vision = True      
             print("Local llm_text_tools offline, llm initialized from OpenAI")
         else:
-            # Initialize both LLMs
+            # Initialize both LLMs with bind_tools for standard dispatch
             self.llm_text_tools = ChatOpenAI(
                 base_url="http://192.168.55.1:11434/v1/",  # tools LM endpoint
                 model="qwen2.5:7b-instruct",
@@ -115,6 +112,7 @@ class RobotPlannerGraph:
 
         # MultiLLMPlanner node
         def multi_llm_planner(state: State):
+            print("*** Multi LLM Planner ***")
             last_msg = state["messages"][-1]
             
             def validate_and_fix_response(response):
@@ -150,6 +148,7 @@ class RobotPlannerGraph:
             
             if self.all_in_one_llm is not None:
                 return {"messages": [self.all_in_one_llm.invoke(state["messages"])]}
+            
             use_vision = False
             if self.llm_vision:
                 # Check for image triggers in HumanMessage
@@ -196,28 +195,105 @@ class RobotPlannerGraph:
             response = self.llm_text_tools.invoke(state["messages"])
             return {"messages": [validate_and_fix_response(response)]}
 
-        self.builder.add_node("planner", multi_llm_planner)
-        tool_node = ToolNode(tools=tools)
-        self.builder.add_node("tools", tool_node)
-        self.builder.add_conditional_edges("planner", tools_condition)
+        # Speech node to announce the planner's intent before taking action
+        def speech_node(state: State):
+            print("*** Speech Node ***")
+            last_msg = state["messages"][-1]
+            if self.speak_function and isinstance(last_msg, AIMessage) and last_msg.content:
+                self.speak_function(last_msg.content, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+            return {"messages": []}
+
+        # Custom tool node that executes tools SEQUENTIALLY to avoid OpenAI API errors
+        def custom_tool_node(state: State):
+            print("*** Custom Tool Node ***")
+            """Custom tool node that executes tools sequentially."""
+            last_msg = state["messages"][-1]
+
+            # TODO: Reintroduce mid-execution streaming writers once LangChain Runtime pattern is finalized.
+
+            # Check if last message is AIMessage with tool calls
+            if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                
+                # Process ALL tool calls in this message sequentially
+                # We need to return responses for ALL tool_call_ids to satisfy OpenAI API requirements
+                tool_results = []
+                
+                for tool_call in last_msg.tool_calls:
+                    tool_name = tool_call['name']
+                    tool_call_id = tool_call['id']
+                    tool_args = tool_call.get('args', {})
+                    
+                    print(f"Executing tool: {tool_name} with args: {tool_args}, tool_call_id: {tool_call_id}")
+                    
+                    # Get the tool function from RobotTools
+                    tool_func = getattr(self.tools, tool_name, None)
+                    if not tool_func:
+                        result = f"Unknown tool: {tool_name}"
+                        tool_results.append(ToolMessage(content=result, tool_call_id=tool_call_id))
+                    else:
+                        try:
+                            # Execute tool
+                            result = tool_func(**tool_args)
+                            tool_results.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+                            
+                        except Exception as e:
+                            tool_results.append(ToolMessage(content=f"Error executing {tool_name}: {str(e)}", tool_call_id=tool_call_id))
+                
+                # Return ALL tool results
+                return {"messages": tool_results}
+                
+            return {"messages": []}
+
+        # Reporter node to speak the LLM's final summary/response
+        def reporter_node(state: State):
+            print("*** Reporter Node ***")
+            last_msg = state["messages"][-1]
+            if self.speak_function and isinstance(last_msg, AIMessage) and last_msg.content:
+                self.speak_function(last_msg.content, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+            return {"messages": []}
+
+        def route_from_planner(state: State):
+            print("*** Routing from planner ***")
+            last_msg = state["messages"][-1]
+            if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
+                return "speech"
+            return "reporter"
         
-        # Edges:
-        # Any time a tool is called, we return to the planner to decide which LLM to use next
-        self.builder.add_edge("tools", "planner")
+        def route_after_tools(state: State):
+            print("*** Routing after tools ***")
+            # Look back through messages for last AIMessage with tool_calls
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                    return "planner"  # Still have steps to execute
+            return "reporter"  # No pending tool calls → finish
+
+
+        self.builder.add_node("planner", multi_llm_planner)
+        self.builder.add_node("speech", speech_node)
+        self.builder.add_node("tools", custom_tool_node)
+        self.builder.add_node("reporter", reporter_node)
+        self.builder.add_node("route_from_planner", route_from_planner)
+
+        self.builder.add_conditional_edges("planner", route_from_planner)
+        self.builder.add_edge("speech", "tools")
+        self.builder.add_conditional_edges("tools", route_after_tools)
         self.builder.add_edge(START, "planner")
 
         self.memory = MemorySaver()
         # Compile the graph
         self.graph = self.builder.compile(checkpointer=self.memory)
 
+        #displayGraph(self.graph)
+        
         # Add the initial messages to the graph
+        
         value = self.graph.invoke(input={"messages": self.init_messages}, config=self.config)
         self._greeting = value["messages"][-1].content
 
     @property
     def has_vision(self):
         return self._has_vision
-        
+
     def reset_memory(self):
         """Reset the memory of the agent."""
         self.memory.delete_thread(self.thread_id)
@@ -319,27 +395,29 @@ class RobotPlannerGraph:
                     },
                 ])
 
-        response = ""
-        tool_call_log = ""
-        try:
-            for event in self.get_graph().stream({"messages": [message]}, config=self.config):
-                if not event:
-                    continue
-                for value in event.values():
-                    if not value or "messages" not in value:  # Check if value is None or missing messages
+        def _run_stream(msg: HumanMessage):
+            try:
+                for event in self.graph.stream({"messages": [msg]}, config=self.config):
+                    if not event:
                         continue
-                    for msg in value["messages"]:
-                        msg.pretty_print()
+                    # writer-based progress happens inside tools; speech happens in nodes
+                    for value in event.values():
+                        if not value or "messages" not in value:
+                            continue
+                        # Optionally inspect messages here (debug only)
+                        # pretty print message content
+                        value_messages = value["messages"]
+                        for m in value_messages:
+                            m.pretty_print()
+            except Exception as e:
+                print(f"Error in background stream: {e}")
 
-                    last = value["messages"][-1]
-                    if isinstance(last, AIMessage):
-                        response += last.content + "\n"
-                        tool_call_log += last.pretty_repr() + "\n"
-        except Exception as e:
-            print(f"Error in send_input: {e}")
-            return "I encountered an error processing your request.", ""
+        # Launch background streaming so callers (e.g., listen loop) never block
+        self._stream_thread = Thread(target=_run_stream, args=(message,), daemon=True)
+        self._stream_thread.start()
 
-        return response, tool_call_log
+        # For now, return empty strings immediately; speech/progress happen asynchronourey
+        return "", ""
 
     @property
     def greeting(self):
@@ -347,15 +425,16 @@ class RobotPlannerGraph:
         return self._greeting
 
     @staticmethod
-    def create_langgraph(move_through_locations=None, thread_id="1", sim=False):
+    def create_langgraph(langgraph_tool_funcs=None, thread_id="1", sim=False, speak_function=None):
         import langgraph_robot_tools as lrt
-        robot_tools = lrt.RobotTools(move_through_locations_real=move_through_locations, sim=sim)
-        return RobotPlannerGraph(robot_tools, thread_id=thread_id)
+        robot_tools = lrt.RobotTools(langgraph_tool_funcs, sim=sim)
+        return RobotPlannerGraph(robot_tools, thread_id=thread_id, speak_function=speak_function)
 
 # Example run
 if __name__ == "__main__":
     import tts.sapi
     import tts.flags
+    import sys
 
     def initialize_speech():
         global _voice
@@ -368,7 +447,7 @@ if __name__ == "__main__":
         global _last_phrase, _voice
 
         try:
-            #print("speaking: ", phrase)
+            #print("SPEAKING: ", phrase)
             _voice.say(phrase, flag)
             # add robot response to memory
         except Exception:
@@ -378,7 +457,17 @@ if __name__ == "__main__":
 
     initialize_speech()
     import langgraph_robot_tools as lrt
-    robotPlannerGraph = RobotPlannerGraph.create_langgraph(sim=True)
+    
+    # For simulation mode, langgraph_tool_funcs is not needed
+
+    langgraph_tool_funcs = {
+    # Location & Navigation
+        "go_to_location": (None),  # Long-running, takes callback
+        "move_in_dir_dist": (None),  # Long-running, takes callback
+        "move_through_locations": (None)  # Long-running, takes callback
+    }
+
+    robotPlannerGraph = RobotPlannerGraph.create_langgraph(langgraph_tool_funcs, sim=True, speak_function=speak)
     print(robotPlannerGraph.greeting)
     image = None
     #robotPlannerGraph.add_to_memory("go to the kitchen", "Ok, I'm going to the kitchen.")
@@ -386,6 +475,8 @@ if __name__ == "__main__":
     
     while True:
         user_input = input("User: ")
+        if not sys.stdin.isatty():
+            print(user_input)
         if user_input.lower() in ["quit", "exit", "q"]:
             print("Goodbye!")
             break

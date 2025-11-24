@@ -24,7 +24,7 @@ from cmd_embed_mgr import CmdEmbedMgr
 import pyautogui
 from my_langgraph import RobotPlannerGraph
 import traceback
-from move_through_locations_alert import post_alert
+from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple
 
 # Constants
@@ -125,6 +125,9 @@ _last_grasper_sonar : float = 4.50
 _cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
+_langgraph_initiated_move = False
+
+# Async operation callback globals
 
 import parse
 import tts.sapi
@@ -174,6 +177,8 @@ class HandleResponseResult(Enum):
     NotHandledNoHotWord = 0
     # The response was handled
     Handled = 1
+    # The response was handled by LangGraph
+    HandledByLangGraph = 2
 
 ###############################################################
 # Text input to Google Assistant for web based queries
@@ -206,6 +211,7 @@ def getMoveActionStatus(sdp):
 
     return status
 
+
 def move_imm(sdp, vel):
     if vel > 0:
         sdp.forward()
@@ -216,9 +222,9 @@ def move_imm(sdp, vel):
 
 def turn_imm(sdp, vel):
     if vel > 0:
-        sdp.left()
+        sdp.turnLeft()
     elif vel < 0:
-        sdp.right()
+        sdp.turnRight()
 #    else:
 #        sdp.cancelMoveAction()
 
@@ -309,10 +315,6 @@ def cancelAction(interrupt = False, sdp=None):
     if _action_flag:
         if sdp is None:
             sdp = _sdp
-        
-        if interrupt:
-            _interrupt_action = True
-            _action_flag = False
 
         if sdp.getMoveActionStatus() == ActionStatus.Running:
             retval = 1
@@ -324,6 +326,10 @@ def cancelAction(interrupt = False, sdp=None):
                     time.sleep(0.1)
                 else:
                     break
+
+        if interrupt:
+            _interrupt_action = True
+            _action_flag = False
     return retval
 
 def startrun():
@@ -823,7 +829,8 @@ def handleGotoLocation():
 
         print("I'm free and A new goal arrived: ", _goal)
         if _goal == "recharge":
-            speak("I'm going to the recharge station")
+            if not _langgraph_initiated_move:
+                speak("I'm going to the recharge station")
             coords = _locations.get(_goal)
             sdp.home()
         elif _goal == "deliver" and _locations.get(_goal) is None:
@@ -854,13 +861,14 @@ def handleGotoLocation():
                     _move_oak_d.allHome()
                     continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
-                    speak("I'm going to " + _goal)
+                    if not _langgraph_initiated_move:
+                        speak("I'm going to " + _goal)
             elif _goal == "deliver" and _package_ontray:
                 speak("hello " + _deliveree)
-            else:
+            elif not _langgraph_initiated_move:
                 speak("OK.")
-            _action_flag = True
             moveToLocation()
+            _action_flag = True
 
         _interrupt_action = False
         sleepTime = 0.5 if (_sub_goal == "" or _call_out_objects) else 0
@@ -1005,6 +1013,7 @@ def handleGotoLocation():
                 maStatus == ActionStatus.Error or \
                 maStatus == ActionStatus.Finished:
                 break
+            time.sleep(0.25)
 #            except:
 #                break
         time.sleep(sleepTime)
@@ -1084,7 +1093,8 @@ def handleGotoLocation():
                     sdp.setSpeed(_user_set_speed) #restore speed after finding obj
                     _move_oak_d.allHome()
                 elif _goal != "person" and _goal != "find_face":
-                    speak("I've arrived.")
+                    if not _langgraph_initiated_move:
+                        speak("I've arrived.")
             else: # (_goal != "deliver" and not reached_goal)
                 _error_last_goto = True
                 if _goal == "deliver":
@@ -1142,11 +1152,18 @@ def handleGotoLocation():
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
             
-def move_through_locations_thread(done_callback=None):
-    global _action_flag
-    sdp = MyClient()
-    sdp_comm.connectToSdp(sdp)
+def moveActionMonitor(sdp=None, location_name=None):
+    # Monitors the move action status until it is done.
+    # if location_name is provided, it indicates the intended destination and handleGotoLocation thread will handle
+    # and must wait until action flag is true
+    # otherwise it is assumed that the action flag was already set to true
+    if location_name is not None:
+        while _action_flag == False and _run_flag:
+            if _goal == "":  # Goal was cleared - error occurred
+                return "unknown location"
+            time.sleep(0.50)
 
+    # TODO: Reintroduce mid-route streaming updates when get_stream_writer wiring returns.
     while(_run_flag and _interrupt_action == False):
         maStatus = getMoveActionStatus(sdp)
         if maStatus == ActionStatus.Stopped or \
@@ -1155,36 +1172,50 @@ def move_through_locations_thread(done_callback=None):
             break
         time.sleep(0.5)
 
-    sdp.disconnect()
-    sdp.shutdown_server32(kill_timeout=1)
-    _action_flag = False
-    if done_callback is not None:
-        done_callback(maStatus)
+    # wait for handleGotoLocation to finish the action
+    while _action_flag and _run_flag:
+        time.sleep(0.1)
+    
+    if maStatus != ActionStatus.Finished:
+        message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
+    else:
+        message = "move finished"
 
-def move_through_locations(sdp, locations: List[Dict[str, float]], final_yaw: float, done_callback=None):
-    global _action_flag
+    # check if robot actually made it to the destination
+    # if way is blocked the Finished status may be returned.
+    if location_name is not None and location_name != "custom":
+        reached_goal = is_close_to(location_name)
+        message += ": arrived at " if reached_goal else ": did not arrive at "
+        message += location_name
+
+    return message
+
+
+def move_by_deltas(sdp, deltas: List[Dict[str, float]], final_yaw: float, req_approval=False):
     """
     Function to move robot series of delta offsets from robot POV
     
     Args:
-        locations (list): List of dictionaries with 'dx' and 'dy' values for each delta offset.
+        deltas (list): List of dictionaries with 'dx' and 'dy' values for each delta offset.
         where +x axis is forward and +y axis is left from robot POV.
-        Maximum number of locations is defined by MAX_NUM_ROBOT_LOCATIONS. anymore will be ignored.
+        Maximum number of deltas is defined by MAX_NUM_ROBOT_LOCATIONS. anymore will be ignored.
 
-        final_yaw in degrees (float): The desired orientation after reaching the final locations.
+        final_yaw in degrees (float): The desired orientation after applying the final delta.
 
     """
-    print("Moving through the following locations with yaw {}:".format(final_yaw))
+    global _action_flag
+    
+    print("Moving by deltas with yaw {}:".format(final_yaw))
     scale = 100
     locs = LOCATIONS()
-    locs.count = min(MAX_NUM_ROBOT_LOCATIONS, len(locations))
+    locs.count = min(MAX_NUM_ROBOT_LOCATIONS, len(deltas))
     pose = sdp.pose()
     abs_points = [(pose.x * scale, pose.y * scale)]
 
     for i in range(0, locs.count):
         # Calculate world coordinates for each delta (dx, dy) in robot's local frame
-        dx = locations[i]['dx']
-        dy = locations[i]['dy']
+        dx = deltas[i]['dx']
+        dy = deltas[i]['dy']
         yaw_rad = math.radians(pose.yaw)
         # Transform (dx, dy) from robot frame to world frame using current yaw, a rotation
         locs.values[i].x = pose.x + dx
@@ -1193,16 +1224,19 @@ def move_through_locations(sdp, locations: List[Dict[str, float]], final_yaw: fl
         pose.x = locs.values[i].x
         pose.y = locs.values[i].y
 
-    approved = post_alert(abs_points)
-    if not approved:
-        return "Movement cancelled by user because it does not match the intended shape."
+    if req_approval:
+        approved = post_alert(abs_points)
+        if not approved:
+            return "Movement cancelled by user because it does not match the intended shape."
     
     _action_flag = True
     sdp.moveTosFloatWithYaw(locs, math.radians(final_yaw))
-    # start thread to monitor the move action status
-    move_thread = threading.Thread(target=move_through_locations_thread, args=(done_callback,))
-    move_thread.start()
 
+def move_by_deltas_tool_helper(sdp, deltas: List[Dict[str, float]], final_yaw: float):
+    """Move through a series of deltas and await completion."""
+    move_by_deltas(sdp, deltas, final_yaw, req_approval=True)
+    return moveActionMonitor(sdp)
+    
     
 ################################################################
 # Pretty print all currently active robot threads
@@ -1242,8 +1276,12 @@ def setPixelRingTrace():
 # Speech Related
 
 def stop_speaking():
-    speak("", flag = tts.flags.SpeechVoiceSpeakFlags.PurgeBeforeSpeak.value or
-          tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+    try:
+        _voice.say("", tts.flags.SpeechVoiceSpeakFlags.PurgeBeforeSpeak.value or
+            tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+    except Exception:
+        print("Stop speaking has timed out.")
+        pass
 
 def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value, add_to_memory=True):
     global _last_phrase, _voice
@@ -1307,11 +1345,11 @@ def loadMap(filename):
         # result = recoverLocalization(_INIT_RECT)
         # if result == False:
         #    speak("I don't appear to be at the map starting location.")
+        _current_map_name = filename
+        load_locations(filepath)
+        print("Done loading map")
     else:
         speak("Something is wrong. I could not load the map.")
-    print("Done loading map")
-    load_locations(filepath)
-    _current_map_name = filename
     return res
 
 def saveMap(filename):
@@ -1941,7 +1979,7 @@ def deliverObjToPerson(package, deliveree, room):
     else: # in the same room, go to room center first
         _goal = loc
 
-def findPerson(person, doa, sdp):
+def findPersonFromSound(person, doa, sdp):
     global _deliveree
     # look towards sound of voice and if person spotted, record location
     yawDelta = _mic_array.rotateToDoa(doa, sdp)
@@ -2009,6 +2047,77 @@ def turnImm(sdp, dir, n=3):
         turn_imm(sdp, dir)
         time.sleep(0.1)
 
+def goToLocation(location):
+    global _goal
+    _goal = location
+
+class GoDir:
+    Forward = 0
+    Backward = -180
+    Right = -90
+    Left = 90
+
+# move in the given direction: forward, backward, right, or left from current pose for the given distance and unit
+def moveInDirDist(dir, dist, unit, sdp):
+    global _goal
+    if dir == "forward":
+        phi = GoDir.Forward
+    elif dir == "backward":
+        phi = GoDir.Backward
+    elif dir == "right":
+        phi = GoDir.Right
+    elif dir == "left":
+        phi = GoDir.Left
+
+    if unit == None or unit.startswith("m"):
+        None
+    elif unit == "cm" or unit == "centimeters":
+        dist /= 100
+    elif unit == "in" or unit == "inches":
+        dist *= 0.0254
+    elif unit == "yard" or unit == "yards":
+        dist /= 1.094
+    elif unit == "ft" or unit == "feet":
+        dist /= 3.281
+    else:
+        return("unknown unit")
+
+    #if unit not mentioned assume meters
+    pose = sdp.pose()
+    xt = pose.x + dist * math.cos(math.radians(pose.yaw + phi))
+    yt = pose.y + dist * math.sin(math.radians(pose.yaw + phi))
+    
+    print("going to ", xt ,", ", yt)
+
+    _locations["custom"] = (xt, yt)
+    _goal = "custom"
+
+def get_known_faces():
+    return fr.get_known_faces()
+
+# while crossing the room towards the furthest wall visible, look for the named person's face
+def look_for_face(name, sdp):
+    global _deliveree
+    shutdown_my_depthai()
+    start_facial_recog(with_spatial=True, with_tracking=False)
+    # use current location
+    _deliveree = name
+
+    longest_dist, longest_angle = getFurthestLaserScanFront(sdp)
+
+    longest_dist -= 1.75
+    longest_dist = max(longest_dist, 0)
+
+    sdp.setSpeed(1) #slow speed
+
+    print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+    _locations["find_face"] = (getLocationFromAngleDist(longest_angle, longest_dist, sdp))
+    
+    #pose = sdp.pose()
+    #_locations["find_face"] = (pose.x, pose.y, math.radians(pose.yaw))
+    _goal = "find_face"
+
+
 def set_handling_response(value):
     global _handling_resp
     with _handling_resp_lock:
@@ -2023,13 +2132,13 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
-    if _langgraph is not None:
-        _langgraph.add_to_memory(user_input=phrase)
     try:
         handled_result = handle_response(sdp, phrase, doa, check_hot_word, listenResponseFn=listenResponseFn)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             # add the human speech to memory
             speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
+        elif handled_result != HandleResponseResult.HandledByLangGraph:
+            _langgraph.add_to_memory(user_input=phrase)
     finally:
         set_handling_response(False)
 
@@ -2180,12 +2289,12 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             speak(answer)
             return HandleResponseResult.Handled
         
-        if "status" in phrase:
+        if phrase == "status":
             statusReport()
             return HandleResponseResult.Handled
 
         if re.match(r"^list (people|persons|faces) you know", phrase):
-            names = fr.get_known_faces()
+            names = get_known_faces()
             print(names)
             return HandleResponseResult.Handled
 
@@ -2243,7 +2352,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                     obj_p = phrase.partition(op)[2].partition("and bring it to me")[0]
                 obj = obj_p.split()[-1]
                 op += "_to_me"
-                person = findPerson(_person, doa, sdp)
+                person = findPersonFromSound(_person, doa, sdp)
             elif "and take it to" in phrase:
                 if "in the" in phrase:
                     obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
@@ -2258,7 +2367,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                     speak("sorry, i have not met " + person + ", and I don't know what they look like.")
                     return HandleResponseResult.Handled
                 op += "_to_person"
-                findPerson(person, doa, sdp)
+                findPersonFromSound(person, doa, sdp)
             else: # not "bring it to me" in phrase
                 obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
                 obj = obj_p.split()[-1]
@@ -2268,7 +2377,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # HBRC Floor Bot Challenge I
-        if "go across the room and come back" in phrase:
+        if phrase == "go across the room and come back":
             speak("Ok. I'm going across the room and coming back.")
             sdp.wakeup()
             time.sleep(6)
@@ -2291,13 +2400,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
         if phrase == "go home":
             _goal = "home"
             return HandleResponseResult.Handled
-            
-        class GoDir:
-            Forward = 0
-            Backward = -180
-            Right = -90
-            Left = 90
-
+        
         if phrase.startswith("backup") or phrase.startswith("back up"):
             backup(sdp)
             return HandleResponseResult.Handled
@@ -2401,7 +2504,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # parse var
-        if "go to" in phrase:
+        if phrase.startswith("go to"):
             if not _slamtec_on:
                 speak("I'm sorry, movement is disabled.")
                 return HandleResponseResult.Handled
@@ -2412,7 +2515,9 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 None
             if len(words) > 2:
                 cancelAction(True, sdp)
-                _goal = " ".join(words[2:]).lower()
+                goal = " ".join(words[2:]).lower()
+                goToLocation(goal)
+           
             return HandleResponseResult.Handled
                 
         # parse var
@@ -2479,7 +2584,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             os.system("shutdown /s /t 10")
             return HandleResponseResult.Handled
                 
-        if "battery" in phrase or "voltage" in phrase:
+        if phrase == "battery" or phrase == "voltage":
             ans = "My battery is currently at "
             ans = ans + str(sdp.battery()) + " percent"
             speak(ans)
@@ -2508,29 +2613,29 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             saveMap(name)
             return HandleResponseResult.Handled
         
-        if "clear map" in phrase:
+        if phrase == "clear map":
             speak("Ok. I will clear my map.")
             sdp.clearSlamtecMap()
             # after clearing make sure updating is on
             sdp.setMapUpdate(True)
             return HandleResponseResult.Handled
         
-        if "clear locations" in phrase:
+        if phrase == "clear locations":
             speak("Ok. I will clear the locations.")
             _locations.clear()
             return HandleResponseResult.Handled
 
-        if "enable mapping" in phrase:
+        if phrase == "enable mapping":
             speak("Ok. I will enable map updating.")
             sdp.setMapUpdate(True)
             return HandleResponseResult.Handled                
 
-        if "disable mapping" in phrase:
+        if phrase == "disable mapping":
             speak("Ok. I will disable map updating.")
             sdp.setMapUpdate(False)
             return HandleResponseResult.Handled
 
-        if "show map" in phrase:
+        if phrase == "show map" or phrase == "open map":
             # launch robostudio
             path = os.path.join(os.path.abspath('../../../DLLs/RoboStudio_2.1.1_rtm'), "RoboStudio.exe")
             # Launch RoboStudio and keep track of the process so it can be killed later
@@ -2551,13 +2656,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 time.sleep(0.25)
             return HandleResponseResult.Handled
 
-        if "close map" in phrase:
+        if phrase == "close map" or phrase == "hide map":
             if _map_proc is not None:
                 _map_proc.terminate()
                 _map_proc = None
             return HandleResponseResult.Handled
         
-        if "take a picture" in phrase:
+        if phrase == "take a picture":
             if not _mdai.rgbWindowVisible():
                 speak("I have to open the RGB window first. Hold on.")
                 _mdai.showRgbWindow(True)
@@ -2570,7 +2675,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             speak("Ok. Here is the picture I took.")
             return HandleResponseResult.Handled
 
-        if "take my picture" in phrase:
+        if phrase == "take my picture":
             if not _mdai.rgbWindowVisible():
                 speak("I have to open the RGB window first.")
                 _mdai.showRgbWindow(True)
@@ -2613,7 +2718,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # parse var
-        if "set speed" in phrase:
+        if phrase.startswith("set speed"):
             global _user_set_speed
             if "low" in phrase:
                 speed = 1
@@ -2629,7 +2734,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 speak("Sorry, I could not change my speed this time.")
             return HandleResponseResult.Handled
                 
-        if "close pictures" in phrase:
+        if phrase == "close pictures":
             _mdai.closePictures()
             return HandleResponseResult.Handled
 
@@ -2876,18 +2981,33 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                 speak("I don't believe we have met before. Try telling me your name.")
             return HandleResponseResult.Handled
         
-        if "list locations" in phrase:
+        if phrase == "list locations":
             speak("ok.")
             print("Locations I know:")
             for l in _locations.keys():
                 print(l)
             return HandleResponseResult.Handled
 
+        if phrase.startswith("rename location"):
+            rest = phrase[16:].split(" to ")
+            loc = rest[0]
+            if len(rest) < 2:
+                speak("Please say the new name.")
+                return HandleResponseResult.Handled
+            new_name = rest[1]
+            speak("Ok. I will rename location " + loc + " to " + new_name)
+            if loc in _locations:
+                _locations[new_name] = _locations.pop(loc)
+            else:
+                speak("I don't know of location " + loc)
+            return HandleResponseResult.Handled
+
         # parse var
         if phrase.startswith("delete location"):
             loc = phrase[16:]
             speak("Ok. I will delete location " + loc)
-            _locations.pop(loc)
+            if _locations.pop(loc, None) is None:
+                speak("I don't know of location " + loc)
             return HandleResponseResult.Handled
 
         # parse var
@@ -2915,17 +3035,17 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
         #     switch_to_cloud_speech()
         #     return HandleResponseResult.Handled
 
-        if "enable radar" in phrase:
+        if phrase == "enable radar":
             speak("ok, i've enabled radar.")
             start_radar()
             return HandleResponseResult.Handled
 
-        if "disable radar" in phrase:
+        if phrase == "disable radar":
             speak("ok, i've disabled radar.")
             stop_radar()
             return HandleResponseResult.Handled
 
-        if "open weather chat" in phrase:
+        if phrase == "open weather chat":
             p = os.path.join(os.path.abspath(''),'riva-sample-apps/virtual-assistant')
             os.chdir(p)
             result = os.system('riva_weather')
@@ -2953,7 +3073,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
         #     return HandleResponseResult.Handled
         
         # parse var
-        if ("bring" in phrase or "take" in phrase) and ("this" in phrase or "these" in phrase):
+        if (phrase.startswith("bring") or phrase.startswith("take")) and ("this" in phrase or "these" in phrase):
             room = None
             person = None
             package = ""
@@ -3045,39 +3165,44 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             turn(deg)
             return HandleResponseResult.Handled
 
+        break # exit parse while loop
+
         # if chatbot command is recognized then skip to chatbot
-        if phrase == "reset memory" or phrase == "show chat log" or "you see" in phrase \
-            or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
-            break
+        # if phrase == "reset memory" or phrase == "show chat log" or "you see" in phrase \
+        #     or "describe this" in phrase or "identify this" in phrase or "what is this" in phrase:
+        #     break
 
-        if tried_closest_cmd:
-            print("error - closest command did not parse. check parser and command list")
-            return HandleResponseResult.NotHandledUnknown
+        # if tried_closest_cmd:
+        #     print("error - closest command did not parse. check parser and command list")
+        #     return HandleResponseResult.NotHandledUnknown
         
-        print("parser failed, looking up closest command")
+        #print("parser failed, looking up closest command")
         # if not understood, try to match the command using the embeddings manager
-        closest_command, dist = _cmdEmbedMgr.find_closest_command(phrase)
-        print("closest command is '{}' with distance: {}", closest_command, dist)
-        low_conf = dist < _closest_cmd_dist_thresh and dist > _closest_cmd_dist_low_conf
-        if dist >= _closest_cmd_dist_thresh:
-            closest_command = None
-        elif low_conf:
+        #closest_command, dist = _cmdEmbedMgr.find_closest_command(phrase)
+        #print("closest command is '{}' with distance: {}", closest_command, dist)
+        #low_conf = dist < _closest_cmd_dist_thresh and dist > _closest_cmd_dist_low_conf
+        #if dist >= _closest_cmd_dist_thresh:
+        #    closest_command = None
+        #elif low_conf:
             #ask user if correct
-            speak("Did you mean, "+ closest_command + "?")
-            if listenResponseFn is not None:
-                response = listenResponseFn(sdp, 5)
-                # if not yes let the agent handle it
-                if response != "yes":
-                    break
+        #    speak("Did you mean, "+ closest_command + "?")
+        #    if listenResponseFn is not None:
+        #        response = listenResponseFn(sdp, 5)
+        #        # if not yes let the agent handle it
+        #        if response == "cancel":
+        #            speak("ok")
+        #            return HandleResponseResult.Handled
+        #        elif response != "yes":
+        #            break
 
-        tried_closest_cmd = True
-        if closest_command is not None:
-            phrase = closest_command
-            if not low_conf:
-                speak("I assume you meant " + phrase + ".")
-            print("trying again with closest command \"{}\", dist = {}".format(phrase, dist))
-        else:
-            break
+        #tried_closest_cmd = True
+        #if closest_command is not None:
+        #    phrase = closest_command
+        #    if not low_conf:
+        #        speak("I assume you meant " + phrase + ".")
+        #    print("trying again with closest command \"{}\", dist = {}".format(phrase, dist))
+        #else:
+        #    break
         # end of parse while(true)
 
     # if not handled by old school parsing send it to the Langgraph Agent with tools 
@@ -3131,14 +3256,14 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             traceback.print_exc()
             response = "Sorry, I could not get a response."
 
-        if len(response) > 0:
-            speak(response, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
-        else:
-            speak("I got nothing on that.")
+        # if len(response) > 0:
+        #     speak(response, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+        # else:
+        #     speak("I got nothing on that.")
 
-        print("Tools Log: ", tools_log)
+        #print("Tools Log: ", tools_log)
         
-        return HandleResponseResult.Handled 
+        return HandleResponseResult.HandledByLangGraph
     return HandleResponseResult.NotHandledUnknown # not handled
 
 ###############################################################
@@ -3304,7 +3429,7 @@ def listen():
     # prime the Vosk recognizer 
     r.prime_vosk()
 
-    speak("Hello, My name is Orange. Pleased to be at your service.")
+    #speak("Hello, My name is Orange. Pleased to be at your service.")
 
     HEY_ORANGE_KEYWORD_IDX = 0
     STOP_NOW_KEYWORD_IDX = 1
@@ -3318,7 +3443,7 @@ def listen():
                 print("Say something!")
                 if porcupine_config is not None:
                     _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, timeout = timeout, phrase_time_limit = 8, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
+                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended.")
@@ -3328,8 +3453,6 @@ def listen():
         except sr.ReturnAfterKeywordDetection as e:
             phrase = ""
             if e.args[0] == STOP_NOW_KEYWORD_IDX:
-                # also stop speaking immediately
-                stop_speaking()
                 phrase = "stop moving"
             return phrase, 0
         except Exception as e:                
@@ -3504,10 +3627,12 @@ def listen():
 
     def on_detection(index):
         if index == HEY_ORANGE_KEYWORD_IDX:
+            stop_speaking()
             for i in range(1, 12):
                 _pixel_ring.setColoredVolume(i)
                 time.sleep(0.005)
         elif index == STOP_NOW_KEYWORD_IDX:
+            stop_speaking()
             _pixel_ring.setRedVolume()
         elif index == GET_RESPONSE_IDX:
             for i in range(1, 12):
@@ -3586,6 +3711,11 @@ def recoverLocalization(rect):
         return True
     return False
 
+#aim camera straight ahead and level
+def home_oakd():
+    _move_oak_d.allHome()
+
+#aim camera. pitch of 75 is good for looking at faces, pitch of 125 is good for down at floor
 def aim_oakd(yaw = None, pitch = None):
     if yaw is not None:
         _move_oak_d.setYaw(yaw)
@@ -3963,6 +4093,188 @@ def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=Non
         # Have them terminate and close
         _run_flag = False
              
+
+# Tool helper functions for LangGraph
+def list_locations_tool_helper():
+    """List all known locations."""
+    global _locations
+    if not _locations:
+        return "No locations saved."
+    return f"Known locations: {', '.join(_locations.keys())}"
+
+def go_to_location_tool_helper(sdp, location_name: str):
+    """Go to a specific named location using the existing goToLocation function."""
+    global _langgraph_initiated_move
+    try:
+        # Mark this as a LangGraph-initiated move
+        _langgraph_initiated_move = True
+
+        # Initiate movement
+        goToLocation(location_name)
+
+        # Monitor the movement and return result (no streaming writer)
+        result = moveActionMonitor(sdp, location_name)
+
+        # Clear the flag after completion
+        _langgraph_initiated_move = False
+
+        return result
+    except Exception as e:
+        _langgraph_initiated_move = False
+        return f"Error going to {location_name}: {str(e)}"
+
+def move_in_dir_dist_tool_helper(sdp, direction: str, distance: float, unit: str = "meters"):
+    """Move in specified direction for specified distance."""
+    global _langgraph_initiated_move
+    try:
+        # Mark this as a LangGraph-initiated move
+        _langgraph_initiated_move = True
+
+        moveInDirDist(direction, distance, unit, sdp)
+        
+        # Monitor the movement and return result (no streaming writer)
+        result = moveActionMonitor(sdp, "custom")
+
+        # Clear the flag after completion
+        _langgraph_initiated_move = False
+
+        return result
+    except Exception as e:
+        return f"Error moving {direction}: {str(e)}"
+
+def search_for_person_tool_helper(sdp):
+    """Search for any person by rotating and scanning."""
+    try:
+        persons = searchForPerson(sdp)
+        if len(persons) > 0:
+            return f"Found {len(persons)} person(s)."
+        return "No person found."
+    except Exception as e:
+        return f"Error searching for person: {str(e)}"
+
+def get_known_faces_tool_helper():
+    """Get list of all known faces."""
+    try:
+        faces = get_known_faces()
+        if faces:
+            return f"Known faces: {', '.join(faces)}"
+        return "No faces known."
+    except Exception as e:
+        return f"Error getting known faces: {str(e)}"
+
+def look_for_face_tool_helper(sdp, name: str):
+    """Look for a specific person's face."""
+    try:
+        result = look_for_face(name, sdp)
+        return f"Looking for {name}: {'Found' if result else 'Not found'}"
+    except Exception as e:
+        return f"Error looking for {name}: {str(e)}"
+
+def aim_camera_tool_helper(yaw: int = None, pitch: int = None):
+    """Aim camera to specific yaw and/or pitch angles."""
+    try:
+        aim_oakd(yaw=yaw, pitch=pitch)
+        return f"Camera aimed to yaw={yaw}, pitch={pitch}"
+    except Exception as e:
+        return f"Error aiming camera: {str(e)}"
+
+def home_camera_tool_helper():
+    """Return camera to home position."""
+    try:
+        home_oakd()
+        return "Camera returned to home position."
+    except Exception as e:
+        return f"Error homing camera: {str(e)}"
+
+def take_picture_tool_helper():
+    """Take a picture using the camera."""
+    try:
+        global _mdai
+        if not _mdai.rgbWindowVisible():
+            _mdai.showRgbWindow(True)
+            _mdai.waitUntilChangeFinished()
+            time.sleep(1.5)
+        _mdai.takePicture()
+        return "Picture taken and shown on screen."
+    except Exception as e:
+        return f"Error taking picture: {str(e)}"
+
+def where_am_i_tool_helper(sdp):
+    """Get current location information."""
+    try:
+        location, distance, close_enough = where_am_i(sdp)
+        if close_enough:
+            return f"I am at the {location} location."
+        return f"I am closest to the {location} location, {distance:.2f} meters away."
+    except Exception as e:
+        return f"Error getting location: {str(e)}"
+
+def follow_me_tool_helper():
+    """Start following a person."""
+    try:
+        global _follow_thread
+        if _follow_thread is None:
+            start_following()
+            return "Started following you."
+        return "Already following."
+    except Exception as e:
+        return f"Error starting follow: {str(e)}"
+
+def stop_following_tool_helper():
+    """Stop following a person."""
+    try:
+        stop_following()
+        return "Stopped following."
+    except Exception as e:
+        return f"Error stopping follow: {str(e)}"
+
+def track_me_tool_helper():
+    """Start tracking a person with camera."""
+    try:
+        start_tracking()
+        return "Started tracking you."
+    except Exception as e:
+        return f"Error starting tracking: {str(e)}"
+
+def stop_tracking_tool_helper():
+    """Stop tracking a person."""
+    try:
+        stop_tracking()
+        return "Stopped tracking."
+    except Exception as e:
+        return f"Error stopping tracking: {str(e)}"
+
+# Export dictionary for LangGraph tools
+langgraph_tool_funcs = {
+    # Location & Navigation
+    "list_locations": list_locations_tool_helper,
+    "go_to_location": go_to_location_tool_helper,
+    "where_am_i": where_am_i_tool_helper,
+    "move_in_dir_dist": move_in_dir_dist_tool_helper,
+    
+    # Person Detection & Recognition
+    "search_for_person": search_for_person_tool_helper,
+    "get_known_faces": get_known_faces_tool_helper,
+    "look_for_face": look_for_face_tool_helper,
+    
+    # Camera Control
+    "aim_camera": aim_camera_tool_helper,
+    "home_camera": home_camera_tool_helper,
+    "take_picture": take_picture_tool_helper,
+    
+    # Tracking & Following
+    "follow_me": follow_me_tool_helper,
+    "stop_following": stop_following_tool_helper,
+    "track_me": track_me_tool_helper,
+    "stop_tracking": stop_tracking_tool_helper,
+    
+    # Movement primitives
+    "move_by_deltas": move_by_deltas_tool_helper,
+    "forward": forward,
+    "backup": backup,
+    "turn": turn
+}
+
 ################################################################   
 # This is where data gets initialized from information stored on disk
 # and threads get started
@@ -3982,7 +4294,16 @@ def initialize_robot():
 
     _listen_thread = Thread(target = listen, name = "Listen")
     _listen_thread.start()
-    
+
+    _langgraph = None
+    while _langgraph is None:
+        _langgraph = RobotPlannerGraph.create_langgraph(langgraph_tool_funcs, speak_function=speak)
+        if _langgraph is None:
+            print("LangGraph could not be created, retrying in 5 seconds.")
+            time.sleep(5)
+            print("retrying creating language graph")
+    print("LangGraph created.")
+
     Thread(target = time_update, name = "Time").start()
             
 #    Thread(target = behaviors, name = "Behaviors").start()
@@ -4007,23 +4328,20 @@ def initialize_robot():
 
     if _enable_aws_mqtt_listener:
         start_aws_mqtt_listener()
-    
-    _langgraph = None
-    while _langgraph is None:
-        _langgraph = RobotPlannerGraph.create_langgraph(move_through_locations)
-        if _langgraph is None:
-            print("LangGraph could not be created, retrying in 5 seconds.")
-            time.sleep(5)
-            print("retrying creating language graph")
-    print("LangGraph created.")
+
 ################################################################
 # This is where data gets saved to disk
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
-    global _run_flag, _moods, _sdp, _grasper, _sdp, _lpArduino, _cmdEmbedMgr
+    global _run_flag, _moods, _sdp, _grasper, _sdp, _lpArduino, _cmdEmbedMgr, _map_proc
     
     cancelAction(True, _sdp)
     _run_flag = False
+
+    # close map process if running
+    if _map_proc is not None:
+        _map_proc.terminate()
+        _map_proc = None
 
     print("stop following if doing so")
     stop_following()
@@ -4142,8 +4460,12 @@ def save_locations(name):
 
 def load_locations(name):
     global _locations
-    with open(name + ".pkl", "rb") as f:
-        _locations = pickle.load(f)
+    try:
+        with open(name + ".pkl", "rb") as f:
+            _locations = pickle.load(f)
+    except Exception as e:
+        speak("Could not load locations.")
+        print(e)
 
 # ButtonPad Button Handlers
 def handleButton1Event(pressed, sdp: MyClient):
@@ -4233,7 +4555,7 @@ def run(no_move=False):
             _sdp.setMapUpdate(True)
             pose = _sdp.pose()
             _locations["home"] = (pose.x, pose.y, math.radians(pose.yaw))
-            #loadMap(_default_map_name)
+            loadMap(_default_map_name)
             None
         else:
             speak("Movement is disabled.")

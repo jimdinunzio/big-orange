@@ -72,11 +72,11 @@ class MyClient(Client64):
         self.request32('forward')
 
     @noReturnDecorator
-    def left(self):
+    def turnLeft(self):
         self.request32('left')
 
     @noReturnDecorator
-    def right(self):
+    def turnRight(self):
         self.request32('right')
 
     @noReturnDecorator

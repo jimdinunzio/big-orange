@@ -5,15 +5,33 @@ from typing import Dict, List
 def post_alert(points):
     pygame.init()
     width, height = 500, 500
-    screen = pygame.display.set_mode((width, height))
+    screen = pygame.display.set_mode((width, height), pygame.NOFRAME)
     pygame.display.set_caption("Line Plotter")
+    # Make window always on top (Windows only)
+    try:
+        import ctypes
+        hwnd = pygame.display.get_wm_info()["window"]
+        # Force window to foreground and topmost
+        ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+        ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        ctypes.windll.user32.BringWindowToTop(hwnd)
+        # Try to force focus by sending ALT key event
+        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU (ALT key down)
+        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)  # VK_MENU (ALT key up)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        ctypes.windll.user32.BringWindowToTop(hwnd)
+    except Exception:
+        pass
 
     font = pygame.font.SysFont(None, 32)
     header_font = pygame.font.SysFont(None, 28)
     number_font = pygame.font.SysFont(None, 24)
 
+    # Calculate offset so first point is always centered
+    x0, y0 = points[0]
     def to_screen_coords(x, y):
-        return (width // 2 + int(x), height // 2 - int(y))
+        return (width // 2 + int(x - x0), height // 2 - int(y - y0))
 
     screen_points = [to_screen_coords(x, y) for x, y in points]
 
@@ -132,28 +150,6 @@ def post_alert(points):
 
     pygame.quit()
     return result
-
-def post_alert_check_path(sdp, locations) -> bool:
-    print("DEBUG post_alert_check_path locations:", locations)
-    print("DEBUG types:", [type(loc) for loc in locations])
-    scale = 100  # Scale factor to convert meters to pixels for plotting
-    
-    # If first location is a tuple/list, treat as absolute coordinates
-    if locations and isinstance(locations[0], (tuple, list)):
-        print("Using absolute coordinates")
-        points = [(x * scale, y * scale) for x, y in locations]
-        return post_alert(points)
-    
-    # Otherwise treat as dictionary with dx,dy
-    print("Using relative coordinates")
-    pose = sdp.pose()
-    points = [(pose.x * scale, pose.y * scale)]
-    for idx, loc in enumerate(locations):
-        pose.x = pose.x + loc['dx']
-        pose.y = pose.y + loc['dy']
-        points.append((pose.x * scale, pose.y * scale))
-    print("showing planned path")
-    return post_alert(points)
 
 if __name__ == "__main__":
     res = post_alert([(0.0, 0.0), (-50.0, -86.6), (50.0, -86.6), (0.0,0.0)])
