@@ -195,9 +195,9 @@ class MyClient(Client64):
     def saveSlamtecMap(self, filename):
         return self.request32('saveSlamtecMap', filename)
     
-    @moveActionStatusDecorator
+    @noReturnDecorator
     def recoverLocalization(self, left, bottom, width, height):
-        return self.request32('recoverLocalization', left, bottom, width, height)
+        self.request32('recoverLocalization', left, bottom, width, height)
     
     @getIntDecorator
     def setMapUpdate(self, enable):

@@ -106,7 +106,7 @@ class MyServer(Server32):
         self.lib.rotate.argtypes = c_float,
         self.lib.rotateToWithOpt.argtypes = c_float, MOVEOPTIONS
         self.lib.rotateTo.argtypes = c_float,
-        self.lib.recoverLocalization.restype = ActionStatus
+        self.lib.recoverLocalization.restype = None
         self.lib.recoverLocalization.argtypes = c_float, c_float, c_float, c_float
         self.lib.getMoveActionError.restype = c_char_p
         self.lib.pose.restype = POSE
@@ -178,7 +178,7 @@ class MyServer(Server32):
         _str = self.lib.getMoveActionError()
         str = cast(_str, c_char_p).value
         self.lib.freeIt(_str)
-        return str
+        return str.decode()
 
     def waitUntilMoveActionDone(self):
         return self.lib.waitUntilMoveActionDone()
@@ -226,7 +226,7 @@ class MyServer(Server32):
         return self.lib.saveSlamtecMap(filename)
     
     def recoverLocalization(self, left, bottom, width, height):
-        return self.lib.recoverLocalization(left, bottom, width, height)
+        self.lib.recoverLocalization(left, bottom, width, height)
 
     def setMapUpdate(self, enable):
         return self.lib.setMapUpdate(enable)
