@@ -28,7 +28,7 @@ from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'office'
 _current_map_name = ''
@@ -38,6 +38,8 @@ _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
 _eyes_flag = False # should eyes be displayed or not
 _moods = {"happy":50, "bored":20, "hungry":10}
+# whole map rect is represented by all 0s
+_WHOLE_MAP_RECT = {"left":0.0,"bottom":0.0, "width":0.0, "height":0.0} 
 _HOUSE_RECT = {"left":-0.225,"bottom":-5.757, "width":12.962, "height":7.6}
 _OFFICE_RECT = {"left":0.405,"bottom":-0.128, "width":3.6, "height":1}
 _KITCHEN_RECT = {"left":10.3,"bottom":-4.9, "width":1.8, "height":1.6}
@@ -126,6 +128,7 @@ _cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
 _langgraph_initiated_move = False
+_goto_location_status = "idle"
 
 # Async operation callback globals
 
@@ -733,22 +736,23 @@ def findOrRetrieveObject(loc, obj, op, person, orig_yaw, sdp : MyClient):
         response += " and bring it back to you, " + person
     elif op.endswith("_to_person"):
         response += " and take it to " + person
-    speak(response)
+    if not _langgraph_initiated_move:
+        speak(response)
 
+    _sub_goal = obj + ":" + op
     if inThisRoom:
         #time.sleep(3)
         # turn back to original direction to find destination
         rotateTo(orig_yaw, sdp)            
-        time.sleep(3)
-        # if op == "retrieve":
-        # find furthest point in front of robot
+        time.sleep(5) #wait for LiDAR to spin up.
+                        
         sdp.getLaserScan()  
-        longest_dist, longest_angle = getFurthestLaserScanFront(sdp)
+        longest_dist, longest_angle = getFurthestLaserScan(sdp)
         # else: # op != "retrieve"
         #     # or find the furthest point in the whole scan
         #     longest_dist, longest_angle = getFurthestLaserScan(sdp)
 
-        longest_dist -= 1
+        longest_dist -= 1.75
         longest_dist = max(longest_dist, 0)
 
         print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
@@ -757,7 +761,6 @@ def findOrRetrieveObject(loc, obj, op, person, orig_yaw, sdp : MyClient):
         _goal = "custom"
     else:
         _goal = loc
-    _sub_goal = obj + ":" + op
     
 ################################################################
 # This is where goto actions are initiated and get carried out.
@@ -768,7 +771,7 @@ def findOrRetrieveObject(loc, obj, op, person, orig_yaw, sdp : MyClient):
 def handleGotoLocation():
     global _run_flag, _goal, _action_flag, _interrupt_action
     global _deliveree, _package, _sub_goal, _call_out_objects
-    global _error_last_goto, _response_num, _locations
+    global _error_last_goto, _response_num, _locations, _goto_location_status
 
     def moveToLocation():
         if len(coords) == 3:
@@ -809,6 +812,7 @@ def handleGotoLocation():
     sub_goal_cleanup = None
     while _run_flag:
         if _goal == "" or _action_flag:
+            _goto_location_status = "idle"
             # no goal or some action is currently in progress, so sleep.
             time.sleep(0.5)
             continue
@@ -828,6 +832,9 @@ def handleGotoLocation():
             _goal = "find_face"
 
         print("I'm free and A new goal arrived: ", _goal)
+        _goto_location_status = "moving to " + _goal + (" with subgoal " + (op if op != "" else "find") + 
+                                                        " the " + _sub_goal if _sub_goal != "" else "")
+
         if _goal == "recharge":
             if not _langgraph_initiated_move:
                 speak("I'm going to the recharge station")
@@ -881,7 +888,7 @@ def handleGotoLocation():
                 aim_oakd(pitch=75) # aim up to see people better                
                 eyes.setTargetPitchYaw(-70, 0)
             else:
-                aim_oakd(pitch=125) # aim down towards floor for objects
+                aim_oakd(pitch=135) # aim down towards floor for objects
                 eyes.setTargetPitchYaw(70, 0)
         else:
             checkPersons = _goal != "deliver" # avoid saying there's a person in the way going to a person
@@ -1172,7 +1179,7 @@ def moveActionMonitor(sdp=None, location_name=None):
             break
         time.sleep(0.5)
 
-    # wait for handleGotoLocation to finish the action
+    # wait for action to finish
     while _action_flag and _run_flag:
         time.sleep(0.1)
     
@@ -1183,7 +1190,7 @@ def moveActionMonitor(sdp=None, location_name=None):
 
     # check if robot actually made it to the destination
     # if way is blocked the Finished status may be returned.
-    if location_name is not None and location_name != "custom":
+    if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         reached_goal = is_close_to(location_name)
         message += ": arrived at " if reached_goal else ": did not arrive at "
         message += location_name
@@ -1203,8 +1210,8 @@ def move_by_deltas(sdp, deltas: List[Dict[str, float]], final_yaw: float, req_ap
         final_yaw in degrees (float): The desired orientation after applying the final delta.
 
     """
-    global _action_flag
-    
+    global _action_flag, _interrupt_action
+
     print("Moving by deltas with yaw {}:".format(final_yaw))
     scale = 100
     locs = LOCATIONS()
@@ -1229,6 +1236,7 @@ def move_by_deltas(sdp, deltas: List[Dict[str, float]], final_yaw: float, req_ap
         if not approved:
             return "Movement cancelled by user because it does not match the intended shape."
     
+    _interrupt_action = False
     _action_flag = True
     sdp.moveTosFloatWithYaw(locs, math.radians(final_yaw))
 
@@ -1281,6 +1289,11 @@ def stop_speaking():
             tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
     except Exception:
         print("Stop speaking has timed out.")
+        pass
+
+def wait_until_speech_done():
+    global _voice
+    while _voice.voice.WaitUntilDone(100) == False:
         pass
 
 def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value, add_to_memory=True):
@@ -1342,7 +1355,7 @@ def loadMap(filename):
         _sdp.setMapUpdate(False)
         speak("Map and locations are loaded. Mapping is off.")
         # speak("Now let me get my bearings.")
-        # result = recoverLocalization(_INIT_RECT)
+        # result, errStr = recoverLocalization(_INIT_RECT)
         # if result == False:
         #    speak("I don't appear to be at the map starting location.")
         _current_map_name = filename
@@ -1404,6 +1417,7 @@ def statusReport():
 def searchForPerson(sdp, is_clockwise=True):
     global _action_flag, _interrupt_action
 
+    _interrupt_action = False
     aim_oakd(pitch=75) # aim up to see people better
     eyes.setTargetPitchYaw(-70, 0)
 
@@ -1571,9 +1585,12 @@ def getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     print("location near ", obj, " is at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
     return pose.yaw, xt, yt
 
+def getLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
+    yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw, offset_dist)
+    return (xt, yt, math.radians(yaw + cam_yaw + p.theta))
+
 def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
-    yaw, xt, yt = getLocationNearObj(sdp, obj,p, cam_yaw, offset_dist)
-    _locations[obj] = (xt, yt, math.radians(yaw + cam_yaw + p.theta))
+    _locations[obj] = getLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
 
 def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=None):
     if sdp is None:
@@ -1948,7 +1965,7 @@ def deliverToPersonInRoom(person, package, room):
             _package = objLabel
     
     # aim oakd up to for detecting a person
-    aim_oakd(yaw=move_oak_d._YAW_HOME_, pitch=80)
+    aim_oakd(yaw=move_oak_d._YAW_HOME_, pitch=75)
     eyes.setTargetPitchYaw(-70,0)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     if mult_objs:
@@ -1979,14 +1996,7 @@ def deliverObjToPerson(package, deliveree, room):
     else: # in the same room, go to room center first
         _goal = loc
 
-def findPersonFromSound(person, doa, sdp):
-    global _deliveree
-    # look towards sound of voice and if person spotted, record location
-    yawDelta = _mic_array.rotateToDoa(doa, sdp)
-    
-    # Remove deliveree from locations
-    if _locations.get(person):
-        _locations.pop(person)
+def findPersonWithRotate(sdp, yawDelta):
     # find person / deliveree
     ps = searchForPerson(sdp, yawDelta > 0)
     if len(ps) > 0:
@@ -1995,13 +2005,31 @@ def findPersonFromSound(person, doa, sdp):
         for p in ps:
             if p.z < z:
                 z = p.z
+        return p
+    return None
 
+def getLocOfPersonFromSound(doa, sdp):
+    # look towards sound of voice and if person spotted, return it
+    yawDelta = _mic_array.rotateToDoa(doa, sdp)
+    p = findPersonWithRotate(sdp, yawDelta)
+    if p is not None:
+        return getLocationOfObj(sdp, "person", p, cam_yaw=0, offset_dist=1.0)
+    else:
+        return None
+
+def findAndSetLocOfPersonFromSound(person, doa, sdp):
+    # look towards sound of voice and if person spotted, record location
+    yawDelta = _mic_array.rotateToDoa(doa, sdp)
+    
+    # Remove deliveree from locations
+    if _locations.get(person):
+        _locations.pop(person)
+
+    p = findPersonWithRotate(sdp, yawDelta)
+    if p is not None:
         setLocationOfObj(sdp, person, p, cam_yaw=0, offset_dist=1.0)
     else:
-        # if no person found then come back to this loc to look after retrieving object
-        return_to_loc, _, _ = where_am_i()
-        _locations[person] = return_to_loc 
-    _deliveree = person
+        return None
     return person
 
 def come_here(doa):
@@ -2095,9 +2123,11 @@ def moveInDirDist(dir, dist, unit, sdp):
 def get_known_faces():
     return fr.get_known_faces()
 
+
+
 # while crossing the room towards the furthest wall visible, look for the named person's face
 def look_for_face(name, sdp):
-    global _deliveree
+    global _deliveree, _goal
     shutdown_my_depthai()
     start_facial_recog(with_spatial=True, with_tracking=False)
     # use current location
@@ -2117,6 +2147,26 @@ def look_for_face(name, sdp):
     #_locations["find_face"] = (pose.x, pose.y, math.radians(pose.yaw))
     _goal = "find_face"
 
+def identify_visible_face():
+    global _interrupt_action
+    
+    eyes.setTargetPitchYaw(-70, 0)
+    shutdown_my_depthai()
+    start_facial_recog()
+    ided = False
+    end = time.monotonic() + 5
+    while time.monotonic() < end and not _interrupt_action:
+        face = checkForFace(1)   
+        if face is not None:
+            ided = True
+            break
+    shutdown_facial_recog()
+    start_depthai_thread()
+    eyes.setHome()
+    _move_oak_d.allHome()
+    if not ided:
+        return False, ""
+    return True, face
 
 def set_handling_response(value):
     global _handling_resp
@@ -2179,8 +2229,10 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
     while True:
         # convert phrase to lower case for comparison
         phrase = phrase.lower().strip() 
+        if phrase == "stop langgraph":
+            _langgraph.cancel_stream()
 
-        if "stop moving" in phrase or "stop motors" in phrase or "stop stop" in phrase:
+        if phrase == "stop" or phrase == "stop moving" or phrase == "stop motors" or phrase == "stop stop":
             retval = cancelAction(True, sdp)
             if retval == 1:
                 speak("Stopping.")
@@ -2352,22 +2404,33 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                     obj_p = phrase.partition(op)[2].partition("and bring it to me")[0]
                 obj = obj_p.split()[-1]
                 op += "_to_me"
-                person = findPersonFromSound(_person, doa, sdp)
+                deliveree = findAndSetLocOfPersonFromSound(_person, doa, sdp)
+                if deliveree is None:
+                    speak("sorry, i could not find you to bring the " + obj + " to.")
+                    return HandleResponseResult.Handled
+                else:
+                    _deliveree = deliveree
             elif "and take it to" in phrase:
                 if "in the" in phrase:
                     obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
-                    loc, person_p = loc.split("and take it to")[0,3]
+                    loc, deliveree_p = loc.split("and take it to")[0,3]
                 else:
                     loc = ''
-                    obj_p, _, person_p= phrase.partition(op)[2].partition("and take it to")[0:3]
+                    obj_p, _, deliveree_p= phrase.partition(op)[2].partition("and take it to")[0:3]
                 obj = obj_p.split()[-1]
-                person = person_p.split()[-1]
+                deliveree = deliveree_p.split()[-1]
                 names = fr.get_known_faces()
-                if person not in names:
-                    speak("sorry, i have not met " + person + ", and I don't know what they look like.")
+                if deliveree not in names:
+                    speak("sorry, i have not met " + deliveree + ", and I don't know what they look like.")
                     return HandleResponseResult.Handled
                 op += "_to_person"
-                findPersonFromSound(person, doa, sdp)
+                # assume deliveree is near user giving command
+                if None == findAndSetLocOfPersonFromSound(deliveree, doa, sdp):
+                    # if no person found then come back to this loc to look after retrieving object
+                    return_to_loc, _, _ = where_am_i()
+                    _locations[deliveree] = return_to_loc                     
+                _deliveree = person
+                
             else: # not "bring it to me" in phrase
                 obj_p, _, loc = phrase.partition(op)[2].partition("in the")[0:3]
                 obj = obj_p.split()[-1]
@@ -2533,7 +2596,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
                         
         if phrase == "recover localization" or phrase == "locate yourself":
             speak("I will search the whole map to locate myself.")
-            result = recoverLocalization(_HOUSE_RECT)
+            result, errStr = recoverLocalization(_WHOLE_MAP_RECT)
             if result == False:
                 speak("I could not confirm my location.")
             return HandleResponseResult.Handled
@@ -2637,6 +2700,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
 
         if phrase == "show map" or phrase == "open map":
             # launch robostudio
+            speak("ok.")
             path = os.path.join(os.path.abspath('../../../DLLs/RoboStudio_2.1.1_rtm'), "RoboStudio.exe")
             # Launch RoboStudio and keep track of the process so it can be killed later
             _map_proc = subprocess.Popen([path, "--autofollow", "--fps", "10", "192.168.11.1"])
@@ -2654,6 +2718,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             for x, y in coordinates:
                 pyautogui.click(x=x, y=y)
                 time.sleep(0.25)
+            speak("i opened up the map.")
             return HandleResponseResult.Handled
 
         if phrase == "close map" or phrase == "hide map":
@@ -2801,7 +2866,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             speak("Ok. Let me spin up a tune.")
             _mic_array.rotateToDoa(doa, sdp)
             eyes.setTargetPitchYaw(-70, 0)
-            _move_oak_d.setPitch(70) # pitch up to see person better
+            _move_oak_d.setPitch(75) # pitch up to see person better
             speak("Ok. Let's dance.")
             _sdp.setSpeed(3)
             timeout = time.monotonic() + 30
@@ -2941,7 +3006,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             _mic_array.rotateToDoa(doa, sdp)
             speak("hello, ", new_name)
             _person = new_name
-            #_move_oak_d.setPitch(70) # pitch up to see person better
             eyes.setTargetPitchYaw(-70, 0)
             speak("Hello " + new_name + ". It's nice to meet you.")
             shutdown_my_depthai()
@@ -2958,7 +3022,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
 
         if phrase.startswith("hello") or phrase.startswith("nice to meet you"):
             _mic_array.rotateToDoa(doa, sdp)
-            #_move_oak_d.setPitch(70) # pitch up to see person better
             eyes.setTargetPitchYaw(-70, 0)
             shutdown_my_depthai()
             speak("Hello There.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
@@ -2979,6 +3042,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             _move_oak_d.allHome()
             if not ided:
                 speak("I don't believe we have met before. Try telling me your name.")
+            return HandleResponseResult.Handled
+        
+        if phrase.startswith("forget the face of"):
+            name = phrase[18:]
+            speak("Ok. I will forget the face of " + name)
+            response = forget_a_face(name)
+            speak(response)
             return HandleResponseResult.Handled
         
         if phrase == "list locations":
@@ -3696,27 +3766,36 @@ def listen():
     sdp.shutdown_server32(kill_timeout=1)
     sdp = None
 
-def recoverLocalization(rect):
-    result = _sdp.recoverLocalization(rect["left"], 
+def recoverLocalization(sdp=_sdp, rect=_WHOLE_MAP_RECT):
+    sdp.recoverLocalization(rect["left"], 
                                       rect["bottom"],
                                       rect["width"],
                                       rect["height"])
+    result = sdp.waitUntilMoveActionDone()
+    time.sleep(0.05)
+    result = sdp.getMoveActionStatus()
     print("Recovering localization result = ", result)
     if result == ActionStatus.Finished:
         location, distance, closeEnough = where_am_i()
-        if closeEnough:
-            speak("I appear to be at the " + location + " location.")
-        else:
-            speak("I appear to be near the "+ location + " location.")
-        return True
-    return False
+        if not _langgraph_initiated_move:
+            if closeEnough:
+                speak("I appear to be at the " + location + " location.")
+            else:
+                speak("I appear to be near the "+ location + " location.")
+        return True, ""
+    elif result == ActionStatus.Error:
+        errStr = sdp.getMoveActionError()
+        print("Possibly an error occurred: ", errStr)
+        return False, errStr
+    return False, ""
 
 #aim camera straight ahead and level
 def home_oakd():
     _move_oak_d.allHome()
 
-#aim camera. pitch of 75 is good for looking at faces, pitch of 125 is good for down at floor
+#aim camera. pitch of 75 is good for looking at faces, pitch of 135 is good for down at floor
 def aim_oakd(yaw = None, pitch = None):
+    print("Aiming OAK-D to yaw:", yaw, " pitch:", pitch)
     if yaw is not None:
         _move_oak_d.setYaw(yaw)
     if pitch is not None:
@@ -4093,7 +4172,14 @@ def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=Non
         # Have them terminate and close
         _run_flag = False
              
-
+def forget_a_face(name:str):
+    file = f"databases/{name}.npz"
+    if os.path.exists(file):
+        os.remove(file)
+        return(f"I will no longer recognize {name}'s face.")
+    else:
+        return(f"I don't have a memory of {name}'s face.")
+    
 # Tool helper functions for LangGraph
 def list_locations_tool_helper():
     """List all known locations."""
@@ -4101,6 +4187,73 @@ def list_locations_tool_helper():
     if not _locations:
         return "No locations saved."
     return f"Known locations: {', '.join(_locations.keys())}"
+
+def while_go_to_location_find_face_tool_helper(sdp, name: str, location_name: str):
+    """While going to a location, find face and approach it"""
+    global _langgraph_initiated_move, _goal, _deliveree
+    try:
+        # Mark this as a LangGraph-initiated move
+        _langgraph_initiated_move = True
+
+        # Set the deliveree to the person being searched for
+        _deliveree = name
+
+        # Initiate movement
+        sdp.setSpeed(1) #slow speed
+        # switch to facial recognition with spatial location
+        shutdown_my_depthai()
+        start_facial_recog(with_spatial=True, with_tracking=False)
+
+        _locations["find_face"] = _locations.get(location_name, (0,0,0))
+        _goal = "find_face"
+
+        # Monitor the movement and search for the person (no streaming writer)
+        result = moveActionMonitor(sdp, "find_face")
+
+        shutdown_facial_recog()
+        start_depthai_thread()
+        
+        # Clear the flag after completion
+        _langgraph_initiated_move = False
+
+        return result
+    except Exception as e:
+        _langgraph_initiated_move = False
+        return f"Error going to {location_name} while searching for {name}: {str(e)}"
+
+def cancel_action_tool_helper(sdp):
+    """Cancel current action."""
+    cancelAction(True, sdp)
+    return "Action cancelled."
+
+def go_recharge_tool_helper(sdp):
+    """Go to the recharge location."""
+    global _goal
+    cancelAction(True, sdp)
+    _goal = "recharge"
+    return "Going to recharge dock."
+
+def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0.0):
+    """Go to specific coordinates"""
+    global _langgraph_initiated_move, _locations, _goal
+    try:
+        # Mark this as a LangGraph-initiated move
+        _langgraph_initiated_move = True
+
+        # Initiate movement
+        _locations["custom"] = (x, y, math.radians(yaw))
+        _goal = "custom"
+
+        # Monitor the movement and return result (no streaming writer)
+        result = moveActionMonitor(sdp, "custom")
+
+        # Clear the flag after completion
+        _langgraph_initiated_move = False
+
+        return result
+    except Exception as e:
+        _langgraph_initiated_move = False
+        return f"Error going to coordinates ({x}, {y}, {yaw}): {str(e)}"
 
 def go_to_location_tool_helper(sdp, location_name: str):
     """Go to a specific named location using the existing goToLocation function."""
@@ -4142,6 +4295,14 @@ def move_in_dir_dist_tool_helper(sdp, direction: str, distance: float, unit: str
     except Exception as e:
         return f"Error moving {direction}: {str(e)}"
 
+def get_loc_of_person_from_voice_tool_helper(sdp):
+    """Find person based on voice direction."""
+    try:
+        doa = _mic_array.getDoa()
+        return getLocOfPersonFromSound(doa, sdp)
+    except Exception as e:
+        return f"Error finding person from voice: {str(e)}"
+
 def search_for_person_tool_helper(sdp):
     """Search for any person by rotating and scanning."""
     try:
@@ -4162,14 +4323,76 @@ def get_known_faces_tool_helper():
     except Exception as e:
         return f"Error getting known faces: {str(e)}"
 
-def look_for_face_tool_helper(sdp, name: str):
-    """Look for a specific person's face."""
+def identify_visible_face_tool_helper(name: str):
+    """Identify face if any visible."""
     try:
-        result = look_for_face(name, sdp)
-        return f"Looking for {name}: {'Found' if result else 'Not found'}"
+        found, name = identify_visible_face()
+        if found:
+            return f"{name} is here"
+        else:
+            return "No known face is visible"
     except Exception as e:
-        return f"Error looking for {name}: {str(e)}"
+        return f"Error identifying any face: {str(e)}"
 
+def memorize_a_face(new_name):
+    eyes.setTargetPitchYaw(-70, 0)
+    shutdown_my_depthai()
+    start_facial_recog(new_name=new_name)
+    while not _facial_recog.was_face_added():
+        time.sleep(0.2)
+    shutdown_facial_recog()
+    start_depthai_thread()
+    eyes.setHome()
+    _move_oak_d.allHome()
+
+def memorize_a_face_tool_helper(name: str):
+    """Memorize a new face with given name."""
+    try:
+        memorize_a_face(name)
+        return f"Memorized face for {name}"
+    except Exception as e:
+        return f"Error memorizing face: {str(e)}"
+
+def get_object_from_person_tool_helper(sdp, obj: str):
+    """Get object from person"""
+    global _langgraph_initiated_move
+    
+    try:
+        orig_yaw = sdp.pose().yaw
+        _langgraph_initiated_move = True
+        result = moveActionMonitor(sdp, "get_obj")
+        _langgraph_initiated_move = False
+        return result
+    except Exception as e:
+        return f"Error getting {obj} from user: {str(e)}"
+
+def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
+    """Deliver object to person at location."""
+    global _langgraph_initiated_move
+    
+    try:
+        orig_yaw = sdp.pose().yaw
+        _langgraph_initiated_move = True
+        result = moveActionMonitor(sdp, "deliver_obj")
+        _langgraph_initiated_move = False
+        return result
+    except Exception as e:
+        return f"Error delivering {obj} to {person}: {str(e)}"
+
+def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
+    """While going to loc, search for object."""
+    global _langgraph_initiated_move
+    
+    try:
+        orig_yaw = sdp.pose().yaw
+        _langgraph_initiated_move = True
+        findOrRetrieveObject(loc, obj, "", "", orig_yaw, sdp=sdp)
+        result = moveActionMonitor(sdp, "find_obj")
+        _langgraph_initiated_move = False
+        return result
+    except Exception as e:
+        return f"Error finding {obj}: {str(e)}"
+        
 def aim_camera_tool_helper(yaw: int = None, pitch: int = None):
     """Aim camera to specific yaw and/or pitch angles."""
     try:
@@ -4208,6 +4431,19 @@ def where_am_i_tool_helper(sdp):
         return f"I am closest to the {location} location, {distance:.2f} meters away."
     except Exception as e:
         return f"Error getting location: {str(e)}"
+
+def recover_localization_tool_helper(sdp, rect: dict = _WHOLE_MAP_RECT):
+    """Recover localization using a given rectangle."""
+    try:
+        if rect is None:
+            rect = _WHOLE_MAP_RECT
+        success, errStr = recoverLocalization(sdp, rect)
+        if success:
+            return "Localization recovered."
+        else:
+            return f"Error recovering localization: {errStr}"
+    except Exception as e:
+        return f"Error recovering localization: {str(e)}"
 
 def follow_me_tool_helper():
     """Start following a person."""
@@ -4248,15 +4484,25 @@ def stop_tracking_tool_helper():
 langgraph_tool_funcs = {
     # Location & Navigation
     "list_locations": list_locations_tool_helper,
+    "go_to_location_by_coords": go_to_location_by_coords_tool_helper,
     "go_to_location": go_to_location_tool_helper,
     "where_am_i": where_am_i_tool_helper,
+    "recover_localization": recover_localization_tool_helper,
     "move_in_dir_dist": move_in_dir_dist_tool_helper,
+    "go_recharge": go_recharge_tool_helper,
+    "cancel_action": cancel_action_tool_helper,
     
+    # Object Detection & Retrieval
+    "while_go_to_loc_find_object": while_go_to_loc_find_object_tool_helper,
+
     # Person Detection & Recognition
+    "identify_visible_face": identify_visible_face_tool_helper,
+    "memorize_a_face": memorize_a_face_tool_helper,
     "search_for_person": search_for_person_tool_helper,
     "get_known_faces": get_known_faces_tool_helper,
-    "look_for_face": look_for_face_tool_helper,
-    
+    "while_go_to_location_find_face": while_go_to_location_find_face_tool_helper,
+    "get_loc_of_person_from_voice": get_loc_of_person_from_voice_tool_helper,
+
     # Camera Control
     "aim_camera": aim_camera_tool_helper,
     "home_camera": home_camera_tool_helper,
@@ -4297,7 +4543,8 @@ def initialize_robot():
 
     _langgraph = None
     while _langgraph is None:
-        _langgraph = RobotPlannerGraph.create_langgraph(langgraph_tool_funcs, speak_function=speak)
+        _langgraph = RobotPlannerGraph.create_langgraph(langgraph_tool_funcs, speak_function=speak, 
+                                                        wait_until_speech_done = wait_until_speech_done)
         if _langgraph is None:
             print("LangGraph could not be created, retrying in 5 seconds.")
             time.sleep(5)

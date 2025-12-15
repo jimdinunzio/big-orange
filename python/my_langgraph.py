@@ -40,11 +40,15 @@ class State(TypedDict):
     messages: Annotated[list, add_messages]
 
 class RobotPlannerGraph:
-    def __init__(self, robot_tools, thread_id="1", speak_function=None):
+    def __init__(self, robot_tools, thread_id="1", speak_function=None, 
+                 wait_until_speech_done=None):
         self.tools = robot_tools
         self.thread_id = thread_id
         self._has_vision = False
         self.speak_function = speak_function
+        self.wait_until_speech_done = wait_until_speech_done
+        self._cancel = False
+        self._suppress_speech = False
 
         prompt_name ="orange_prompt_short"
         init_prompt = ""
@@ -199,8 +203,11 @@ class RobotPlannerGraph:
         def speech_node(state: State):
             print("*** Speech Node ***")
             last_msg = state["messages"][-1]
-            if self.speak_function and isinstance(last_msg, AIMessage) and last_msg.content:
-                self.speak_function(last_msg.content, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+            if isinstance(last_msg, AIMessage) and last_msg.content:
+                self._speak(
+                    last_msg.content,
+                    add_to_memory=False,
+                )
             return {"messages": []}
 
         # Custom tool node that executes tools SEQUENTIALLY to avoid OpenAI API errors
@@ -248,8 +255,11 @@ class RobotPlannerGraph:
         def reporter_node(state: State):
             print("*** Reporter Node ***")
             last_msg = state["messages"][-1]
-            if self.speak_function and isinstance(last_msg, AIMessage) and last_msg.content:
-                self.speak_function(last_msg.content, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value, add_to_memory=False)
+            if isinstance(last_msg, AIMessage) and last_msg.content:
+                self._speak(
+                    last_msg.content,
+                    add_to_memory=False,
+                )
             return {"messages": []}
 
         def route_from_planner(state: State):
@@ -290,17 +300,46 @@ class RobotPlannerGraph:
         value = self.graph.invoke(input={"messages": self.init_messages}, config=self.config)
         self._greeting = value["messages"][-1].content
 
+    def _speak(self, content, add_to_memory=False):
+        """Central speech entry point; skips if stream is cancelled or speech suppressed."""
+        if self._cancel or self._suppress_speech:
+            return
+        if not self.speak_function or not content:
+            return
+        self.speak_function(content, flag=tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value,
+                            add_to_memory=add_to_memory)
+        # makes the speak call synchronous and interruptable because it is async under the hood
+        if self.wait_until_speech_done:
+            self.wait_until_speech_done()
+
     @property
     def has_vision(self):
         return self._has_vision
 
+    def cancel_stream(self):
+        # Request cancellation of the current run.
+        # Actual stopping is coordinated inside _run_stream so that
+        # we don't break the OpenAI tools protocol.
+        self._cancel = True
+
     def reset_memory(self):
         """Reset the memory of the agent."""
         self.memory.delete_thread(self.thread_id)
-        # Re-add the initial messages to the graph
-        self.graph.invoke(input={"messages": self.init_messages}, config=self.config)
+        
+        # Suppress speech during re-initialization
+        self._suppress_speech = True
+        try:
+            # Re-add the initial messages to the graph
+            self.graph.invoke(input={"messages": self.init_messages}, config=self.config)
+        finally:
+            self._suppress_speech = False
+        
+        # Announce the reset (after suppression is cleared)
+        if self.speak_function:
+            self.speak_function("my memory was reset.", add_to_memory=False)
 
-    def get_graph(self):        return self.graph
+    def get_graph(self):
+        return self.graph
 
     def print_message_history(self):
         """Pretty print the messages stored in LangGraph InMemorySaver, truncating image_url 'url' fields."""
@@ -381,6 +420,7 @@ class RobotPlannerGraph:
         self.graph.update_state(self.config, {"messages": channel})
 
     def send_input(self, user_input: str, image=None):
+        self._cancel = False
         if image is None:
             message = HumanMessage(content=user_input)
         else:
@@ -397,18 +437,30 @@ class RobotPlannerGraph:
 
         def _run_stream(msg: HumanMessage):
             try:
+                from langchain_core.messages import AIMessage  # local import to avoid circulars
+
                 for event in self.graph.stream({"messages": [msg]}, config=self.config):
                     if not event:
                         continue
+
+                    # Single node per event; get its value
+                    node_name, value = next(iter(event.items()))
+
+                    # If cancel is requested, purge history and break immediately
+                    if self._cancel:
+                        print("Stream cancelled - resetting conversation history.")
+                        self._cancel = False
+                        # Reset memory to clear any incomplete tool_calls
+                        self.reset_memory()
+                        break
+
                     # writer-based progress happens inside tools; speech happens in nodes
-                    for value in event.values():
-                        if not value or "messages" not in value:
-                            continue
-                        # Optionally inspect messages here (debug only)
-                        # pretty print message content
-                        value_messages = value["messages"]
-                        for m in value_messages:
-                            m.pretty_print()
+                    if not value or "messages" not in value:
+                        continue
+
+                    value_messages = value["messages"]
+                    for m in value_messages:
+                        m.pretty_print()
             except Exception as e:
                 print(f"Error in background stream: {e}")
 
@@ -425,10 +477,12 @@ class RobotPlannerGraph:
         return self._greeting
 
     @staticmethod
-    def create_langgraph(langgraph_tool_funcs=None, thread_id="1", sim=False, speak_function=None):
+    def create_langgraph(langgraph_tool_funcs=None, thread_id="1", sim=False, speak_function=None,
+                         wait_until_speech_done=None):
         import langgraph_robot_tools as lrt
         robot_tools = lrt.RobotTools(langgraph_tool_funcs, sim=sim)
-        return RobotPlannerGraph(robot_tools, thread_id=thread_id, speak_function=speak_function)
+        return RobotPlannerGraph(robot_tools, thread_id=thread_id, speak_function=speak_function,
+                                 wait_until_speech_done=wait_until_speech_done)
 
 # Example run
 if __name__ == "__main__":
@@ -480,6 +534,10 @@ if __name__ == "__main__":
         if user_input.lower() in ["quit", "exit", "q"]:
             print("Goodbye!")
             break
+        elif user_input.lower() == "cc":
+            robotPlannerGraph.cancel_stream()
+            print("Cancelling current operation...")
+            continue
         elif ".png" in user_input or ".jpg" in user_input:
             image = user_input
             continue

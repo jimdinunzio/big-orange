@@ -206,19 +206,18 @@ class RobotTools:
             "board_temperature": self._sdp.getBoardTemperature()
         }
 
-    def stop_motors(self) -> str:
-        """Stop all robot movement immediately."""
+    def cancel_action(self) -> str:
+        """Cancel current action (movement, etc.)."""
         if self.sim:
-            return "Motors stopped successfully (simulated)."
-        self._sdp.cancelMoveAction()
-        return "Motors stopped successfully."
+            return "Current action cancelled (simulated)."
+        return self.call_tool_helper("cancel_action", self._sdp)
 
     def go_recharge(self) -> str:
-        """Return robot to recharge dock."""
+        """Return robot to recharge dock. Not same as home."""
         if self.sim:
+            self._sdp.set_pose(0.0, 0.0, 0.0)
             return "Going to recharge dock (simulated)."
-        self._sdp.home()
-        return "Going to recharge dock."
+        return self.call_tool_helper("go_recharge", self._sdp)
 
     def set_robot_speed(self, speed_level: int) -> str:
         """Set robot movement speed: 1=low, 2=medium, 3=high."""
@@ -340,6 +339,16 @@ class RobotTools:
             return "Known locations (simulated): home, kitchen, living_room, bedroom"
         return self.call_tool_helper("list_locations")
 
+    def go_to_location_by_coords(self, x: float, y: float, yaw: float) -> str:
+        """Go to a specific location by coordinates."""
+        if self.sim:
+            # Simulate going to location by updating pose
+            self._sdp.set_pose(x, y, yaw)
+            time.sleep(5)  # Simulate time taken to go to location
+            return f"arrived at ({x}, {y}, {yaw}) (simulated)."
+        else:
+            return self.call_tool_helper("go_to_location_by_coords", self._sdp, x, y, yaw)
+        
     def go_to_location(self, location_name: str) -> str:
         """Go to a specific named location."""
         
@@ -381,6 +390,14 @@ class RobotTools:
                 return f"You are at position ({pose.x:.1f}, {pose.y:.1f}) facing {pose.yaw:.1f}° (simulated)."
         return self.call_tool_helper("where_am_i", self._sdp)
 
+    def recover_localization(self, rect: Optional[dict] = None) -> str:
+        """Recover localization, optionally limiting to a given rectangle of the map."""
+        if self.sim:
+            # Simulate relocalization by resetting pose
+            self._sdp.set_pose(0.0, 0.0, 0.0)
+            return "Relocalization completed (simulated)."
+        return self.call_tool_helper("recover_localization", self._sdp, rect)
+
     def move_in_dir_dist(self, direction: str, distance: float, unit: str = "meters") -> str:
         """Move in specified direction (forward, backward, right, left) for specified distance."""
         if self.sim:
@@ -420,8 +437,20 @@ class RobotTools:
             # Simulate rotating 360 degrees to search
             pose = self._sdp.pose()
             self._sdp.set_pose(pose.x, pose.y, pose.yaw + 360)
-            return "Completed 360° search for person (simulated)."
+            return "Completed 360° search for person (simulated), found one person."
         return self.call_tool_helper("search_for_person", self._sdp)
+
+    def get_loc_of_person_from_voice(self) -> Tuple[float, float, float]:
+        """From direction of their voice get the x,y, and yaw to use to go up to a person"""
+        if self.sim:
+            # Simulate turning towards voice direction
+            pose = self._sdp.pose()
+            new_yaw = pose.yaw + 45  # Assume voice came from 45 degrees to the right
+            self._sdp.set_pose(pose.x, pose.y, new_yaw)
+            # computed position of person
+            loc = (pose.x + 1.0, pose.y + 1.0, math.radians(new_yaw))
+            return loc
+        return self.call_tool_helper("get_loc_of_person_from_voice", self._sdp)
 
     def get_known_faces(self) -> str:
         """Get list of all known faces."""
@@ -429,14 +458,80 @@ class RobotTools:
             return "Known faces (simulated): Alice, Bob, Charlie"
         return self.call_tool_helper("get_known_faces")
 
-    def look_for_face(self, name: str) -> str:
-        """Look for a specific person's face."""
+    def identify_any_visible_face(self) -> str:
+        """Identify any face in view."""
         if self.sim:
             known_faces = ["Alice", "Bob", "Charlie"]
-            if name in known_faces:
-                return f"Found {name} at current location (simulated)."
-            return f"{name} not found in current view (simulated)."
-        return self.call_tool_helper("look_for_face", self._sdp, name)
+            import random
+            identified_face = random.choice(known_faces + [None])
+            if identified_face:
+                return f"Identified {identified_face} (simulated)."
+            return "No known face identified (simulated)."
+        return self.call_tool_helper("identify_visible_face", self._sdp)
+
+    def memorize_a_face(self, name) -> str:
+        """Memorize a new face with a name."""
+        if self.sim:
+            return f"New face {name} memorized (simulated)."
+        return self.call_tool_helper("memorize_a_face", name)
+    
+    def while_go_to_location_find_face(self, name: str, location_name: str) -> str:
+        """Go to location while searching for a specific person by name."""
+        if self.sim:
+            found = False
+            # Simulate going to location by updating pose
+            locations = {
+                "home": (0.0, 0.0, 0.0),
+                "kitchen": (2.0, 1.0, 90.0),
+                "living_room": (-1.0, 2.0, 45.0),
+                "bedroom": (1.0, -1.0, -90.0)
+            }
+            if location_name in locations:
+                x, y, yaw = locations[location_name]
+                self._sdp.set_pose(x, y, yaw)                        
+
+                time.sleep(5)  # Simulate time taken to go to location
+                # Simulate face detection
+                if location_name == "kitchen" and name == "Alice":
+                    found = True
+                if found:
+                    return f"arrived at {location_name} and found {name} (simulated)."
+                else:
+                    return f"Could not find {name} while going to {location_name} (simulated)."
+            else:
+                return f"Location '{location_name}' not found (simulated)."
+        return self.call_tool_helper("while_go_to_location_find_face", self._sdp, name, location_name)
+    
+    def while_go_to_loc_find_object(self, object_name: str, location_name: str) -> str:
+        """Go to location while searching for a specific object by name and approach it."""
+        if self.sim:
+            found = False
+            # Simulate going to location by updating pose
+            locations = {
+                "home": (0.0, 0.0, 0.0),
+                "kitchen": (2.0, 1.0, 90.0),
+                "living_room": (-1.0, 2.0, 45.0),
+                "bedroom": (1.0, -1.0, -90.0),
+                "": (0.0, 0.0, 0.0)
+            }
+            if location_name in locations:
+                if location_name != '':
+                    x, y, yaw = locations[location_name]
+                    self._sdp.set_pose(x, y, yaw)                        
+
+                time.sleep(5)  # Simulate time taken to go to location
+                # Simulate object detection
+                if location_name == "kitchen" and object_name == "apple":
+                    return f"on way to {location_name} I found {object_name} (simulated)."
+                elif location_name == '' and object_name == "sofa":
+                    return f"I found {object_name} crossing the room.(simulated)."
+                else:
+                    return f"Could not find {object_name} while going to {location_name} (simulated)."
+            else:
+                return f"Location '{location_name}' not found (simulated)."
+        self._sdp.wakeup()
+        return self.call_tool_helper("while_go_to_loc_find_object", self._sdp, object_name, location_name)
+
 
     def aim_camera(self, yaw: Optional[int] = None, pitch: Optional[int] = None) -> str:
         """Aim camera to specific yaw and/or pitch angles."""
@@ -583,20 +678,36 @@ class RobotTools:
     class MappingInput(BaseModel):
         enabled: bool = Field(..., description="True to enable mapping, False to disable")
 
+    class RecoverLocalizationInput(BaseModel):
+        rect: Optional[dict] = Field(None, description="Optional rectangle to limit relocalization")
+
     class LocationInput(BaseModel):
         location_name: str = Field(..., description="Name of the location to go to")
+
+    class GoToLocationByCoordsInput(BaseModel):
+        x: float = Field(..., description="X coordinate in meters")
+        y: float = Field(..., description="Y coordinate in meters")
+        yaw: float = Field(..., description="Yaw orientation in degrees (-180 to 180)", ge=-180, le=180)
+        
+    class MemorizeFaceInput(BaseModel):
+        name: str = Field(..., description="Name of the person/face to memorize")   
+
+    class FaceAndLocationInput(BaseModel):
+        name: str = Field(..., description="Name of the person/face to find")
+        location_name: str = Field(..., description="Name of the location to go to")
+        
+    class ObjAndLocationInput(BaseModel):
+        object_name: str = Field(..., description="Name of the object to find")
+        location_name: str = Field(..., description="Name of the location to go to ('' if this room)")
 
     class DirectionDistanceInput(BaseModel):
         direction: str = Field(..., description="Direction: forward, backward, left, right")
         distance: float = Field(..., description="Distance to move", gt=0)
         unit: str = Field(default="meters", description="Unit: meters, cm, in, ft")
 
-    class LookForFaceInput(BaseModel):
-        name: str = Field(..., description="Name of the person to look for")
-
     class AimCameraInput(BaseModel):
-        yaw: Optional[int] = Field(None, description="Yaw angle for camera")
-        pitch: Optional[int] = Field(None, description="Pitch angle for camera")
+        yaw: Optional[int] = Field(None, description="Yaw angle for camera. 90 is straight ahead, 100 aims left side of tray, 80 right side of tray.")
+        pitch: Optional[int] = Field(None, description="Pitch angle for camera. 115 is straight ahead, 75 aims up for seeing faces, 135 down for objects on floor.")
 
     def get_all_tools(self):
         """Get all available LangGraph tools."""
@@ -609,19 +720,19 @@ class RobotTools:
             StructuredTool.from_function(
                 func=self.get_battery_info,
                 name="get_battery_info",
-                description="Get comprehensive battery and system information including percentage, charging status, and temperature."
+                description="Get battery and system info including percentage, charging status, and temperature."
             ),
             
             StructuredTool.from_function(
-                func=self.stop_motors,
-                name="stop_motors",
-                description="Stop all robot movement immediately."
+                func=self.cancel_action,
+                name="cancel_action",
+                description="Cancel current action (movement, etc.)."
             ),
             
             StructuredTool.from_function(
                 func=self.go_recharge,
                 name="go_recharge",
-                description="Return robot to charging station."
+                description="Return robot to charging station. Not same as home."
             ),
             
             StructuredTool.from_function(
@@ -695,6 +806,13 @@ class RobotTools:
             ),
             
             StructuredTool.from_function(
+                func=self.go_to_location_by_coords,
+                args_schema=self.GoToLocationByCoordsInput,
+                name="go_to_location_by_coords",
+                description="Go to a specific location by coordinates."
+            ),
+
+            StructuredTool.from_function(
                 func=self.go_to_location,
                 args_schema=self.LocationInput,
                 name="go_to_location",
@@ -705,6 +823,13 @@ class RobotTools:
                 func=self.where_am_i,
                 name="where_am_i",
                 description="Get current location information."
+            ),
+
+            StructuredTool.from_function(
+                func=self.recover_localization,
+                args_schema=self.RecoverLocalizationInput,
+                name="recover_localization",
+                description="For when lost recover localization, optionally limiting to a given rectangle of map."
             ),
             
             StructuredTool.from_function(
@@ -719,20 +844,40 @@ class RobotTools:
                 name="search_for_person",
                 description="Search for any person by rotating and scanning."
             ),
+
+            StructuredTool.from_function(
+                func=self.identify_any_visible_face,
+                name="identify_any_visible_face",
+                description="Identify any face in view."
+            ),
+            
+            StructuredTool.from_function(
+                func=self.memorize_a_face,
+                name="memorize_a_face",
+                args_schema=self.MemorizeFaceInput,
+                description="Memorize a new face with a name."
+            ),
             
             StructuredTool.from_function(
                 func=self.get_known_faces,
                 name="get_known_faces",
                 description="Get list of all known faces."
             ),
-            
+
             StructuredTool.from_function(
-                func=self.look_for_face,
-                args_schema=self.LookForFaceInput,
-                name="look_for_face",
-                description="Look for a specific person's face."
+                func=self.while_go_to_location_find_face,
+                args_schema=self.FaceAndLocationInput,
+                name="while_go_to_location_find_face",
+                description="Search for and go approach a specific face by name while going to a location."
             ),
             
+            StructuredTool.from_function(
+                func=self.while_go_to_loc_find_object,
+                args_schema=self.ObjAndLocationInput,
+                name="while_go_to_loc_find_object",
+                description="Search for and if found approach a specific object by name while going to a location."
+            ),
+
             StructuredTool.from_function(
                 func=self.aim_camera,
                 args_schema=self.AimCameraInput,
@@ -774,6 +919,12 @@ class RobotTools:
                 func=self.stop_tracking,
                 name="stop_tracking",
                 description="Stop tracking a person."
+            ),
+            
+            StructuredTool.from_function(
+                func=self.get_loc_of_person_from_voice,
+                name="get_loc_of_person_from_voice",
+                description="Get location of person from direction of voice."
             ),
             
             # Picture management tools
