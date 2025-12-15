@@ -50,7 +50,7 @@ class MyDetection(object):
 class MyDepthAI:
     def __init__(
         self,
-        model = "tinyYolo",
+        model = "yolo8nano",
         use_tracker = False,
         syncNN = True,
     ):
@@ -75,28 +75,32 @@ class MyDepthAI:
         self._loc = "TOP"
         self._get_picture_cb = None
         self._closePictures = False
+        self.window_size = [832, 832]
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
             self.labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
                         "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
             self.nnBlobPath = str((Path(__file__).parent / Path('models/mobilenet-ssd_openvino_2021.4_5shave.blob')).resolve().absolute())
-        elif self.model == "tinyYolo":
-            # Tiny yolo v3/4 label texts
+        elif self.model == "tinyYolo" or self.model == "yolo8nano":
+            # Tiny yolo v3/4 and yolo8 nano label texts
             self.labelMap = [
-                "person",         "bicycle",    "car",           "motorbike",     "aeroplane",   "bus",           "train",
-                "truck",          "boat",       "traffic light", "fire hydrant",  "stop sign",   "parking meter", "bench",
-                "bird",           "cat",        "dog",           "horse",         "sheep",       "cow",           "elephant",
-                "bear",           "zebra",      "giraffe",       "backpack",      "umbrella",    "handbag",       "tie",
-                "suitcase",       "frisbee",    "skis",          "snowboard",     "sports ball", "kite",          "baseball bat",
-                "baseball glove", "skateboard", "surfboard",     "tennis racket", "bottle",      "wine glass",    "cup",
-                "fork",           "knife",      "spoon",         "bowl",          "banana",      "apple",         "sandwich",
-                "orange",         "broccoli",   "carrot",        "hot dog",       "pizza",       "donut",         "cake",
-                "chair",          "sofa",       "pottedplant",   "bed",           "diningtable", "toilet",        "tvmonitor",
-                "laptop",         "mouse",      "remote",        "keyboard",      "cell phone",  "microwave",     "oven",
-                "toaster",        "sink",       "refrigerator",  "book",          "clock",       "vase",          "scissors",
+                "person",         "bicycle",    "car",           "motorbike",     "aeroplane",   "bus",           "train", # 6
+                "truck",          "boat",       "traffic light", "fire hydrant",  "stop sign",   "parking meter", "bench", # 13
+                "bird",           "cat",        "dog",           "horse",         "sheep",       "cow",           "elephant", # 20
+                "bear",           "zebra",      "giraffe",       "backpack",      "umbrella",    "handbag",       "tie", # 27
+                "suitcase",       "frisbee",    "skis",          "snowboard",     "sports ball", "kite",          "baseball bat", # 34
+                "baseball glove", "skateboard", "surfboard",     "tennis racket", "bottle",      "wine glass",    "cup", # 41
+                "fork",           "knife",      "spoon",         "bowl",          "banana",      "apple",         "sandwich", # 48
+                "orange",         "broccoli",   "carrot",        "hot dog",       "pizza",       "donut",         "cake", # 55
+                "chair",          "sofa",       "pottedplant",   "bed",           "diningtable", "toilet",        "tvmonitor", # 62
+                "laptop",         "mouse",      "remote",        "keyboard",      "cell phone",  "microwave",     "oven", # 69
+                "toaster",        "sink",       "refrigerator",  "book",          "clock",       "vase",          "scissors", # 76
                 "teddy bear",     "hair drier", "toothbrush"
             ]
+        if self.model == "yolo8nano":
+            self.nnBlobPath = str((Path(__file__).parent / Path('models/yolov8n_coco_640x352.blob')).resolve().absolute())
+        elif self.model == "tinyYolo":
             self.nnBlobPath = str((Path(__file__).parent / Path('models/tiny-yolo-v4_openvino_2021.2_6shave.blob')).resolve().absolute())
             #self.nnBlobPath = str((Path(__file__).parent / Path('models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 
@@ -114,7 +118,7 @@ class MyDepthAI:
 
         if self.model == "mobileNet":
             spatialDetectionNetwork = self.pipeline.create(dai.node.MobileNetSpatialDetectionNetwork)
-        elif self.model == "tinyYolo":
+        elif self.model == "tinyYolo" or self.model == "yolo8nano":
             spatialDetectionNetwork = self.pipeline.createYoloSpatialDetectionNetwork()
 
         monoLeft = self.pipeline.createMonoCamera()
@@ -162,8 +166,17 @@ class MyDepthAI:
             spatialDetectionNetwork.setAnchors(np.array([10,14, 23,27, 37,58, 81,82, 135,169, 344,319]))
             spatialDetectionNetwork.setAnchorMasks({ "side26": np.array([1,2,3]), "side13": np.array([3,4,5]) })
             spatialDetectionNetwork.setIouThreshold(0.7)
+            self.window_size = [832, 832]
+        elif self.model == "yolo8nano":
+            # Yolo8 nano specific parameters
+            colorCam.setPreviewSize(640, 352)
+            spatialDetectionNetwork.setNumClasses(80)
+            spatialDetectionNetwork.setCoordinateSize(4)
+            spatialDetectionNetwork.setIouThreshold(0.5)
+            self.window_size = [1280, 736]
         elif self.model == "mobileNet":
             colorCam.setPreviewSize(300, 300)
+            self.window_size = [832, 832]
 
         # Create outputs
 
@@ -181,8 +194,8 @@ class MyDepthAI:
             # Create object tracker
             objectTracker = self.pipeline.createObjectTracker()
             # track only person
-            if self.model == "tinyYolo":
-                objectTracker.setDetectionLabelsToTrack([0])
+            if self.model == "tinyYolo" or self.model == "yolo8nano":
+                objectTracker.setDetectionLabelsToTrack([0,41])
             elif self.model == "mobileNet":
                 objectTracker.setDetectionLabelsToTrack([15])                
             # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS, SHORT_TERM_IMAGELESS, SHORT_TERM_KCF
@@ -300,7 +313,7 @@ class MyDepthAI:
                 try:
                     if self._showRgbWindow:
                         cv2.namedWindow(rgb_win_name, cv2.WINDOW_NORMAL)
-                        cv2.resizeWindow(rgb_win_name, 832, 832)
+                        cv2.resizeWindow(rgb_win_name,self.window_size[0], self.window_size[1])
                     with dai.Device(self.pipeline, device_info) as device:
                     
                         # Output queues will be used to get the rgb frames and nn data from the outputs ffined above
@@ -439,7 +452,7 @@ if __name__ == '__main__':
     import keyboard
     from my_depthai import MyDepthAI
     from threading import Thread
-    mdai = MyDepthAI(model="tinyYolo", use_tracker=False)
+    mdai = MyDepthAI(model="yolo8nano", use_tracker=False)
     _cameras = ["TOP", "BOTTOM"]
     _cameraIndex = 0
     loc = _cameras[_cameraIndex]
