@@ -902,21 +902,21 @@ def handleGotoLocation():
         def gotLock():
             sdp.cancelMoveAction()
             print("got a lock on ", _sub_goal)
-            _goal_queue.append(_sub_goal)
-            speak("I see a " + _sub_goal)
+            # _goal_queue.append(_sub_goal)
+            # speak("I see a " + _sub_goal)
             _move_oak_d.yawHome()
             #eyes.setHome()
 
         def gotFace():
             sdp.cancelMoveAction()
             print("got a lock on ", _deliveree)
-            _goal_queue.append(_deliveree)
-            speak("I see " + _deliveree)
+            #_goal_queue.append(_deliveree)
+            #speak("I see " + _deliveree)
             _move_oak_d.yawHome()
-            if face_cmd == "deliver":
-                _goal_queue.append("release_obj")
-            else:
-                _goal_queue.append("went_to_face")
+            #if face_cmd == "deliver":
+            #    _goal_queue.append("release_obj")
+            #else:
+            #    _goal_queue.append("went_to_face")
             #eyes.setHome()
 
         def getOffsetDist(op):
@@ -1113,26 +1113,26 @@ def handleGotoLocation():
             if _sub_goal != "":
                 speak("and I never found a "+ _sub_goal)
                 sdp.setSpeed(_user_set_speed) #restore speed after finding obj
-            if _goal == "find_face": # didn't find face, try one last time with 360 rotation
-                print("didn't find face while going to goal. Trying 360 rotation")
-                for x in range(0,2):
-                    p = searchForFace(sdp, _deliveree, True) #bool(random.randint(0,1)
-                    if p is not None:
-                        break
-                if _interrupt_action:
-                    _interrupt_action = False
-                if p is not None:
-                    setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
-                    gotFace()
-                    face_just_found = True
-                else:
-                    speech = "Sorry, I could not find " + _deliveree
-                    if face_cmd == "deliver":
-                        speech += " to make my delivery."
-                    speak(speech)
-                    shutdown_facial_recog()
-                    start_depthai_thread()                 
-                    sdp.setSpeed(_user_set_speed)                    
+            # if _goal == "find_face": # didn't find face, try one last time with 360 rotation
+            #     print("didn't find face while going to goal. Trying 360 rotation")
+            #     p = searchForFace(sdp, _deliveree, True)
+            #     if p is None:
+            #         p = searchForFace(sdp, _deliveree, False)
+                    
+            #     if _interrupt_action:
+            #         _interrupt_action = False
+            #     if p is not None:
+            #         setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
+            #         gotFace()
+            #         face_just_found = True
+            #     else:
+            #         speech = "Sorry, I could not find " + _deliveree
+            #         if face_cmd == "deliver":
+            #             speech += " to make my delivery."
+            #         speak(speech)
+            #         shutdown_facial_recog()
+            #         start_depthai_thread()                 
+            #         sdp.setSpeed(_user_set_speed)
 
         # finally clear temp goals and _action_flags
         if _goal == "custom":
@@ -4188,15 +4188,40 @@ def list_locations_tool_helper():
         return "No locations saved."
     return f"Known locations: {', '.join(_locations.keys())}"
 
-def while_go_to_location_find_face_tool_helper(sdp, name: str, location_name: str):
-    """While going to a location, find face and approach it"""
+def search_for_face_tool_helper(sdp, name: str, rot_clockwise: bool = True):
+    """Search for a face by rotating in place."""
+    global _interrupt_action
+    try:
+        sdp.setSpeed(1) #slow speed
+        shutdown_my_depthai()
+        start_facial_recog(with_spatial=True, with_tracking=False)        
+
+        p = searchForFace(sdp, _deliveree, rot_clockwise)
+        if p is None:
+            p = searchForFace(sdp, _deliveree, not rot_clockwise)
+            
+        if _interrupt_action:
+            _interrupt_action = False
+        if p is not None:
+            setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
+            _move_oak_d.yawHome()
+
+        shutdown_facial_recog()
+        start_depthai_thread()
+        sdp.setSpeed(_user_set_speed)
+
+        if p is not None:
+            return f"Found {name}."
+        return f"No instances of {name} found."
+    except Exception as e:
+        return f"Error searching for face {name}: {str(e)}"
+
+def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
+    """While going to a location, find a face"""
     global _langgraph_initiated_move, _goal, _deliveree
     try:
         # Mark this as a LangGraph-initiated move
         _langgraph_initiated_move = True
-
-        # Set the deliveree to the person being searched for
-        _deliveree = name
 
         # Initiate movement
         sdp.setSpeed(1) #slow speed
@@ -4204,7 +4229,22 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, location_name: st
         shutdown_my_depthai()
         start_facial_recog(with_spatial=True, with_tracking=False)
 
-        _locations["find_face"] = _locations.get(location_name, (0,0,0))
+        # Set the deliveree to the person being searched for
+        _deliveree = name
+
+        inThisRoom = loc == "room" or loc ==''
+        if inThisRoom:
+            sdp.wakeup()
+            time.sleep(5) #wait for LiDAR to spin up.  
+            sdp.getLaserScan()  
+            longest_dist, longest_angle = getFurthestLaserScan(sdp)
+            longest_dist -= 1.75
+            longest_dist = max(longest_dist, 0)
+
+            print("furthest distance: angle = ", math.degrees(longest_angle), " distance = ",longest_dist)
+            _locations["find_face"] = (getLocationFromAngleDist(longest_angle, longest_dist, sdp))
+        else:
+            _locations["find_face"] = _locations.get(loc, (0,0,0))
         _goal = "find_face"
 
         # Monitor the movement and search for the person (no streaming writer)
@@ -4212,6 +4252,16 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, location_name: st
 
         shutdown_facial_recog()
         start_depthai_thread()
+        sdp.setSpeed(_user_set_speed)
+
+        # check if the person was found
+        loc = _locations.get(_deliveree, None)
+        if loc is not None:
+            loc = (loc[0], loc[1], math.degrees(loc[2]))  # convert yaw to degrees for output
+            result += f", {_deliveree} was found at {loc}"
+            del _locations[_deliveree]
+        else:
+            result += f", {_deliveree} was not found"
         
         # Clear the flag after completion
         _langgraph_initiated_move = False
@@ -4381,7 +4431,7 @@ def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
 
 def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
     """While going to loc, search for object."""
-    global _langgraph_initiated_move
+    global _langgraph_initiated_move, _locations
     
     try:
         orig_yaw = sdp.pose().yaw
@@ -4389,6 +4439,15 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
         findOrRetrieveObject(loc, obj, "", "", orig_yaw, sdp=sdp)
         result = moveActionMonitor(sdp, "find_obj")
         _langgraph_initiated_move = False
+
+        loc = _locations.get(obj, None)
+        if loc is not None:
+            loc = (loc[0], loc[1], math.degrees(loc[2]))  # convert yaw to degrees for output
+            result += f", {obj} was found at {loc}"
+            del _locations[obj]
+        else:
+            result += f", {obj} was not found"
+
         return result
     except Exception as e:
         return f"Error finding {obj}: {str(e)}"
@@ -4499,6 +4558,7 @@ langgraph_tool_funcs = {
     "identify_visible_face": identify_visible_face_tool_helper,
     "memorize_a_face": memorize_a_face_tool_helper,
     "search_for_person": search_for_person_tool_helper,
+    "search_for_face": search_for_face_tool_helper,
     "get_known_faces": get_known_faces_tool_helper,
     "while_go_to_location_find_face": while_go_to_location_find_face_tool_helper,
     "get_loc_of_person_from_voice": get_loc_of_person_from_voice_tool_helper,

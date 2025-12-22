@@ -440,6 +440,20 @@ class RobotTools:
             return "Completed 360° search for person (simulated), found one person."
         return self.call_tool_helper("search_for_person", self._sdp)
 
+    def search_for_face(self, name: str, rot_clockwise: bool=True) -> str:
+        """Search for a specific person by name by rotating and scanning and stopping if found."""
+        if self.sim:
+            # Simulate rotating 360 degrees to search
+            pose = self._sdp.pose()
+            self._sdp.set_pose(pose.x, pose.y, pose.yaw + 360)
+            # Simulate finding the person if name is in known list
+            known_faces = ["Alice", "Bob", "Charlie"]
+            if name in known_faces:
+                return f"Completed 360° search for {name} (simulated), found {name}."
+            else:
+                return f"Completed 360° search for {name} (simulated), did not find {name}."
+        return self.call_tool_helper("search_for_face", self._sdp, name, rot_clockwise)
+    
     def get_loc_of_person_from_voice(self) -> Tuple[float, float, float]:
         """From direction of their voice get the x,y, and yaw to use to go up to a person"""
         if self.sim:
@@ -503,7 +517,7 @@ class RobotTools:
         return self.call_tool_helper("while_go_to_location_find_face", self._sdp, name, location_name)
     
     def while_go_to_loc_find_object(self, object_name: str, location_name: str) -> str:
-        """Go to location while searching for a specific object by name and approach it."""
+        """Go to location while searching for a specific object by name."""
         if self.sim:
             found = False
             # Simulate going to location by updating pose
@@ -689,12 +703,15 @@ class RobotTools:
         y: float = Field(..., description="Y coordinate in meters")
         yaw: float = Field(..., description="Yaw orientation in degrees (-180 to 180)", ge=-180, le=180)
         
-    class MemorizeFaceInput(BaseModel):
-        name: str = Field(..., description="Name of the person/face to memorize")   
+    class FaceInput(BaseModel):
+        name: str = Field(..., description="Name of the person/face")   
+
+    class SearchForFaceInput(FaceInput):
+        rot_clockwise: Optional[bool] = Field(None, description="rotate clockwise (True) and Default, or counter-clockwise (False) while searching")
 
     class FaceAndLocationInput(BaseModel):
         name: str = Field(..., description="Name of the person/face to find")
-        location_name: str = Field(..., description="Name of the location to go to")
+        location_name: str = Field(..., description="Name of the location to go to ('' if this room)")
         
     class ObjAndLocationInput(BaseModel):
         object_name: str = Field(..., description="Name of the object to find")
@@ -846,6 +863,13 @@ class RobotTools:
             ),
 
             StructuredTool.from_function(
+                func=self.search_for_face,
+                args_schema=self.SearchForFaceInput,
+                name="search_for_face",
+                description="Search for a specific person by name by rotating and scanning and stopping if found."
+            ),
+            
+            StructuredTool.from_function(
                 func=self.identify_any_visible_face,
                 name="identify_any_visible_face",
                 description="Identify any face in view."
@@ -854,7 +878,7 @@ class RobotTools:
             StructuredTool.from_function(
                 func=self.memorize_a_face,
                 name="memorize_a_face",
-                args_schema=self.MemorizeFaceInput,
+                args_schema=self.FaceInput,
                 description="Memorize a new face with a name."
             ),
             
@@ -868,14 +892,14 @@ class RobotTools:
                 func=self.while_go_to_location_find_face,
                 args_schema=self.FaceAndLocationInput,
                 name="while_go_to_location_find_face",
-                description="Search for and go approach a specific face by name while going to a location."
+                description="Search for a specific face by name while going to a location. Return coords if found."
             ),
             
             StructuredTool.from_function(
                 func=self.while_go_to_loc_find_object,
                 args_schema=self.ObjAndLocationInput,
                 name="while_go_to_loc_find_object",
-                description="Search for and if found approach a specific object by name while going to a location."
+                description="Search for a specific object by name while going to a location. Return coords if found."
             ),
 
             StructuredTool.from_function(
