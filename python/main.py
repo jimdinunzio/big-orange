@@ -21,16 +21,17 @@ from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 import facial_recognize as fr
 import re
 from cmd_embed_mgr import CmdEmbedMgr
+from nano_vlm_client import NanoVlmClient
 import pyautogui
 from my_langgraph import RobotPlannerGraph
 import traceback
 from move_by_deltas_alert import post_alert
-from typing import Dict, List, Callable, Tuple
+from typing import Dict, List, Callable, Tuple, Optional
 
 # Constants
 _show_rgb_window = True
 _show_depth_window = False
-_default_map_name = 'office'
+_default_map_name = 'my house'
 _current_map_name = ''
 _hotword = "orange"
 _google_mode = False
@@ -64,6 +65,7 @@ _maps_dir = "maps"
 _sounds_dir = "sounds"
 _closest_cmd_dist_thresh = 0.15
 _closest_cmd_dist_low_conf = 0.12
+_jetson_on = True
 
 MicArray = typing.NewType("MicArray", object)
 
@@ -129,6 +131,7 @@ _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
 _langgraph_initiated_move = False
 _goto_location_status = "idle"
+_nano_vlm : NanoVlmClient = None
 
 # Async operation callback globals
 
@@ -726,8 +729,9 @@ def getLocationFromAngleDist(angle, dist, sdp : MyClient):
 
 def findOrRetrieveObject(loc, obj, op, person, orig_yaw, sdp : MyClient):
     global _goal, _sub_goal
-    inThisRoom = loc == "room" or loc ==''
-    if inThisRoom:
+
+    acrossTheRoom = loc == "across the room"
+    if acrossTheRoom:
         sdp.wakeup()
     response = "Ok. I'll search for a " + obj 
     if len(loc):
@@ -740,7 +744,7 @@ def findOrRetrieveObject(loc, obj, op, person, orig_yaw, sdp : MyClient):
         speak(response)
 
     _sub_goal = obj + ":" + op
-    if inThisRoom:
+    if acrossTheRoom:
         #time.sleep(3)
         # turn back to original direction to find destination
         rotateTo(orig_yaw, sdp)            
@@ -863,7 +867,8 @@ def handleGotoLocation():
                 continue
             if _goal != "custom" and _goal != "deliver" and _goal != "person" and _goal != "find_face":
                 if is_close_to(_goal, 0.5) and _goal != sub_goal_cleanup:
-                    speak("I'm already at the " + _goal)
+                    if not _langgraph_initiated_move:
+                        speak("I'm already at the " + _goal)
                     setNextGoal()
                     _move_oak_d.allHome()
                     continue
@@ -880,12 +885,12 @@ def handleGotoLocation():
         _interrupt_action = False
         sleepTime = 0.5 if (_sub_goal == "" or _call_out_objects) else 0
         if _goal == "find_face":
-            aim_oakd(pitch=75) # aim up to see people better                
+            aim_oakd(pitch=85) # aim up to see people better                
             eyes.setTargetPitchYaw(-70, 0)
         if _sub_goal != "":
             checkPersons = _sub_goal == 'person'
             if checkPersons:
-                aim_oakd(pitch=75) # aim up to see people better                
+                aim_oakd(pitch=85) # aim up to see people better                
                 eyes.setTargetPitchYaw(-70, 0)
             else:
                 aim_oakd(pitch=135) # aim down towards floor for objects
@@ -1044,7 +1049,7 @@ def handleGotoLocation():
             if (_goal == "deliver" or reached_goal):
                 if _goal == "deliver":
                     article = "some" if _package.endswith('s') else "a"
-                    aim_oakd(pitch=75) # aim up to see people better                
+                    aim_oakd(pitch=85) # aim up to see people better                
                     eyes.setTargetPitchYaw(-70, 0)
                     speak(_deliveree + ", I have " + article + " " + _package + " for you.")
                     if _package_ontray:
@@ -1104,12 +1109,14 @@ def handleGotoLocation():
                         speak("I've arrived.")
             else: # (_goal != "deliver" and not reached_goal)
                 _error_last_goto = True
-                if _goal == "deliver":
-                    speak("Sorry, I could not make my delivery")
-                elif _goal != "custom":
-                    speak("Sorry, I didn't make it to the " + _goal)
-                elif _goal != "find_face":
-                    speak("Sorry, I didn't make it to where you wanted.")
+
+                if not _langgraph_initiated_move:
+                    if _goal == "deliver":
+                        speak("Sorry, I could not make my delivery")
+                    elif _goal != "custom":
+                        speak("Sorry, I didn't make it to the " + _goal)
+                    elif _goal != "find_face":
+                        speak("Sorry, I didn't make it to where you wanted.")
             if _sub_goal != "":
                 speak("and I never found a "+ _sub_goal)
                 sdp.setSpeed(_user_set_speed) #restore speed after finding obj
@@ -1170,7 +1177,6 @@ def moveActionMonitor(sdp=None, location_name=None):
                 return "unknown location"
             time.sleep(0.50)
 
-    # TODO: Reintroduce mid-route streaming updates when get_stream_writer wiring returns.
     while(_run_flag and _interrupt_action == False):
         maStatus = getMoveActionStatus(sdp)
         if maStatus == ActionStatus.Stopped or \
@@ -1190,6 +1196,88 @@ def moveActionMonitor(sdp=None, location_name=None):
 
     # check if robot actually made it to the destination
     # if way is blocked the Finished status may be returned.
+    if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
+        reached_goal = is_close_to(location_name)
+        message += ": arrived at " if reached_goal else ": did not arrive at "
+        message += location_name
+
+    return message
+
+def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe the scene concisely.", 
+                                prompt_interval_seconds: int = 5, output_cb: Optional[Callable[[str], bool]] = None):
+    """Monitors movement while periodically prompting the vlm about the scene.
+    
+    This is a reusable monitor function that can be used by any navigation tool
+    that wants to prompt the vlm aboute the scene during movement.
+    
+    Args:
+        sdp: The SDP client connection
+        location_name: The intended destination (optional)
+        prompt: The prompt to send to the VLM (default: "Describe the scene concisely.")
+        prompt_interval_seconds: How often to prompt the VLM about the scene (default 5 seconds)
+        output_cb: Optional callback function to handle the scene description output (e.g., for speech, or info) 
+                   and return True to stop movement.
+        
+    Returns:
+        result_message
+    """
+    global _action_flag, _interrupt_action, _nano_vlm
+    
+    # Wait for action flag to become true (movement started)
+    if location_name is not None:
+        while _action_flag == False and _run_flag:
+            if _goal == "":  # Goal was cleared - error occurred
+                return "unknown location"
+            time.sleep(0.25)
+    
+    # Monitor movement while periodically describing scene
+    last_narration_time = time.monotonic()
+    maStatus = ActionStatus.Running
+    
+    if _nano_vlm is not None:
+        _nano_vlm.set_prompts([prompt])
+
+    while _run_flag and _interrupt_action == False:
+        # Check if it's time for a narration
+        current_time = time.monotonic()
+        if current_time - last_narration_time >= prompt_interval_seconds:
+            try:
+                # Get scene description from VLM
+                if _nano_vlm is not None:
+                    output, _, _ = _nano_vlm.get_output(prompt_filter=prompt)
+                    if output:
+                        # call the cb with the output
+                        if output_cb is not None:
+                            should_stop = output_cb(output)
+                            if should_stop:
+                                cancelAction(interrupt=False, sdp=sdp)
+                                maStatus = ActionStatus.Finished
+                                break
+            except Exception as e:
+                print(f"Error getting scene vlm output: {e}")
+            
+            last_narration_time = current_time
+        
+        # Check movement status
+        maStatus = getMoveActionStatus(sdp)
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+        
+        time.sleep(0.1)
+    
+    # Wait for action to finish
+    while _action_flag and _run_flag:
+        time.sleep(0.1)
+    
+    # Determine result message
+    if maStatus != ActionStatus.Finished:
+        message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
+    else:
+        message = "move finished"
+    
+    # Check if robot actually made it to the destination
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         reached_goal = is_close_to(location_name)
         message += ": arrived at " if reached_goal else ": did not arrive at "
@@ -1418,7 +1506,7 @@ def searchForPerson(sdp, is_clockwise=True):
     global _action_flag, _interrupt_action
 
     _interrupt_action = False
-    aim_oakd(pitch=75) # aim up to see people better
+    aim_oakd(pitch=85) # aim up to see people better
     eyes.setTargetPitchYaw(-70, 0)
 
     ps = []
@@ -1471,11 +1559,105 @@ def searchForPerson(sdp, is_clockwise=True):
     _action_flag = False
     return ps
 
+def checkForObject(obj, max_tries=1):
+    ps = None
+    p = None
+    for i in range(0,max_tries):
+        try:
+            if obj == "person":
+                ps = _mdai.getPersonDetections()
+            else:
+                ps = _mdai.getObjectDetections()
+            if len(ps) > 0:
+                closest_z = 999
+                for a in ps:
+                    if obj == a.label:
+                        if p is None or p.z > 0 and p.z < closest_z:
+                            p = a
+                            closest_z = p.z
+                # If bbox ctr of detection is away from edge then stop
+                if p is not None and p.bboxCtr[0] >= 0.0 and p.bboxCtr[0] <= 1:
+                    print(obj, " at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1], " z = ", p.z)
+                    return True, p
+                    break
+        except:
+            None
+            time.sleep(_dai_fps_recip)
+        time.sleep(_dai_fps_recip)
+    return False, None
+
+# rotate 360 and stop if a object is spotted
+def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObject=checkForObject, rot_speed=0.1):
+    global _action_flag, _interrupt_action
+
+    _interrupt_action = False
+    if height=="floor":
+        aim_oakd(pitch=135) # aim down to see floor objects better
+        eyes.setTargetPitchYaw(-50, 0)
+    elif height == "up high":
+        aim_oakd(pitch=85) # aim up to see high objects better
+        eyes.setTargetPitchYaw(50, 0)
+    else: # eye level
+        _move_oak_d.allHome()
+        eyes.setHome()
+
+    p = None
+    # First see if the obj is already in view and if so return
+    found, p = checkForObject(obj)
+    if found:
+        _move_oak_d.allHome()
+        return p
+    
+    # if object not in view, then slowly rotate 360 degrees and check every so often
+    _action_flag = True
+    
+    oldyaw = sdp.heading() + 360
+    yaw = oldyaw
+    sweep = 0
+    recheck_obj = False
+    while (sweep < 380 and not _interrupt_action):
+        sdp.rotate(-rot_speed if is_clockwise else rot_speed)
+        found, p = checkForObject(obj)
+        if found:
+            recheck_obj = True
+            break
+        yaw = sdp.heading() + 360
+        covered = abs(yaw - oldyaw)
+        if covered > 180:
+            covered = 360 - covered
+        sweep += covered
+        #print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
+        
+        oldyaw = yaw
+        time.sleep(0.05)
+
+    if recheck_obj:
+        print(f"rechecking {obj}")
+        sdp.cancelMoveAction()
+        time.sleep(0.3)
+        deg = 5 if is_clockwise else -5
+        for j in range(1,5):
+            for i in range(1,5):
+                found, p = checkForObject(obj)
+                if found:
+                   break 
+            if not found:
+                # go back other way
+                sdp.rotate(math.radians(deg))
+                sdp.waitUntilMoveActionDone()
+                deg = -deg
+            else:
+                break
+            
+    _action_flag = False
+    _move_oak_d.allHome()
+    return p
+
 # rotate 360 and stop if the person's face is spotted
 def searchForFace(sdp, name, is_clockwise=True):
     global _action_flag, _interrupt_action
 
-    aim_oakd(pitch=75) # aim up to see people better
+    aim_oakd(pitch=85) # aim up to see people better
     eyes.setTargetPitchYaw(-70, 0)
 
     # First see if person is already in view and if so return
@@ -1533,33 +1715,6 @@ def searchForFace(sdp, name, is_clockwise=True):
     _action_flag = False
     return p
 
-def checkForObject(obj):
-    ps = None
-    p = None
-    for i in range(0,18):
-        try:
-            if obj == "person":
-                ps = _mdai.getPersonDetections()
-            else:
-                ps = _mdai.getObjectDetections()
-            if len(ps) > 0:
-                closest_z = 999
-                for a in ps:
-                    if obj == a.label:
-                        if p is None or p.z > 0 and p.z < closest_z:
-                            p = a
-                            closest_z = p.z
-                # If bbox ctr of detection is away from edge then stop
-                if p is not None and p.bboxCtr[0] >= 0.0 and p.bboxCtr[0] <= 1:
-                    print(obj, " at bbox ctr: ",p.bboxCtr[0], ", ", p.bboxCtr[1], " z = ", p.z)
-                    return True, p
-                    break
-        except:
-            None
-            time.sleep(_dai_fps_recip)
-        time.sleep(_dai_fps_recip)
-    return False, None
-
 def checkForPerson():
     ps = None
     p = None
@@ -1585,9 +1740,10 @@ def getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     print("location near ", obj, " is at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
     return pose.yaw, xt, yt
 
-def getLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
+def getLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75, radians=True):
     yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw, offset_dist)
-    return (xt, yt, math.radians(yaw + cam_yaw + p.theta))
+    angle = yaw + cam_yaw + p.theta
+    return (xt, yt, math.radians(angle) if radians else angle)
 
 def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
     _locations[obj] = getLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
@@ -1916,7 +2072,7 @@ def deliverToPersonInRoom(person, package, room):
     #go to person to pick up item 
     speak("Ok. I'll come get it.")
     # aim up to see people better
-    aim_oakd(pitch=75) 
+    aim_oakd(pitch=85) 
     eyes.setTargetPitchYaw(-70, 0)
 
     if setFoundObjAsGoal("person"): 
@@ -2208,6 +2364,10 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
     global _eyes_flag, _hotword, _sub_goal, _all_loaded
     global _deliveree, _map_proc
 
+    # Warm up / Enable VLM 
+    if _nano_vlm is not None:
+        _nano_vlm.enable()
+
     class ImageCallback:
         def __init__(self):
             self._image = None
@@ -2229,7 +2389,7 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
     while True:
         # convert phrase to lower case for comparison
         phrase = phrase.lower().strip() 
-        if phrase == "stop langgraph":
+        if phrase == "stop all":
             _langgraph.cancel_stream()
 
         if phrase == "stop" or phrase == "stop moving" or phrase == "stop motors" or phrase == "stop stop":
@@ -2567,21 +2727,21 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # parse var
-        if phrase.startswith("go to"):
-            if not _slamtec_on:
-                speak("I'm sorry, movement is disabled.")
-                return HandleResponseResult.Handled
-            words = phrase.split()
-            try:
-                words.remove("the")
-            except:
-                None
-            if len(words) > 2:
-                cancelAction(True, sdp)
-                goal = " ".join(words[2:]).lower()
-                goToLocation(goal)
+        # if phrase.startswith("go to"):
+        #     if not _slamtec_on:
+        #         speak("I'm sorry, movement is disabled.")
+        #         return HandleResponseResult.Handled
+        #     words = phrase.split()
+        #     try:
+        #         words.remove("the")
+        #     except:
+        #         None
+        #     if len(words) > 2:
+        #         cancelAction(True, sdp)
+        #         goal = " ".join(words[2:]).lower()
+        #         goToLocation(goal)
            
-            return HandleResponseResult.Handled
+        #     return HandleResponseResult.Handled
                 
         # parse var
         if phrase.startswith("you are in the"):
@@ -2643,7 +2803,11 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
 
         if phrase == "shut down system" or phrase == "shutdown system":
             speak("Okay, I'm shutting down the system.")
+            print("shutting down jetson")
+            os.system("ssh jim@192.168.55.1 \"sudo -S shutdown -h now\"")
+            print("shutting down LattePanda in 10s")
             _run_flag = False
+            # shutdown 
             os.system("shutdown /s /t 10")
             return HandleResponseResult.Handled
                 
@@ -3275,8 +3439,18 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
         #    break
         # end of parse while(true)
 
+    if _langgraph is None:
+        print("Error: no langgraph agent")
+        return HandleResponseResult.NotHandledUnknown
+
     # if not handled by old school parsing send it to the Langgraph Agent with tools 
-    print("sending speech to Langgraph Agent")
+    print("sending speech to langgraph agent")
+
+    # Check if langgraph is already processing a request
+    if _langgraph is not None and _langgraph.is_processing:
+        print("langgraph agent is busy processing another request")
+        return HandleResponseResult.NotHandledBusy
+    
     image = None
     response = ""
     if len(phrase) > 0:
@@ -3289,34 +3463,31 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             print(_langgraph.print_message_history())
             return HandleResponseResult.Handled
 
-        if not "album" in phrase and not re.search(r"that (photo|picture|image)", phrase) \
-            and ("you see" in phrase or "describe this" in phrase or "identify this" in phrase \
-            or "what is this" in phrase or "using your camera" in phrase):
+        # if not "album" in phrase and not re.search(r"that (photo|picture|image)", phrase) \
+        #     and ("you see" in phrase or "describe this" in phrase or "identify this" in phrase \
+        #     or "what is this" in phrase or "using your camera" in phrase):
             
-            if _langgraph.has_vision:
-                imageCallback = ImageCallback()
-                _mdai.setGetPictureCb(imageCallback.get_picture_cb)
-                timeout = time.monotonic() + 5
-                if not _mdai.rgbWindowVisible():
-                    speak("I have to open the RGB window first. Hold on.")
-                    _mdai.showRgbWindow(True)
-                    _mdai.waitUntilChangeFinished()
-                    # wait for camera exposure to adjust
-                    time.sleep(1.5)                
-                while imageCallback.get_image() is None and time.monotonic() < timeout:
-                    time.sleep(0.1)
-                if imageCallback.get_image() is None:
-                    speak("I'm sorry, I can't see anything. Maybe you left the lens cap on or my rgb window is not open")
-                    return HandleResponseResult.Handled
-                image = imageCallback.get_image()
-            else:
-                speak("I'm sorry, I can't currently interpret what I'm seeing.")
-                return HandleResponseResult.Handled
+        #     if _langgraph.has_vision:
+        #         imageCallback = ImageCallback()
+        #         _mdai.setGetPictureCb(imageCallback.get_picture_cb)
+        #         timeout = time.monotonic() + 5
+        #         if not _mdai.rgbWindowVisible():
+        #             speak("I have to open the RGB window first. Hold on.")
+        #             _mdai.showRgbWindow(True)
+        #             _mdai.waitUntilChangeFinished()
+        #             # wait for camera exposure to adjust
+        #             time.sleep(1.5)                
+        #         while imageCallback.get_image() is None and time.monotonic() < timeout:
+        #             time.sleep(0.1)
+        #         if imageCallback.get_image() is None:
+        #             speak("I'm sorry, I can't see anything. Maybe you left the lens cap on or my rgb window is not open")
+        #             return HandleResponseResult.Handled
+        #         image = imageCallback.get_image()
+        #     else:
+        #         speak("I'm sorry, I can't currently interpret what I'm seeing.")
+        #         return HandleResponseResult.Handled
 
-        if _langgraph is None:
-            print("Error: no langgraph agent")
-            return HandleResponseResult.NotHandledUnknown
-
+        
         response = ""
         tools_log = ""    
         try:
@@ -3449,7 +3620,7 @@ def listen():
         
         r.dynamic_energy_threshold = False
         try:
-            with m as source: r.adjust_for_ambient_noise(source, duration=1, is_speech_cb=_mic_array.getIsSpeech)
+            with m as source: r.adjust_for_ambient_noise(source, duration=1, is_speech_cb=None if _mic_array.is_sim_mode() else _mic_array.getIsSpeech)
         except:
             None
         r.energy_threshold = max(300, r.energy_threshold)
@@ -3505,7 +3676,9 @@ def listen():
     STOP_NOW_KEYWORD_IDX = 1
     GET_RESPONSE_IDX = 2
     
-    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, porcupine_config : typing.Union[sr.Recognizer.PorcupineListener.Config, None], timeout=None) -> tuple[str, float]:
+    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, 
+                                  porcupine_config : typing.Union[sr.Recognizer.PorcupineListener.Config, None],
+                                  timeout=None) -> tuple[str, float]:
         global _last_speech_heard
       # obtain audio from the microphone
         try:
@@ -3513,7 +3686,8 @@ def listen():
                 print("Say something!")
                 if porcupine_config is not None:
                     _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10, porcupine_config = porcupine_config, is_speech_cb=_mic_array.getIsSpeech)
+                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10, porcupine_config = porcupine_config, 
+                                 is_speech_cb=None if _mic_array.is_sim_mode() else _mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended.")
@@ -3557,7 +3731,7 @@ def listen():
         try:
             with mic as source:
                 print("Say something!")
-                audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=_mic_array.getIsSpeech)
+                audio = r.listen(source, phrase_time_limit = 7, is_speech_cb=None if _mic_array.is_sim_mode() else _mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
                 print("Your speech ended or timed out.")
@@ -3886,7 +4060,7 @@ def shutdown_blazepose_thread():
     del(_hp)
     _hp = None
 
-def start_depthai_thread(model="tinyYolo", use_tracker=False, loc="TOP"):
+def start_depthai_thread(model="yolo8nano", use_tracker=False, loc="TOP"):
     global _my_depthai_thread, _mdai
 
     if _my_depthai_thread is not None:
@@ -3973,7 +4147,7 @@ def follow_me():
                     _move_oak_d.set_track_turn_base(True)
             # elif _sdp.getMoveActionStatus() != ActionStatus.Running and ts.tracking == move_oak_d.TrackingResult.Lost:
             #     speak("Sorry, I lost you.")
-            #     # tracking id will be a new one at this point so reset the tracker to take the closet person
+            #     # tracking id will be a new one at this point so reset the tracker to take the closest person
             #     _move_oak_d.clearLastTrackedObj()
             last_track_update = time.monotonic()
         if backup > 0:
@@ -4196,28 +4370,29 @@ def search_for_face_tool_helper(sdp, name: str, rot_clockwise: bool = True):
         shutdown_my_depthai()
         start_facial_recog(with_spatial=True, with_tracking=False)        
 
-        p = searchForFace(sdp, _deliveree, rot_clockwise)
+        p = searchForFace(sdp, name, rot_clockwise)
         if p is None:
-            p = searchForFace(sdp, _deliveree, not rot_clockwise)
+            p = searchForFace(sdp, name, not rot_clockwise)
             
         if _interrupt_action:
             _interrupt_action = False
         if p is not None:
-            setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
-            _move_oak_d.yawHome()
+            loc = getLocationOfObj(sdp, name, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25, radians=False)
 
         shutdown_facial_recog()
         start_depthai_thread()
         sdp.setSpeed(_user_set_speed)
 
         if p is not None:
-            return f"Found {name}."
+            return f"Found {name} at {loc}."
         return f"No instances of {name} found."
     except Exception as e:
         return f"Error searching for face {name}: {str(e)}"
+    finally:
+        _move_oak_d.allHome()
 
 def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
-    """While going to a location, find a face"""
+    """While going to a location, look for a face by name and stop as soon as it is spotted and report its coords."""
     global _langgraph_initiated_move, _goal, _deliveree
     try:
         # Mark this as a LangGraph-initiated move
@@ -4232,8 +4407,7 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
         # Set the deliveree to the person being searched for
         _deliveree = name
 
-        inThisRoom = loc == "room" or loc ==''
-        if inThisRoom:
+        if loc == "across the room":
             sdp.wakeup()
             time.sleep(5) #wait for LiDAR to spin up.  
             sdp.getLaserScan()  
@@ -4247,7 +4421,7 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
             _locations["find_face"] = _locations.get(loc, (0,0,0))
         _goal = "find_face"
 
-        # Monitor the movement and search for the person (no streaming writer)
+        # Monitor the movement and search for the person
         result = moveActionMonitor(sdp, "find_face")
 
         shutdown_facial_recog()
@@ -4284,7 +4458,7 @@ def go_recharge_tool_helper(sdp):
     return "Going to recharge dock."
 
 def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0.0):
-    """Go to specific coordinates"""
+    """Go to a location given coordinates"""
     global _langgraph_initiated_move, _locations, _goal
     try:
         # Mark this as a LangGraph-initiated move
@@ -4326,6 +4500,39 @@ def go_to_location_tool_helper(sdp, location_name: str):
         _langgraph_initiated_move = False
         return f"Error going to {location_name}: {str(e)}"
 
+def go_to_location_with_narration_tool_helper(sdp, location_name: str, narration_interval_seconds: int = 5):
+    """Go to a specific named location while periodically describing the scene."""
+    global _langgraph_initiated_move
+
+    def narrate_scene_during_move(output):
+        try:
+            _mdai.drawText(output, 1, 14)
+            speak(output)
+            return False
+        except Exception as e:
+            print(f"Error during narration: {str(e)}")  
+        finally:
+            return False
+
+    try:
+        # Mark this as a LangGraph-initiated move
+        _langgraph_initiated_move = True
+
+        # Initiate movement
+        goToLocation(location_name)
+
+        # Monitor the movement with narration
+        result = moveActionMonitorWithPrompt(sdp, location_name, "Describe the scene concisely.",
+                                             narration_interval_seconds, narrate_scene_during_move)
+
+        # Clear the flag after completion
+        _langgraph_initiated_move = False
+
+        return result
+    except Exception as e:
+        _langgraph_initiated_move = False
+        return f"Error going to {location_name} with narration: {str(e)}"
+
 def move_in_dir_dist_tool_helper(sdp, direction: str, distance: float, unit: str = "meters"):
     """Move in specified direction for specified distance."""
     global _langgraph_initiated_move
@@ -4355,13 +4562,24 @@ def get_loc_of_person_from_voice_tool_helper(sdp):
 
 def search_for_person_tool_helper(sdp):
     """Search for any person by rotating and scanning."""
+    global _interrupt_action
     try:
-        persons = searchForPerson(sdp)
-        if len(persons) > 0:
-            return f"Found {len(persons)} person(s)."
+        ps = searchForPerson(sdp)
+        if _interrupt_action:
+            _interrupt_action = False
+        
+        if ps and len(ps) > 0:
+            # find closest person
+            p = min(ps, key=lambda person: person.z)
+            closest_person_loc = getLocationOfObj(sdp, "closest person", p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1, radians=False)
+
+            return f"Found {len(ps)} person(s), the closest one is at {closest_person_loc}."
         return "No person found."
+
     except Exception as e:
         return f"Error searching for person: {str(e)}"
+    finally:
+        _move_oak_d.allHome()    
 
 def get_known_faces_tool_helper():
     """Get list of all known faces."""
@@ -4403,6 +4621,7 @@ def memorize_a_face_tool_helper(name: str):
     except Exception as e:
         return f"Error memorizing face: {str(e)}"
 
+# TBD
 def get_object_from_person_tool_helper(sdp, obj: str):
     """Get object from person"""
     global _langgraph_initiated_move
@@ -4416,6 +4635,7 @@ def get_object_from_person_tool_helper(sdp, obj: str):
     except Exception as e:
         return f"Error getting {obj} from user: {str(e)}"
 
+# TBD
 def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
     """Deliver object to person at location."""
     global _langgraph_initiated_move
@@ -4429,29 +4649,97 @@ def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
     except Exception as e:
         return f"Error delivering {obj} to {person}: {str(e)}"
 
+def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
+    """Search for object by rotating in place."""
+    global _interrupt_action
+
+    obj_loc = None
+    yolo_obj = obj.replace(' ','')
+    if yolo_obj in _mdai.labelMap:
+        try:
+            p = searchForObject(sdp, yolo_obj, height, rot_clockwise)
+            if p is None:
+                p = searchForObject(sdp, yolo_obj, height, not rot_clockwise)
+                
+            if _interrupt_action:
+                _interrupt_action = False
+            if p is not None:
+                obj_loc = getLocationOfObj(sdp, yolo_obj, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+
+            return f"{obj} "+ (f"was found at {obj_loc}." if p else "was not found.")
+
+        except Exception as e:
+            return f"Error searching for object {obj}: {str(e)}"
+        finally:
+            _move_oak_d.allHome()            
+    else:
+        # object not handled by YOLO. Use VLM-based object search
+        prompt = f"is a {obj} visible?"
+        _nano_vlm.set_prompts([prompt])
+        _nano_vlm.get_output(prompt_filter=prompt)
+        
+        def is_object_found(obj):
+            try:
+                answer, _, _  = _nano_vlm.get_output(prompt_filter=prompt)
+                _mdai.drawText(answer, 1, 14)
+                if answer == "1":
+                    return True, True
+            except Exception as e:
+                print(f"Error during object found check: {str(e)}")  
+
+            return False, False
+        
+        p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05)
+        return f"{obj} "+ ("was found." if p else "was not found.")
+
 def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
-    """While going to loc, search for object."""
+    """While going to loc, look for object and stop as soon as it is seen and report its coords."""
     global _langgraph_initiated_move, _locations
     
-    try:
-        orig_yaw = sdp.pose().yaw
+    yolo_obj = obj.replace(' ','')
+    if yolo_obj in _mdai.labelMap:
+        try:
+            orig_yaw = sdp.pose().yaw
+            _langgraph_initiated_move = True
+            findOrRetrieveObject(loc, yolo_obj, "", "", orig_yaw, sdp=sdp)
+            result = moveActionMonitor(sdp, "find_obj")
+            _langgraph_initiated_move = False
+
+            obj_loc = _locations.get(yolo_obj, None)
+            if obj_loc is not None:
+                obj_loc = (obj_loc[0], obj_loc[1], math.degrees(obj_loc[2]))  # convert yaw to degrees for output
+                result += f", {obj} is at {obj_loc}. I am not at {loc} or near the {obj}"
+                del _locations[yolo_obj]
+            else:
+                result += f", {obj} was not found and I am now at {loc}."
+
+            return result
+        except Exception as e:
+            return f"Error finding {obj}: {str(e)}"
+    else:
+        # object not handled by YOLO. Use VLM-based object search
+
+        found = False
+        def is_object_found(output):
+            nonlocal found
+            _mdai.drawText(output, 1, 14)
+
+            try:
+                if output == "1":
+                    found = True
+                    speak(f"I found a {obj}. Stopping.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
+                    return True
+            except Exception as e:
+                print(f"Error during object found check: {str(e)}")  
+            return False
+        
         _langgraph_initiated_move = True
-        findOrRetrieveObject(loc, obj, "", "", orig_yaw, sdp=sdp)
-        result = moveActionMonitor(sdp, "find_obj")
+        goToLocation(loc)
+        result = moveActionMonitorWithPrompt(sdp, loc, "is a " + obj + " visible?", 5, is_object_found)
         _langgraph_initiated_move = False
 
-        loc = _locations.get(obj, None)
-        if loc is not None:
-            loc = (loc[0], loc[1], math.degrees(loc[2]))  # convert yaw to degrees for output
-            result += f", {obj} was found at {loc}"
-            del _locations[obj]
-        else:
-            result += f", {obj} was not found"
+        return result + f", {obj} "+ ("was found." if found else "was not found.") 
 
-        return result
-    except Exception as e:
-        return f"Error finding {obj}: {str(e)}"
-        
 def aim_camera_tool_helper(yaw: int = None, pitch: int = None):
     """Aim camera to specific yaw and/or pitch angles."""
     try:
@@ -4539,6 +4827,46 @@ def stop_tracking_tool_helper():
     except Exception as e:
         return f"Error stopping tracking: {str(e)}"
 
+def describe_scene_tool_helper():
+    """Describe the scene concisely."""
+    try:
+        prompt = "Describe the scene concisely."
+        _nano_vlm.set_prompts([prompt])
+        answer, _, _ = _nano_vlm.get_output(prompt_filter=prompt)
+        _mdai.drawText(answer, 1, 14)
+        return answer
+    except Exception as e:
+        return f"Error describing the scene: {str(e)}"    
+
+def ask_question_about_scene_tool_helper(prompt: str):
+    """Ask question about the scene."""
+    try:
+        _nano_vlm.set_prompts([prompt])
+        answer, _, _ = _nano_vlm.get_output(prompt_filter=prompt)
+        _mdai.drawText(answer, 1, 14)
+        return answer
+    except Exception as e:
+        return f"Error asking about the scene: {str(e)}"
+
+def get_yolo_detections_tool_helper(sdp: MyClient):
+    """Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."""
+    try:
+        detections = _mdai.getPersonDetections()
+        detections += _mdai.getObjectDetections()
+
+        results = []
+
+        if len(detections) > 0:
+            # list of dicts with 'label', 'confidence', xt, yt, yaw
+            for det in detections:
+                results.append({
+                    'label': det.label,
+                    'coords': getLocationOfObj(sdp, det.label, det, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                })
+        return results 
+    except Exception as e:
+        return [{'error': f"Error getting YOLO detections: {str(e)}"}]
+
 # Export dictionary for LangGraph tools
 langgraph_tool_funcs = {
     # Location & Navigation
@@ -4553,6 +4881,16 @@ langgraph_tool_funcs = {
     
     # Object Detection & Retrieval
     "while_go_to_loc_find_object": while_go_to_loc_find_object_tool_helper,
+    "search_for_object": search_for_object_tool_helper,
+    "go_to_location_with_narration": go_to_location_with_narration_tool_helper,
+    "get_yolo_detections": get_yolo_detections_tool_helper,
+
+    #"deliver_object_to_person": deliver_object_to_person_tool_helper,
+    #"get_object_from_person": get_object_from_person_tool_helper,
+
+    # Scene description & VLM
+    "describe_scene": describe_scene_tool_helper,
+    "ask_question_about_scene": ask_question_about_scene_tool_helper,
 
     # Person Detection & Recognition
     "identify_visible_face": identify_visible_face_tool_helper,
@@ -4586,9 +4924,28 @@ langgraph_tool_funcs = {
 # and threads get started
 def initialize_robot():
     global _moods, _internet, _eyes_flag, _facial_recog
-    global _listen_thread, _cmdEmbedMgr, _langgraph
+    global _listen_thread, _cmdEmbedMgr, _langgraph, _nano_vlm
 
     _internet = True
+
+    if _jetson_on:
+        # Initialize NanoVLM client with retry logic
+        _nano_vlm = NanoVlmClient()
+        max_retries = 3
+        retry_wait = 10  # seconds
+        
+        for attempt in range(1, max_retries + 1):
+            print(f"Attempting to connect to NanoVLM server (attempt {attempt}/{max_retries})...")
+            if _nano_vlm.connect():
+                print("NanoVLM connection established.")
+                break
+            else:
+                if attempt < max_retries:
+                    print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
+                    time.sleep(retry_wait)
+                else:
+                    print("WARNING: No VLM connection available after all retries.")
+                    _nano_vlm = None
 
     start_button_pad_thread()
 
@@ -4597,7 +4954,6 @@ def initialize_robot():
 
     _cmdEmbedMgr = CmdEmbedMgr()
     _cmdEmbedMgr.load_cmds_embeddings()
-
     _listen_thread = Thread(target = listen, name = "Listen")
     _listen_thread.start()
 
@@ -4730,32 +5086,68 @@ def robot():
     shutdown_robot()
 
 class MicArray(object):
+    """Microphone array interface with simulation fallback.
+    
+    If the USB microphone array device is not available, operates in
+    simulation mode with default values.
+    """
+    
     def __init__(self):
+        self._sim_mode = False
         self.dev = usb.core.find(idVendor=0x2886, idProduct=0x0018)
         if not self.dev:
-            raise RuntimeError("Error, could not initialize mic array.")
-        self.tuning = Tuning(self.dev)
+            print("WARNING: Mic array not found. Running in simulation mode.")
+            self._sim_mode = True
+            self.tuning = None
+        else:
+            self.tuning = Tuning(self.dev)
 
-    def getDoa(self):
+    def is_sim_mode(self) -> bool:
+        """Check if running in simulation mode."""
+        return self._sim_mode
+
+    def getDoa(self) -> int:
+        """Get direction of arrival in degrees (0-359).
+        
+        In sim mode, returns 90 (straight ahead).
+        """
+        if self._sim_mode:
+            return 90
         return self.tuning.direction
     
-    def getIsSpeech(self):
+    def getIsSpeech(self) -> bool:
+        """Check if speech is detected.
+        
+        In sim mode, always returns False.
+        """
+        if self._sim_mode:
+            return False
         return self.tuning.is_speech()
 
-    def doa2YawDelta(self, doa):
+    def doa2YawDelta(self, doa) -> int:
+        """Convert DOA to yaw delta from forward direction."""
         yawDelta = doa - 90
         if yawDelta >= 180:
             yawDelta = yawDelta - 360
         return yawDelta
 
-    def rotateToDoa(self, doa, sdp):
+    def rotateToDoa(self, doa, sdp) -> int:
+        """Rotate robot to face direction of arrival.
+        
+        In sim mode, does nothing and returns 0.
+        """
+        if self._sim_mode:
+            print("[SIM] rotateToDoa called - no rotation in sim mode")
+            return 0
         yawDelta = self.doa2YawDelta(doa)
         print("turning toward where heard person")
         turn(yawDelta, sdp)
         return yawDelta
 
     def close(self):
-        usb.util.dispose_resources(self.dev)
+        """Release USB resources."""
+        if not self._sim_mode and self.dev:
+            usb.util.dispose_resources(self.dev)
 
 # def init_local_speech_rec():
 #     # Start an in-process edge recognizer using SAPI.
@@ -4879,21 +5271,26 @@ def main(argv):
     import getopt
     no_move = False
     try:
-        opts, args = getopt.getopt(argv, "hn", ["help", "no-move"])
+        opts, args = getopt.getopt(argv, "hnj", ["help", "no-move", "no-jetson"])
     except getopt.GetoptError:
-        print('Usage: python main.py [-n|--no-move]')
+        print('Usage: python main.py [-n|--no-move] [-j | --no-jetson]')
         sys.exit(2)
         
     for opt, arg in opts:
         if opt in ('-h', '--help'):
-            print('Usage: python main.py [-n|--no-move]')
+            print('Usage: python main.py [-n|--no-move] [-j | --no=jetson]')
             print('Options:')
             print('  -n, --no-move    Disable actual movement commands')
+            print('  -j, --no-jetson  Disable Jetson-related features')
             sys.exit()
         elif opt in ("-n", "--no-move"):
             no_move = True
             print("Movement commands disabled")
-                
+        elif opt in ("-j", "--no-jetson"):
+            global _jetson_on
+            _jetson_on = False
+            print("Jetson-related features disabled")
+        
     while 1:
         run(no_move=no_move)
         if not _restart_flag:

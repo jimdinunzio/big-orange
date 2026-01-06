@@ -49,6 +49,7 @@ class RobotPlannerGraph:
         self.wait_until_speech_done = wait_until_speech_done
         self._cancel = False
         self._suppress_speech = False
+        self._is_processing = False
 
         prompt_name ="orange_prompt_short"
         init_prompt = ""
@@ -316,6 +317,11 @@ class RobotPlannerGraph:
     def has_vision(self):
         return self._has_vision
 
+    @property
+    def is_processing(self):
+        """Return True if the agent is currently processing a request."""
+        return self._is_processing
+
     def cancel_stream(self):
         # Request cancellation of the current run.
         # Actual stopping is coordinated inside _run_stream so that
@@ -421,6 +427,7 @@ class RobotPlannerGraph:
 
     def send_input(self, user_input: str, image=None):
         self._cancel = False
+        self._is_processing = True
         if image is None:
             message = HumanMessage(content=user_input)
         else:
@@ -463,6 +470,8 @@ class RobotPlannerGraph:
                         m.pretty_print()
             except Exception as e:
                 print(f"Error in background stream: {e}")
+            finally:
+                self._is_processing = False
 
         # Launch background streaming so callers (e.g., listen loop) never block
         self._stream_thread = Thread(target=_run_stream, args=(message,), daemon=True)

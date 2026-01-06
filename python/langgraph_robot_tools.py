@@ -340,7 +340,7 @@ class RobotTools:
         return self.call_tool_helper("list_locations")
 
     def go_to_location_by_coords(self, x: float, y: float, yaw: float) -> str:
-        """Go to a specific location by coordinates."""
+        """Go to a location with given coordinates."""
         if self.sim:
             # Simulate going to location by updating pose
             self._sdp.set_pose(x, y, yaw)
@@ -372,6 +372,65 @@ class RobotTools:
         else:
             # For real hardware, call helper directly; progress is handled inside helpers
             return self.call_tool_helper("go_to_location", self._sdp, location_name)
+
+    def go_to_location_with_narration(self, location_name: str, narration_interval_seconds: int = 5) -> str:
+        """Go to a specific named location while periodically describing the scene.
+        
+        This tool navigates to the specified location and every narration_interval_seconds,
+        captures and speaks a description of what is seen. The descriptions are spoken
+        aloud (which also records them to conversation history).
+        
+        Args:
+            location_name: The name of the destination location
+            narration_interval_seconds: How often to describe the scene (default 5 seconds)
+            
+        Returns:
+            A summary including arrival status and all observations made during the journey
+        """
+        if self.sim:
+            # Simulate going to location with narration
+            locations = {
+                "home": (0.0, 0.0, 0.0),
+                "kitchen": (2.0, 1.0, 90.0),
+                "living_room": (-1.0, 2.0, 45.0),
+                "bedroom": (1.0, -1.0, -90.0)
+            }
+            if location_name not in locations:
+                return f"Location '{location_name}' not found (simulated)."
+            
+            observations = []
+            sim_scenes = [
+                "I see the hallway with some pictures on the wall.",
+                "There's a chair on my left and a window ahead.",
+                "I'm passing by the living room area."
+            ]
+            
+            # Simulate 3 observations during journey
+            for i, scene in enumerate(sim_scenes):
+                time.sleep(narration_interval_seconds)
+                observations.append(f"[{(i+1)*narration_interval_seconds}s] {scene}")
+                print(f"[SIM] Narration: {scene}")
+            
+            x, y, yaw = locations[location_name]
+            self._sdp.set_pose(x, y, yaw)
+            
+            return f"Arrived at {location_name}. Observations during journey: {'; '.join(observations)} (simulated)"
+        else:
+            return self.call_tool_helper("go_to_location_with_narration", self._sdp, location_name, narration_interval_seconds)
+
+    def search_for_object(self, object_name: str, height: str, rot_clockwise: bool = True) -> str:
+        """Search for a specific object by name by rotating and scanning."""
+        if self.sim:
+            # Simulate rotating 360 degrees to search
+            pose = self._sdp.pose()
+            self._sdp.set_pose(pose.x, pose.y, pose.yaw + 360)
+            # Simulate finding the object if name is in known list
+            known_objects = ["apple", "book", "bottle"]
+            if object_name in known_objects:
+                return f"Completed 360° search for {object_name} (simulated), found {object_name}."
+            else:
+                return f"Completed 360° search for {object_name} (simulated), did not find {object_name}."
+        return self.call_tool_helper("search_for_object", self._sdp, object_name, height, rot_clockwise)
 
     def where_am_i(self) -> str:
         """Get current location information."""
@@ -432,7 +491,7 @@ class RobotTools:
         return self.call_tool_helper("move_in_dir_dist", self._sdp, direction, distance, unit)
 
     def search_for_person(self) -> str:
-        """Search for any person by rotating and scanning."""
+        """Search for closest person by rotating and scanning."""
         if self.sim:
             # Simulate rotating 360 degrees to search
             pose = self._sdp.pose()
@@ -641,7 +700,34 @@ class RobotTools:
             }
         }
         return image_json
+
+    def get_yolo_object_detections(self) -> List[Dict[str, Union[str, Tuple[float, float, float]]]]:
+        """Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."""
+        if self.sim:
+            # Simulated detections
+            return [
+                {"label": "person", "coords": (1.2, 0.5, 90.0)},
+                {"label": "chair", "coords": (0.8, 1.5, 45.0)}
+            ]
+        result = self.call_tool_helper("get_yolo_detections", self._sdp)
+        if isinstance(result, list):
+            return result
+        return []
+
+    def describe_scene(self) -> str:
+        """Describe the scene concisely."""
+        if self.sim:
+            return "I see a simulated room with furniture and a person."
+        return self.call_tool_helper("describe_scene")
     
+    def ask_question_about_scene(self, question: str) -> str:
+        """Ask a question about the current scene."""
+        if self.sim:
+            return f"Simulated answer to the question: {question}"
+        return self.call_tool_helper("ask_question_about_scene", question)
+    
+    # Tool definitions for LangGraph
+
     def get_move_by_deltas_tool(self):
         return StructuredTool.from_function(
             func=self.move_by_deltas,
@@ -698,6 +784,10 @@ class RobotTools:
     class LocationInput(BaseModel):
         location_name: str = Field(..., description="Name of the location to go to")
 
+    class LocationWithNarrationInput(BaseModel):
+        location_name: str = Field(..., description="Name of the location to go to")
+        narration_interval_seconds: Optional[int] = Field(5, description="How often to describe the scene in seconds")
+        
     class GoToLocationByCoordsInput(BaseModel):
         x: float = Field(..., description="X coordinate in meters")
         y: float = Field(..., description="Y coordinate in meters")
@@ -711,11 +801,15 @@ class RobotTools:
 
     class FaceAndLocationInput(BaseModel):
         name: str = Field(..., description="Name of the person/face to find")
-        location_name: str = Field(..., description="Name of the location to go to ('' if this room)")
+        location_name: str = Field(..., description="Name of the location to go to or 'across the room'")
         
     class ObjAndLocationInput(BaseModel):
         object_name: str = Field(..., description="Name of the object to find")
-        location_name: str = Field(..., description="Name of the location to go to ('' if this room)")
+        location_name: str = Field(..., description="Name of the location to go to or 'across the room'")
+
+    class ObjSearchInput(BaseModel):
+        object_name: str = Field(..., description="Name of the object to search for")
+        height: str = Field(..., description="Height to search at: floor, eye level (default), up high")
 
     class DirectionDistanceInput(BaseModel):
         direction: str = Field(..., description="Direction: forward, backward, left, right")
@@ -730,7 +824,6 @@ class RobotTools:
         """Get all available LangGraph tools."""
         return [
             # Core movement and navigation
-            self.get_move_by_deltas_tool(),
             self.get_pose_tool(),
             
             # Battery and system tools
@@ -826,7 +919,7 @@ class RobotTools:
                 func=self.go_to_location_by_coords,
                 args_schema=self.GoToLocationByCoordsInput,
                 name="go_to_location_by_coords",
-                description="Go to a specific location by coordinates."
+                description="Go to a location with given coordinates."
             ),
 
             StructuredTool.from_function(
@@ -859,7 +952,7 @@ class RobotTools:
             StructuredTool.from_function(
                 func=self.search_for_person,
                 name="search_for_person",
-                description="Search for any person by rotating and scanning."
+                description="Search for closest person by rotating and scanning."
             ),
 
             StructuredTool.from_function(
@@ -892,14 +985,14 @@ class RobotTools:
                 func=self.while_go_to_location_find_face,
                 args_schema=self.FaceAndLocationInput,
                 name="while_go_to_location_find_face",
-                description="Search for a specific face by name while going to a location. Return coords if found."
+                description="While going to a loc, look for face by name and stop as soon as it is seen and report its coords."
             ),
             
             StructuredTool.from_function(
                 func=self.while_go_to_loc_find_object,
                 args_schema=self.ObjAndLocationInput,
                 name="while_go_to_loc_find_object",
-                description="Search for a specific object by name while going to a location. Return coords if found."
+                description="While going to loc, look for object and stop as soon as it is seen and report its coords."
             ),
 
             StructuredTool.from_function(
@@ -953,5 +1046,40 @@ class RobotTools:
             
             # Picture management tools
             self.get_num_pictures_in_album_tool(),
-            self.get_nth_picture_from_album_tool()
+            self.get_nth_picture_from_album_tool(),
+            
+            # Scene description & VLM tools
+            StructuredTool.from_function(
+                func=self.describe_scene,
+                name="describe_scene",
+                description="[VISION] Get current camera view description. MUST call for 'what do you see' questions."
+            ),
+
+            StructuredTool.from_function(
+                func=self.ask_question_about_scene,
+                name="ask_question_about_scene",
+                description="[VISION] Ask yes/no or specific question about current camera view. MUST call for 'is there a X' questions."
+            ),
+
+            StructuredTool.from_function(
+                func=self.go_to_location_with_narration,
+                args_schema=self.LocationWithNarrationInput,
+                name="go_to_location_with_narration",
+                description="Go to a specific named location while periodically describing the scene."
+            ),
+
+            StructuredTool.from_function(
+                func=self.search_for_object,
+                args_schema=self.ObjSearchInput,
+                name="search_for_object",
+                description="Search for a specific object by name by rotating and scanning."
+            ),
+
+            StructuredTool.from_function(
+                func=self.get_yolo_object_detections,
+                name="get_yolo_object_detections",
+                description="Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."
+            ),
+
+            self.get_move_by_deltas_tool(),
         ]

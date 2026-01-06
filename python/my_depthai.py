@@ -76,6 +76,10 @@ class MyDepthAI:
         self._get_picture_cb = None
         self._closePictures = False
         self.window_size = [832, 832]
+        
+        # Text overlay state: {line: (text, size, expire_time)}
+        self._text_overlay = {}
+        self._text_overlay_lock = Lock()
 
         if self.model == "mobileNet":
             # Mobilenet ssd labels
@@ -267,6 +271,21 @@ class MyDepthAI:
         if value != self._showDepthWindow:
             self._showDepthWindow = value
             self.inner_run_flag = False            
+
+    def drawText(self, text, line, size):
+        """
+        Draw text over the RGB window at the top left in dark yello.
+        
+        Args:
+            text: The string to display
+            line: Line number 1-5 for vertical position
+            size: Point size for the text
+        """
+        if line < 1 or line > 5:
+            return
+        expire_time = time.monotonic() + 5.0
+        with self._text_overlay_lock:
+            self._text_overlay[line] = (text, size, expire_time)
         
     def safe_startUp(self, *args, **kwargs):
         try:
@@ -429,6 +448,27 @@ class MyDepthAI:
                             if self._showRgbWindow:           
 
                                 cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                                
+                                # Draw text overlay
+                                current_time = time.monotonic()
+                                with self._text_overlay_lock:
+                                    expired_lines = []
+                                    for line_num, (text, size, expire_time) in self._text_overlay.items():
+                                        if current_time < expire_time:
+                                            # Calculate font scale from point size (approximate conversion)
+                                            font_scale = size / 30.0
+                                            thickness = max(1, int(font_scale * 2))
+                                            # Calculate y position based on line number (1-5)
+                                            y_pos = int(line_num * size * 1.2) + 10
+                                            # Draw dark outline first for contrast, then bright green text
+                                            cv2.putText(frame, text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 1, cv2.LINE_AA)
+                                            cv2.putText(frame, text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (50, 255, 50), thickness, cv2.LINE_AA)
+                                        else:
+                                            expired_lines.append(line_num)
+                                    # Remove expired text entries
+                                    for line_num in expired_lines:
+                                        del self._text_overlay[line_num]
+                                
                                 cv2.imshow(rgb_win_name, frame)
                             
                             if self._showDepthWindow:
