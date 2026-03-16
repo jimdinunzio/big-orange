@@ -84,11 +84,11 @@ class MyDepthAI:
         # ROI overlay: (x1, y1, x2, y2) in pixel coords + text, or None
         self._roi_rect = None
         self._roi_text = None
+        self._roi_last_draw_time = 0
 
         # Latest frame storage for external consumers (e.g. NanoOwlManager)
         self._frame_lock = Lock()
         self._latest_preview = None   # numpy BGR
-        self._latest_depth = None     # numpy uint16 depth in mm
         self._frame_seq = 0
 
         if self.model == "mobileNet":
@@ -313,12 +313,12 @@ class MyDepthAI:
         with self._text_overlay_lock:
             self._text_overlay[line] = (text, size, expire_time)
         
-    def getLatestFrames(self):
-        """Return (preview_bgr, depth_frame, seq) or (None, None, 0) if not yet available."""
+    def getLatestFrame(self):
+        """Return (preview_bgr, seq) or (None, 0) if not yet available."""
         with self._frame_lock:
             if self._latest_preview is None:
-                return None, None, 0
-            return self._latest_preview.copy(), self._latest_depth.copy(), self._frame_seq
+                return None, 0
+            return self._latest_preview.copy(), self._frame_seq
 
     def getPreviewSize(self):
         """Return (width, height) of the preview frame, or None if not yet available."""
@@ -371,6 +371,7 @@ class MyDepthAI:
         result = (coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0)
 
         if draw:
+            self._roi_last_draw_time = time.monotonic()
             size = self.getPreviewSize()
             if size is not None:
                 pw, ph = size
@@ -379,9 +380,6 @@ class MyDepthAI:
             else:
                 self._roi_rect = None
                 self._roi_text = None
-        else:
-            self._roi_rect = None
-            self._roi_text = None
 
         return result
 
@@ -463,7 +461,6 @@ class MyDepthAI:
                             # Store latest frames for external consumers
                             with self._frame_lock:
                                 self._latest_preview = inPreview.getCvFrame()
-                                self._latest_depth = depth.getFrame()
                                 self._frame_seq += 1
 
                             counter+=1
@@ -580,6 +577,11 @@ class MyDepthAI:
                                     for line_num in expired_lines:
                                         del self._text_overlay[line_num]
                                 
+                                # Auto-clear ROI overlay after 0.5s of no draw=True calls
+                                if self._roi_rect is not None and (current_time - self._roi_last_draw_time) > 5.0:
+                                    self._roi_rect = None
+                                    self._roi_text = None
+
                                 # Draw ROI overlay if set by getSpatialForROI(draw=True)
                                 if self._roi_rect is not None:
                                     rx1, ry1, rx2, ry2 = self._roi_rect

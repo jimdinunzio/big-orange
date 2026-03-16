@@ -132,6 +132,7 @@ _cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
 _langgraph_initiated_move = False
+_keep_camera_orientation = False  # prevent handleGotoLocation from resetting OAK-D/eyes
 _goto_location_status = "idle"
 _nano_vlm : NanoVlmClient = None
 _nano_owl : NanoOwlClient = None
@@ -792,7 +793,7 @@ def handleGotoLocation():
         _goal = ""
         if len(_goal_queue) > 0:
             _goal = _goal_queue.pop(0)
-        else:
+        elif not _keep_camera_orientation:
             _move_oak_d.allHome()
             eyes.setHome()
         if _goal == "release_obj": # not a location goal but a command token
@@ -1207,7 +1208,124 @@ def moveActionMonitor(sdp=None, location_name=None):
 
     return message
 
-def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe the scene concisely.", 
+def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
+    """Monitor movement while polling NanoOWL for an object.
+    Sweeps camera back and forth while moving. On detection, stops to recheck.
+    If recheck fails, resumes movement to destination.
+
+    Args:
+        sdp: The SDP client connection
+        location_name: The intended destination
+        obj_name: Object name to search for via NanoOWL
+        poll_interval: How often to poll OWL detections (seconds)
+
+    Returns:
+        (result_message, spatial_detection_or_None)
+    """
+    global _action_flag, _interrupt_action, _nano_owl_mgr
+
+    # Wait for action flag to become true (movement started)
+    if location_name is not None:
+        while _action_flag == False and _run_flag:
+            if _goal == "":
+                return "unknown location", None
+            time.sleep(0.25)
+
+    maStatus = ActionStatus.Running
+    spatial_det = None
+    obj_confirmed = False
+
+    RECHECK_FRAMES = 5
+
+    _move_oak_d.startSweepingBackAndForth(0)
+
+    while _run_flag and _interrupt_action == False:
+        # Poll OWL for the object
+        try:
+            found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+            if found:
+                _mdai.drawText(obj_name, 1, 14)
+                print(f"OWL spotted {obj_name}, stopping to get a lock: z={spatial.z:.2f}m theta={spatial.theta:.1f}deg")
+                sdp.cancelMoveAction()
+                _move_oak_d.stopSweepingBackAndForth()
+                time.sleep(2)
+
+                # Recheck detection over multiple frames to confirm lock
+                for attempt in range(RECHECK_FRAMES):
+                    recheck_found, recheck_spatial = _nano_owl_mgr.check_for_object(obj_name)
+                    if recheck_found:
+                        spatial_det = recheck_spatial
+                        print(f"OWL confirmed {obj_name} (frame {attempt+1}): z={recheck_spatial.z:.2f}m theta={recheck_spatial.theta:.1f}deg")
+                        obj_confirmed = True
+                        break
+                    time.sleep(poll_interval)
+
+                if obj_confirmed:
+                    maStatus = ActionStatus.Finished
+                    break
+
+                # Lost track after multiple frames, sweep 1/3 range to try to reacquire
+                print(f"OWL saw {obj_name} but lost track after {RECHECK_FRAMES} frames, sweeping 1/3 range to reacquire")
+                _move_oak_d.startSweepingBackAndForth(1, min=75, max=105)
+                while _move_oak_d.isSweeping():
+                    recheck_found, recheck_spatial = _nano_owl_mgr.check_for_object(obj_name)
+                    if recheck_found:
+                        spatial_det = recheck_spatial
+                        print(f"OWL reacquired {obj_name}: z={recheck_spatial.z:.2f}m theta={recheck_spatial.theta:.1f}deg")
+                        obj_confirmed = True
+                        break
+                    time.sleep(poll_interval)
+                if obj_confirmed:
+                    _move_oak_d.stopSweepingBackAndForth()
+                    maStatus = ActionStatus.Finished
+                    break
+                # Failed to reacquire, resume going to destination
+                print(f"Could not reacquire {obj_name}, resuming movement to {location_name}")
+                _move_oak_d.startSweepingBackAndForth(0)
+                goToLocation(location_name)
+                # Wait for action flag to become true again
+                while _action_flag == False and _run_flag:
+                    if _goal == "":
+                        break
+                    time.sleep(0.25)
+                continue
+        except Exception as e:
+            print(f"Error during OWL object check: {e}")
+
+        # Check movement status
+        maStatus = getMoveActionStatus(sdp)
+        if maStatus == ActionStatus.Stopped or \
+            maStatus == ActionStatus.Error or \
+            maStatus == ActionStatus.Finished:
+            break
+
+        time.sleep(poll_interval)
+
+    if _move_oak_d.isSweeping():
+        _move_oak_d.stopSweepingBackAndForth()
+
+    # Wait for action to finish
+    while _action_flag and _run_flag:
+        time.sleep(0.1)
+
+    if not obj_confirmed:
+        if maStatus != ActionStatus.Finished:
+            message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
+        else:
+            message = "move finished"
+    else:
+        message = "move finished"
+
+    if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
+        if not obj_confirmed:
+            reached_goal = is_close_to(location_name)
+            message += ": arrived at " if reached_goal else ": did not arrive at "
+            message += location_name
+
+    return message, spatial_det
+
+
+def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe the scene concisely.",
                                 prompt_interval_seconds: int = 5, output_cb: Optional[Callable[[str], bool]] = None):
     """Monitors movement while periodically prompting the vlm about the scene.
     
@@ -1591,7 +1709,8 @@ def checkForObject(obj, max_tries=1):
     return False, None
 
 # rotate 360 and stop if a object is spotted
-def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObject=checkForObject, rot_speed=0.1):
+def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObject=checkForObject, rot_speed=0.1,
+                    min_recheck=False, stream_mgr=None):
     global _action_flag, _interrupt_action
 
     _interrupt_action = False
@@ -1639,12 +1758,18 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
         print(f"rechecking {obj}")
         sdp.cancelMoveAction()
         time.sleep(0.3)
+        if stream_mgr is not None:
+            stream_mgr.pause_streaming()
         deg = 5 if is_clockwise else -5
+
         for j in range(1,5):
             for i in range(1,5):
+                if stream_mgr is not None:
+                    stream_mgr.push_fresh_frame()
                 found, p = checkForObject(obj)
                 if found:
-                   break 
+                    break
+                time.sleep(0.12 if min_recheck else 0.05)
             if not found:
                 # go back other way
                 sdp.rotate(math.radians(deg))
@@ -1652,9 +1777,12 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
                 deg = -deg
             else:
                 break
-            
+        if stream_mgr is not None:
+            stream_mgr.resume_streaming()
+
     _action_flag = False
-    _move_oak_d.allHome()
+    if not _keep_camera_orientation:
+        _move_oak_d.allHome()
     return p
 
 # rotate 360 and stop if the person's face is spotted
@@ -4658,14 +4786,14 @@ def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
 
 def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
     """Search for object by rotating in place."""
-    global _interrupt_action
+    global _interrupt_action, _keep_camera_orientation
 
     obj_loc = None
     yolo_obj = obj.replace(' ','')
     if yolo_obj in _mdai.labelMap:
         try:
             p = searchForObject(sdp, yolo_obj, height, rot_clockwise)
-            if p is None:
+            if not _interrupt_action and p is None:
                 p = searchForObject(sdp, yolo_obj, height, not rot_clockwise)
                 
             if _interrupt_action:
@@ -4689,10 +4817,13 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
         _nano_owl_mgr.start_streaming()
         _nano_owl_mgr.get_detections_nms()  # wakeup call
 
+        last_spatial = [None]  # mutable container for closure access
+
         def is_object_found(obj_name):
             try:
                 found, spatial = _nano_owl_mgr.check_for_object(obj_name)
                 if found:
+                    last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
                     print(f"OWL found {obj_name}: z={spatial.z:.2f}m theta={spatial.theta:.1f}deg")
                     return True, spatial
@@ -4701,9 +4832,27 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
             return False, None
 
         try:
-            p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05)
-            if p is None:
-                p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05)
+            _keep_camera_orientation = True
+
+            p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+            if p is None and not _interrupt_action:
+                p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+
+            if p is None and not _interrupt_action and last_spatial[0] is not None and last_spatial[0].z > 0:
+                # Recheck failed but we saw it earlier — move halfway toward last known location and retry
+                half_dist = last_spatial[0].z * 0.5
+                pose = sdp.pose()
+                cam_yaw = _move_oak_d.getYaw()
+                angle = math.radians(pose.yaw + cam_yaw + last_spatial[0].theta)
+                xt = pose.x + half_dist * math.cos(angle)
+                yt = pose.y + half_dist * math.sin(angle)
+                print(f"recheck failed, moving halfway ({half_dist:.2f}m) toward last known {obj} location")
+                sdp.moveToFloat(xt, yt)
+                sdp.waitUntilMoveActionDone()
+                # Search again from new position
+                p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+                if p is None and not _interrupt_action:
+                    p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
 
             if _interrupt_action:
                 _interrupt_action = False
@@ -4721,14 +4870,28 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
         except Exception as e:
             return f"Error searching for object {obj}: {str(e)}"
         finally:
+            _keep_camera_orientation = False
             _nano_owl_mgr.stop_streaming()
             _nano_owl_mgr.clear_prompt()
             _move_oak_d.allHome()
 
-def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
+def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str = "eye level"):
     """While going to loc, look for object and stop as soon as it is seen and report its coords."""
-    global _langgraph_initiated_move, _locations
-    
+    global _langgraph_initiated_move, _locations, _user_set_speed, _keep_camera_orientation
+
+    # Set camera pitch based on height specification
+    if height == "floor":
+        aim_oakd(pitch=135)
+        eyes.setTargetPitchYaw(-50, 0)
+    elif height == "up high":
+        aim_oakd(pitch=85)
+        eyes.setTargetPitchYaw(50, 0)
+    else:  # eye level
+        _move_oak_d.allHome()
+        eyes.setHome()
+
+    sdp.setSpeed(1)  # slow speed while searching
+
     yolo_obj = obj.replace(' ','')
     if yolo_obj in _mdai.labelMap:
         try:
@@ -4749,29 +4912,42 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
             return result
         except Exception as e:
             return f"Error finding {obj}: {str(e)}"
+        finally:
+            _move_oak_d.allHome()
+            sdp.setSpeed(_user_set_speed)
     else:
-        # object not handled by YOLO. Use VLM-based object search
+        # object not handled by YOLO. Use NanoOWL-based object search
+        if _nano_owl_mgr is None:
+            return f"Error: NanoOWL not available to search for {obj}."
 
-        found = False
-        def is_object_found(output):
-            nonlocal found
-            _mdai.drawText(output, 1, 14)
+        _nano_owl_mgr.set_prompt(f"[{obj}]")
+        _nano_owl_mgr.start_streaming()
+        _nano_owl_mgr.get_detections_nms()  # wakeup call
 
-            try:
-                if output == "1":
-                    found = True
-                    speak(f"I found a {obj}. Stopping.", tts.flags.SpeechVoiceSpeakFlags.FlagsAsync.value)
-                    return True
-            except Exception as e:
-                print(f"Error during object found check: {str(e)}")  
-            return False
-        
-        _langgraph_initiated_move = True
-        goToLocation(loc)
-        result = moveActionMonitorWithPrompt(sdp, loc, "is a " + obj + " visible?", 5, is_object_found)
-        _langgraph_initiated_move = False
+        try:
+            _langgraph_initiated_move = True
+            _keep_camera_orientation = True
+            goToLocation(loc)
+            result, spatial_det = moveActionMonitorWithOwl(sdp, loc, obj)
+            _langgraph_initiated_move = False
 
-        return result + f", {obj} "+ ("was found." if found else "was not found.") 
+            if spatial_det is not None and spatial_det.z > 0:
+                obj_loc = getLocationOfObj(sdp, obj, spatial_det, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                if obj_loc:
+                    return result + f", {obj} is at {obj_loc}. I am not at {loc} or near the {obj}"
+                return result + f", {obj} was found but depth unavailable, cannot determine location."
+            elif spatial_det is not None:
+                return result + f", {obj} was found but depth unavailable, cannot determine location."
+            else:
+                return result + f", {obj} was not found and I am now at {loc}."
+        except Exception as e:
+            return f"Error finding {obj}: {str(e)}"
+        finally:
+            _keep_camera_orientation = False
+            _nano_owl_mgr.stop_streaming()
+            _nano_owl_mgr.clear_prompt()
+            _move_oak_d.allHome()
+            sdp.setSpeed(_user_set_speed)
 
 def aim_camera_tool_helper(yaw: int = None, pitch: int = None):
     """Aim camera to specific yaw and/or pitch angles."""

@@ -575,7 +575,7 @@ class RobotTools:
                 return f"Location '{location_name}' not found (simulated)."
         return self.call_tool_helper("while_go_to_location_find_face", self._sdp, name, location_name)
     
-    def while_go_to_loc_find_object(self, object_name: str, location_name: str) -> str:
+    def while_go_to_loc_find_object(self, object_name: str, location_name: str, height: str = "eye level") -> str:
         """Go to location while searching for a specific object by name."""
         if self.sim:
             found = False
@@ -590,7 +590,7 @@ class RobotTools:
             if location_name in locations:
                 if location_name != '':
                     x, y, yaw = locations[location_name]
-                    self._sdp.set_pose(x, y, yaw)                        
+                    self._sdp.set_pose(x, y, yaw)
 
                 time.sleep(5)  # Simulate time taken to go to location
                 # Simulate object detection
@@ -603,7 +603,7 @@ class RobotTools:
             else:
                 return f"Location '{location_name}' not found (simulated)."
         self._sdp.wakeup()
-        return self.call_tool_helper("while_go_to_loc_find_object", self._sdp, object_name, location_name)
+        return self.call_tool_helper("while_go_to_loc_find_object", self._sdp, object_name, location_name, height)
 
 
     def aim_camera(self, yaw: Optional[int] = None, pitch: Optional[int] = None) -> str:
@@ -806,6 +806,7 @@ class RobotTools:
     class ObjAndLocationInput(BaseModel):
         object_name: str = Field(..., description="Name of the object to find")
         location_name: str = Field(..., description="Name of the location to go to or 'across the room'")
+        height: str = Field("eye level", description="Height to search at: floor, eye level (default), up high")
 
     class ObjSearchInput(BaseModel):
         object_name: str = Field(..., description="Name of the object to search for")

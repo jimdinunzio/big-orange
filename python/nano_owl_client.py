@@ -16,6 +16,7 @@ import xmlrpc.client
 import time
 import sys
 import cv2
+from threading import Lock
 from typing import Optional, Dict, List
 
 # Default server address
@@ -39,6 +40,7 @@ class NanoOwlClient:
         self.server_url = server_url
         self._proxy: Optional[xmlrpc.client.ServerProxy] = None
         self._connected = False
+        self._lock = Lock()
 
     def connect(self, timeout: float = 5.0) -> bool:
         try:
@@ -63,7 +65,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            return str(self._proxy.ping())
+            with self._lock:
+                return str(self._proxy.ping())
         except Exception as e:
             print(f"Ping error: {e}")
             self._connected = False
@@ -73,7 +76,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            result = self._proxy.get_status()
+            with self._lock:
+                result = self._proxy.get_status()
             return dict(result) if result else None
         except Exception as e:
             print(f"Get status error: {e}")
@@ -83,7 +87,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            return bool(self._proxy.is_running())
+            with self._lock:
+                return bool(self._proxy.is_running())
         except Exception as e:
             print(f"Is running error: {e}")
             return None
@@ -92,7 +97,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return False
         try:
-            return bool(self._proxy.enable())
+            with self._lock:
+                return bool(self._proxy.enable())
         except Exception as e:
             print(f"Enable error: {e}")
             return False
@@ -101,7 +107,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return False
         try:
-            return bool(self._proxy.disable())
+            with self._lock:
+                return bool(self._proxy.disable())
         except Exception as e:
             print(f"Disable error: {e}")
             return False
@@ -110,7 +117,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            return bool(self._proxy.is_enabled())
+            with self._lock:
+                return bool(self._proxy.is_enabled())
         except Exception as e:
             print(f"Is enabled error: {e}")
             return None
@@ -119,7 +127,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            return str(self._proxy.get_prompt())
+            with self._lock:
+                return str(self._proxy.get_prompt())
         except Exception as e:
             print(f"Get prompt error: {e}")
             return None
@@ -128,7 +137,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return False
         try:
-            return bool(self._proxy.set_prompt(prompt))
+            with self._lock:
+                return bool(self._proxy.set_prompt(prompt))
         except Exception as e:
             print(f"Set prompt error: {e}")
             return False
@@ -155,7 +165,8 @@ class NanoOwlClient:
                 print("Error: JPEG encoding failed")
                 return False
             binary_data = xmlrpc.client.Binary(buf.tobytes())
-            return bool(self._proxy.push_frame(binary_data, seq))
+            with self._lock:
+                return bool(self._proxy.push_frame(binary_data, seq))
         except Exception as e:
             print(f"Push frame error: {e}")
             return False
@@ -176,7 +187,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return None
         try:
-            result = self._proxy.get_detections()
+            with self._lock:
+                result = self._proxy.get_detections()
             return dict(result) if result else None
         except Exception as e:
             print(f"Get detections error: {e}")
@@ -186,7 +198,8 @@ class NanoOwlClient:
         if not self._connected or self._proxy is None:
             return False
         try:
-            self._proxy.reboot()
+            with self._lock:
+                self._proxy.reboot()
             return True
         except Exception as e:
             print(f"Reboot error: {e}")
