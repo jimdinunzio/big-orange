@@ -81,6 +81,16 @@ class MyDepthAI:
         self._text_overlay = {}
         self._text_overlay_lock = Lock()
 
+        # ROI overlay: (x1, y1, x2, y2) in pixel coords + text, or None
+        self._roi_rect = None
+        self._roi_text = None
+
+        # Latest frame storage for external consumers (e.g. NanoOwlManager)
+        self._frame_lock = Lock()
+        self._latest_preview = None   # numpy BGR
+        self._latest_depth = None     # numpy uint16 depth in mm
+        self._frame_seq = 0
+
         if self.model == "mobileNet":
             # Mobilenet ssd labels
             self.labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
@@ -194,6 +204,22 @@ class MyDepthAI:
         stereo.depth.link(spatialDetectionNetwork.inputDepth)
         spatialDetectionNetwork.passthroughDepth.link(xoutDepth.input)
 
+        # SpatialLocationCalculator for on-demand ROI depth queries (used by NanoOwlManager)
+        spatialCalc = self.pipeline.create(dai.node.SpatialLocationCalculator)
+        spatialCalc.setWaitForConfigInput(True)
+        spatialCalc.inputDepth.setBlocking(False)
+        spatialCalc.inputDepth.setQueueSize(1)
+
+        xinSpatialCalcConfig = self.pipeline.createXLinkIn()
+        xinSpatialCalcConfig.setStreamName("spatialCalcConfig")
+        xinSpatialCalcConfig.out.link(spatialCalc.inputConfig)
+
+        stereo.depth.link(spatialCalc.inputDepth)
+
+        xoutSpatialCalc = self.pipeline.createXLinkOut()
+        xoutSpatialCalc.setStreamName("spatialCalcData")
+        spatialCalc.out.link(xoutSpatialCalc.input)
+
         if self.use_tracker:
             # Create object tracker
             objectTracker = self.pipeline.createObjectTracker()
@@ -287,6 +313,83 @@ class MyDepthAI:
         with self._text_overlay_lock:
             self._text_overlay[line] = (text, size, expire_time)
         
+    def getLatestFrames(self):
+        """Return (preview_bgr, depth_frame, seq) or (None, None, 0) if not yet available."""
+        with self._frame_lock:
+            if self._latest_preview is None:
+                return None, None, 0
+            return self._latest_preview.copy(), self._latest_depth.copy(), self._frame_seq
+
+    def getPreviewSize(self):
+        """Return (width, height) of the preview frame, or None if not yet available."""
+        with self._frame_lock:
+            if self._latest_preview is not None:
+                h, w = self._latest_preview.shape[:2]
+                return w, h
+        return None
+
+    def getSpatialForROI(self, xmin, ymin, xmax, ymax, draw=False):
+        """
+        Query the VPU SpatialLocationCalculator for depth at a normalized ROI.
+
+        Args:
+            xmin, ymin, xmax, ymax: normalized coordinates (0.0 - 1.0) in the
+                preview/color camera frame.
+            draw: if True, draw the ROI rectangle and x,y,z on the RGB preview.
+
+        Returns:
+            (x, y, z) in meters, or None if unavailable.
+            x = lateral (positive right), y = vertical, z = depth (forward).
+        """
+        if not hasattr(self, '_spatialCalcConfigQueue') or self._spatialCalcConfigQueue is None:
+            return None
+
+        cfg = dai.SpatialLocationCalculatorConfigData()
+        cfg.depthThresholds.lowerThreshold = 100
+        cfg.depthThresholds.upperThreshold = 10000
+        cfg.roi = dai.Rect(dai.Point2f(xmin, ymin), dai.Point2f(xmax, ymax))
+
+        spatialCfg = dai.SpatialLocationCalculatorConfig()
+        spatialCfg.addROI(cfg)
+        self._spatialCalcConfigQueue.send(spatialCfg)
+
+        spatialData = self._spatialCalcQueue.get()
+        if spatialData is None:
+            if draw:
+                self._roi_rect = None
+                self._roi_text = None
+            return None
+
+        locations = spatialData.getSpatialLocations()
+        if len(locations) == 0:
+            if draw:
+                self._roi_rect = None
+                self._roi_text = None
+            return None
+
+        coords = locations[0].spatialCoordinates
+        result = (coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0)
+
+        if draw:
+            size = self.getPreviewSize()
+            if size is not None:
+                pw, ph = size
+                self._roi_rect = (int(xmin * pw), int(ymin * ph), int(xmax * pw), int(ymax * ph))
+                self._roi_text = f"X:{coords.x:.0f} Y:{coords.y:.0f} Z:{coords.z:.0f} mm"
+            else:
+                self._roi_rect = None
+                self._roi_text = None
+        else:
+            self._roi_rect = None
+            self._roi_text = None
+
+        return result
+
+    def stopSpatialForROIDraw(self):
+        """Clear the ROI overlay drawn by getSpatialForROI(draw=True)."""
+        self._roi_rect = None
+        self._roi_text = None
+
     def safe_startUp(self, *args, **kwargs):
         try:
             self.startUp(*args, **kwargs)
@@ -340,7 +443,9 @@ class MyDepthAI:
                         detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
                         #xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
                         depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
-                    
+                        self._spatialCalcQueue = device.getOutputQueue(name="spatialCalcData", maxSize=4, blocking=False)
+                        self._spatialCalcConfigQueue = device.getInputQueue(name="spatialCalcConfig")
+
                         frame = None
                         detections = []
                     
@@ -351,10 +456,16 @@ class MyDepthAI:
                     
                         self.inner_run_flag = True
                         while self.inner_run_flag:
-                            inPreview = previewQueue.get()                  
+                            inPreview = previewQueue.get()
                             inNN = detectionNNQueue.get()
                             depth = depthQueue.get()
-                    
+
+                            # Store latest frames for external consumers
+                            with self._frame_lock:
+                                self._latest_preview = inPreview.getCvFrame()
+                                self._latest_depth = depth.getFrame()
+                                self._frame_seq += 1
+
                             counter+=1
                             current_time = time.monotonic()
                             if (current_time - startTime) > 1 :
@@ -469,8 +580,16 @@ class MyDepthAI:
                                     for line_num in expired_lines:
                                         del self._text_overlay[line_num]
                                 
+                                # Draw ROI overlay if set by getSpatialForROI(draw=True)
+                                if self._roi_rect is not None:
+                                    rx1, ry1, rx2, ry2 = self._roi_rect
+                                    cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
+                                    if self._roi_text is not None:
+                                        cv2.putText(frame, self._roi_text, (rx2 + 5, (ry1 + ry2) // 2),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+
                                 cv2.imshow(rgb_win_name, frame)
-                            
+
                             if self._showDepthWindow:
                                 cv2.imshow(depth_win_name, depthFrameColor)
                             
@@ -516,13 +635,38 @@ if __name__ == '__main__':
         my_depthai_thread.join()
         exit()
     
+    _roi_test_on = False
+    def toggleRoiTest(a):
+        global _roi_test_on
+        _roi_test_on = not _roi_test_on
+        if _roi_test_on:
+            if not mdai.rgbWindowVisible():
+                mdai.showRgbWindow(True)
+            print("Spatial ROI test ON (20x20 center box)")
+        else:
+            mdai._roi_rect = None
+            mdai._roi_text = None
+            print("Spatial ROI test OFF")
+
     keyboard.on_press_key('r', toggleRgbWindow)
     keyboard.on_press_key('d', toggleDepthWindow)
     keyboard.on_press_key('t', toggleCamera)
+    keyboard.on_press_key('s', toggleRoiTest)
     keyboard.on_press_key('q', shutdown)
-    
+
+    print("Keys: r=rgb, d=depth, t=camera, s=spatial ROI test, q=quit")
+
     try:
         while True:
+            if _roi_test_on:
+                # Query center 20x20 ROI with drawing enabled
+                size = mdai.getPreviewSize()
+                if size is not None:
+                    pw, ph = size
+                    half = 10
+                    mdai.getSpatialForROI(
+                        (pw // 2 - half) / pw, (ph // 2 - half) / ph,
+                        (pw // 2 + half) / pw, (ph // 2 + half) / ph, draw=True)
             time.sleep(0.1)
     except KeyboardInterrupt:
         mdai.shutdown()

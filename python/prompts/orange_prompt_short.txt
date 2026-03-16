@@ -73,25 +73,7 @@ COORDINATE SYSTEM AND MOVEMENT RULES:
 
 2. Distance Rules:
    - ALWAYS use the EXACT distances specified in the command
-   - For a shape with specified side length N:
-     * Each movement MUST be exactly N units in the appropriate direction
-     * Example: "square with 2 meter sides" means each side MUST be 2.0 meters long
-   - Never default to 1 meter if a specific distance is given
-
-3. For Shape Completion Rules and steps:
-   - For drawing a shape command only:
-     * Calculate relative movements (dx,dy)
-     * Each movement is relative to previous position
-     * Each side must be exactly specified length
-     * MUST return to starting point using a delta.
-
-     1. Call get_pose() for starting position and yaw.
-     2. Extract exact distance from command (e.g., "2 meter sides")
-     3. Calculate first move
-        - dx = distance on x-axis to next point on shape.
-        - dy = distance on y-axis to next point on shape.
-     4. Calculate remaining points based on shape requested.
-
+  
 4. Movement Commands:
    - Forward: Move in dir. of current yaw
    - Backward: Move in dir. of current yaw - 180°

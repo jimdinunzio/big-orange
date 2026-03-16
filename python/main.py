@@ -22,6 +22,8 @@ import facial_recognize as fr
 import re
 from cmd_embed_mgr import CmdEmbedMgr
 from nano_vlm_client import NanoVlmClient
+from nano_owl_client import NanoOwlClient
+from nano_owl_manager import NanoOwlManager
 import pyautogui
 from my_langgraph import RobotPlannerGraph
 import traceback
@@ -132,6 +134,8 @@ _langgraph : RobotPlannerGraph = None
 _langgraph_initiated_move = False
 _goto_location_status = "idle"
 _nano_vlm : NanoVlmClient = None
+_nano_owl : NanoOwlClient = None
+_nano_owl_mgr : NanoOwlManager = None
 
 # Async operation callback globals
 
@@ -2368,20 +2372,23 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
     if _nano_vlm is not None:
         _nano_vlm.enable()
 
-    class ImageCallback:
-        def __init__(self):
-            self._image = None
-    
-        def get_picture_cb(self, frame):
-            # resize the image's larger dimension to 512 pixels while keeping the aspect ratio
-            if frame.shape[0] > frame.shape[1]:
-                frame = cv2.resize(frame, (int(512 * frame.shape[1] / frame.shape[0]), 512))
-            else:
-                frame = cv2.resize(frame, (512, int(512 * frame.shape[0] / frame.shape[1])))
-            _, self._image = cv2.imencode(".jpg", frame)
+    if _nano_owl is not None:
+        _nano_owl.enable()
 
-        def get_image(self):
-            return self._image
+    # class ImageCallback:
+    #     def __init__(self):
+    #         self._image = None
+    
+    #     def get_picture_cb(self, frame):
+    #         # resize the image's larger dimension to 512 pixels while keeping the aspect ratio
+    #         if frame.shape[0] > frame.shape[1]:
+    #             frame = cv2.resize(frame, (int(512 * frame.shape[1] / frame.shape[0]), 512))
+    #         else:
+    #             frame = cv2.resize(frame, (512, int(512 * frame.shape[0] / frame.shape[1])))
+    #         _, self._image = cv2.imencode(".jpg", frame)
+
+    #     def get_image(self):
+    #         return self._image
 
     tried_closest_cmd = False
 
@@ -4673,24 +4680,50 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
         finally:
             _move_oak_d.allHome()            
     else:
-        # object not handled by YOLO. Use VLM-based object search
-        prompt = f"is a {obj} visible?"
-        _nano_vlm.set_prompts([prompt])
-        _nano_vlm.get_output(prompt_filter=prompt)
-        
-        def is_object_found(obj):
-            try:
-                answer, _, _  = _nano_vlm.get_output(prompt_filter=prompt)
-                _mdai.drawText(answer, 1, 14)
-                if answer == "1":
-                    return True, True
-            except Exception as e:
-                print(f"Error during object found check: {str(e)}")  
+        # object not handled by YOLO. Use NanoOWL-based object search
+        if _nano_owl_mgr is None:
+            return f"Error: NanoOWL not available to search for {obj}."
 
-            return False, False
-        
-        p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05)
-        return f"{obj} "+ ("was found." if p else "was not found.")
+        print("processing with nano owl")
+        _nano_owl_mgr.set_prompt(f"[{obj}]")
+        _nano_owl_mgr.start_streaming()
+        _nano_owl_mgr.get_detections_nms()  # wakeup call
+
+        def is_object_found(obj_name):
+            try:
+                found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+                if found:
+                    _mdai.drawText(obj_name, 1, 14)
+                    print(f"OWL found {obj_name}: z={spatial.z:.2f}m theta={spatial.theta:.1f}deg")
+                    return True, spatial
+            except Exception as e:
+                print(f"Error during OWL object found check: {str(e)}")
+            return False, None
+
+        try:
+            p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05)
+            if p is None:
+                p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05)
+
+            if _interrupt_action:
+                _interrupt_action = False
+
+            obj_loc = None
+            if p is not None and p.z > 0:
+                obj_loc = getLocationOfObj(sdp, obj, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+
+            if obj_loc:
+                return f"{obj} was found at {obj_loc}."
+            elif p is not None:
+                return f"{obj} was found but depth unavailable, cannot determine location."
+            else:
+                return f"{obj} was not found."
+        except Exception as e:
+            return f"Error searching for object {obj}: {str(e)}"
+        finally:
+            _nano_owl_mgr.stop_streaming()
+            _nano_owl_mgr.clear_prompt()
+            _move_oak_d.allHome()
 
 def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str):
     """While going to loc, look for object and stop as soon as it is seen and report its coords."""
@@ -4829,6 +4862,8 @@ def stop_tracking_tool_helper():
 
 def describe_scene_tool_helper():
     """Describe the scene concisely."""
+    if _nano_vlm is None:
+        return "Error: NanoVLM client not available to describe the scene."
     try:
         prompt = "Describe the scene concisely."
         _nano_vlm.set_prompts([prompt])
@@ -4840,6 +4875,8 @@ def describe_scene_tool_helper():
 
 def ask_question_about_scene_tool_helper(prompt: str):
     """Ask question about the scene."""
+    if _nano_vlm is None:
+        return "Error: NanoVLM client not available to answer questions about the scene."
     try:
         _nano_vlm.set_prompts([prompt])
         answer, _, _ = _nano_vlm.get_output(prompt_filter=prompt)
@@ -4924,33 +4961,54 @@ langgraph_tool_funcs = {
 # and threads get started
 def initialize_robot():
     global _moods, _internet, _eyes_flag, _facial_recog
-    global _listen_thread, _cmdEmbedMgr, _langgraph, _nano_vlm
+    global _listen_thread, _cmdEmbedMgr, _langgraph, _nano_vlm, _nano_owl, _nano_owl_mgr
 
     _internet = True
 
     if _jetson_on:
-        # Initialize NanoVLM client with retry logic
-        _nano_vlm = NanoVlmClient()
         max_retries = 3
         retry_wait = 10  # seconds
-        
+
+        # Initialize NanoOwl client with retry logic
+        _nano_owl = NanoOwlClient()
         for attempt in range(1, max_retries + 1):
-            print(f"Attempting to connect to NanoVLM server (attempt {attempt}/{max_retries})...")
-            if _nano_vlm.connect():
-                print("NanoVLM connection established.")
+            print(f"Attempting to connect to NanoOwl server (attempt {attempt}/{max_retries})...")
+            if _nano_owl.connect():
+                print("NanoOwl connection established.")
                 break
             else:
                 if attempt < max_retries:
                     print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
                     time.sleep(retry_wait)
                 else:
-                    print("WARNING: No VLM connection available after all retries.")
-                    _nano_vlm = None
+                    print("WARNING: No Owl connection available after all retries.")
+                    _nano_owl = None
+
+        # Initialize NanoVLM client with retry logic
+        # _nano_vlm = NanoVlmClient()
+        
+        # for attempt in range(1, max_retries + 1):
+        #     print(f"Attempting to connect to NanoVLM server (attempt {attempt}/{max_retries})...")
+        #     if _nano_vlm.connect():
+        #         print("NanoVLM connection established.")
+        #         break
+        #     else:
+        #         if attempt < max_retries:
+        #             print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
+        #             time.sleep(retry_wait)
+        #         else:
+        #             print("WARNING: No VLM connection available after all retries.")
+        #             _nano_vlm = None
 
     start_button_pad_thread()
 
     start_depthai_thread()
     #start_blazepose_thread()
+
+    # Create NanoOwlManager after both _nano_owl and _mdai are ready
+    if _nano_owl is not None and _mdai is not None:
+        _nano_owl_mgr = NanoOwlManager(_nano_owl, _mdai)
+        print("NanoOwlManager created.")
 
     _cmdEmbedMgr = CmdEmbedMgr()
     _cmdEmbedMgr.load_cmds_embeddings()
