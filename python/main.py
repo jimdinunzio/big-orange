@@ -4784,6 +4784,65 @@ def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
     except Exception as e:
         return f"Error delivering {obj} to {person}: {str(e)}"
 
+def track_object_tool_helper(obj: str, height: str = "eye level", duration: int = 30):
+    """Track object via NanoOWL at inference rate with no robot movement. Shows green bbox."""
+    global _interrupt_action, _keep_camera_orientation
+
+    if _nano_owl_mgr is None:
+        return "Error: NanoOWL not available."
+
+    if height == "floor":
+        aim_oakd(pitch=135)
+        eyes.setTargetPitchYaw(-50, 0)
+    elif height == "up high":
+        aim_oakd(pitch=85)
+        eyes.setTargetPitchYaw(50, 0)
+    else:
+        _move_oak_d.allHome()
+        eyes.setHome()
+
+    _nano_owl_mgr.set_prompt(f"[{obj}]")
+    _nano_owl_mgr.start_streaming(fps=16)
+    _mdai.show_yolo_boxes = False
+    _nano_owl_mgr.get_detections_nms()  # wakeup call
+
+    found_count = 0
+    total_count = 0
+    deadline = time.time() + duration
+    next_report = time.time() + 5
+    _interrupt_action = False
+    poll_interval = 1.0 / 16  # match inference fps
+
+    try:
+        _keep_camera_orientation = True
+        while time.time() < deadline and not _interrupt_action:
+            found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
+            total_count += 1
+            if found and spatials:
+                found_count += 1
+                best = max(spatials, key=lambda s: s.z if s.z > 0 else 0)
+                _mdai.drawText(f"{obj} x{len(spatials)} z={best.z:.2f}m", 1, 14)
+            if time.time() >= next_report:
+                elapsed = duration - (deadline - time.time())
+                hit_rate = (found_count / total_count * 100) if total_count else 0
+                print(f"[track] {elapsed:.0f}s: {found_count}/{total_count} ({hit_rate:.0f}%)")
+                next_report += 5
+            time.sleep(poll_interval)
+    finally:
+        _keep_camera_orientation = False
+        _mdai.show_yolo_boxes = True
+        _nano_owl_mgr.stop_streaming()
+        _nano_owl_mgr.clear_prompt()
+        _move_oak_d.allHome()
+        if _interrupt_action:
+            _interrupt_action = False
+
+    elapsed = min(duration, time.time() - (deadline - duration))
+    hit_rate = (found_count / total_count * 100) if total_count > 0 else 0
+    return (f"Tracked '{obj}' for {elapsed:.0f}s: {found_count}/{total_count} frames detected "
+            f"({hit_rate:.0f}%).")
+
+
 def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
     """Search for object by rotating in place."""
     global _interrupt_action, _keep_camera_orientation
@@ -4814,7 +4873,8 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 
         print("processing with nano owl")
         _nano_owl_mgr.set_prompt(f"[{obj}]")
-        _nano_owl_mgr.start_streaming()
+        _nano_owl_mgr.start_streaming(fps=16)
+        _mdai.show_yolo_boxes = False
         _nano_owl_mgr.get_detections_nms()  # wakeup call
 
         last_spatial = [None]  # mutable container for closure access
@@ -4871,6 +4931,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
             return f"Error searching for object {obj}: {str(e)}"
         finally:
             _keep_camera_orientation = False
+            _mdai.show_yolo_boxes = True
             _nano_owl_mgr.stop_streaming()
             _nano_owl_mgr.clear_prompt()
             _move_oak_d.allHome()
@@ -4921,7 +4982,8 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
             return f"Error: NanoOWL not available to search for {obj}."
 
         _nano_owl_mgr.set_prompt(f"[{obj}]")
-        _nano_owl_mgr.start_streaming()
+        _nano_owl_mgr.start_streaming(fps=16)
+        _mdai.show_yolo_boxes = False
         _nano_owl_mgr.get_detections_nms()  # wakeup call
 
         try:
@@ -4944,6 +5006,7 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
             return f"Error finding {obj}: {str(e)}"
         finally:
             _keep_camera_orientation = False
+            _mdai.show_yolo_boxes = True
             _nano_owl_mgr.stop_streaming()
             _nano_owl_mgr.clear_prompt()
             _move_oak_d.allHome()
@@ -5093,6 +5156,7 @@ langgraph_tool_funcs = {
     "cancel_action": cancel_action_tool_helper,
     
     # Object Detection & Retrieval
+    "track_object": track_object_tool_helper,
     "while_go_to_loc_find_object": while_go_to_loc_find_object_tool_helper,
     "search_for_object": search_for_object_tool_helper,
     "go_to_location_with_narration": go_to_location_with_narration_tool_helper,

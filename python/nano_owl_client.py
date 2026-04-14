@@ -260,7 +260,7 @@ class NanoOwlClient:
         return keep
 
     def get_detections_nms(self, iou_threshold: float = 0.5,
-                           score_threshold: float = 0.1) -> Optional[Dict]:
+                           score_threshold: float = 0.08) -> Optional[Dict]:
         """Get detections with NMS post-processing applied.
 
         Returns same format as get_detections() but with filtered detections list.

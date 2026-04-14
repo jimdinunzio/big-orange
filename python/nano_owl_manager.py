@@ -71,7 +71,7 @@ class NanoOwlManager:
     #  Streaming control
     # ------------------------------------------------------------------ #
 
-    def start_streaming(self, fps=10):
+    def start_streaming(self, fps=16):
         """Start pushing OAK-D preview frames to the OWL server."""
         if self._streaming:
             return
@@ -132,7 +132,7 @@ class NanoOwlManager:
     #  Detection retrieval
     # ------------------------------------------------------------------ #
 
-    def get_detections_nms(self, iou_threshold=0.5, score_threshold=0.1):
+    def get_detections_nms(self, iou_threshold=0.5, score_threshold=0.08):
         """Get NMS-filtered detections from the OWL server."""
         return self._owl.get_detections_nms(iou_threshold, score_threshold)
 
@@ -142,9 +142,7 @@ class NanoOwlManager:
 
         Compatible with the checkForObject(obj) callback signature used by
         searchForObject — returns (found: bool, spatial_detection_or_None).
-
-        The returned OwlSpatialDetection has .z, .theta, .bboxCtr so it can be
-        passed to getLocationOfObj / getLocationNearObj.
+        Returns only the single highest-scoring match.
         """
         dets_result = self.get_detections_nms()
         if dets_result is None:
@@ -172,17 +170,56 @@ class NanoOwlManager:
         if len(box) != 4:
             return False, None
 
-        spatial = self._box_to_spatial(box)
+        self._mdai.clear_roi_rects()
+        spatial = self._box_to_spatial(box, confidence=best_score)
         if spatial is not None:
             spatial.label = obj_name
             spatial.confidence = best_score
         return True, spatial
 
+    def check_for_all_objects(self, obj_name):
+        """
+        Return all detections matching obj_name (not just the best one).
+
+        Returns (found: bool, list_of_OwlSpatialDetection).
+        All matching bboxes are drawn on the overlay simultaneously.
+        """
+        dets_result = self.get_detections_nms()
+        if dets_result is None:
+            return False, []
+
+        det_list = dets_result.get("detections", [])
+
+        matches = []
+        for d in det_list:
+            label = d.get("label", "")
+            if label.lower() != obj_name.lower():
+                continue
+            scores = d.get("scores", [])
+            score = max(scores) if scores else 0.0
+            box = d.get("box", [])
+            if len(box) == 4:
+                matches.append((score, box))
+
+        if not matches:
+            return False, []
+
+        self._mdai.clear_roi_rects()
+        spatials = []
+        for score, box in matches:
+            spatial = self._box_to_spatial(box, confidence=score)
+            if spatial is not None:
+                spatial.label = obj_name
+                spatial.confidence = score
+                spatials.append(spatial)
+
+        return bool(spatials), spatials
+
     # ------------------------------------------------------------------ #
     #  Depth via VPU SpatialLocationCalculator
     # ------------------------------------------------------------------ #
 
-    def _box_to_spatial(self, box):
+    def _box_to_spatial(self, box, confidence=0.0):
         """
         Convert an OWL pixel-coordinate bbox into an OwlSpatialDetection
         using the OAK-D VPU's SpatialLocationCalculator for depth.
@@ -213,8 +250,11 @@ class NanoOwlManager:
         theta = nx * (OAKD_HFOV_DEG / 2.0)
 
         # Query VPU for spatial coordinates at this ROI
-        spatial_coords = self._mdai.getSpatialForROI(xmin, ymin, xmax, ymax, draw=True)
+        spatial_coords = self._mdai.getSpatialForROI(xmin, ymin, xmax, ymax, draw=True, confidence=confidence)
         if spatial_coords is None:
+            # No depth data — still draw the detection bbox so the overlay updates
+            conf_str = f"{confidence:.2f}" if confidence > 0 else ""
+            self._mdai.drawROIRect(xmin, ymin, xmax, ymax, text=conf_str)
             return OwlSpatialDetection("", [cx, cy], 0.0, 0.0, 0.0, theta)
 
         x_m, y_m, z_m = spatial_coords
@@ -235,64 +275,82 @@ if __name__ == "__main__":
         print("Could not connect to NanoOWL server.")
         sys.exit(1)
 
+    print(f"Server status: {client.get_status()}")
+    print(f"is_enabled={client.is_enabled()}  is_running={client.is_running()}")
+
+    client.enable()
+    time.sleep(0.5)
+    print(f"After enable: is_enabled={client.is_enabled()}  is_running={client.is_running()}")
+
     # Create and start MyDepthAI in a background thread
-    mdai = MyDepthAI()  # Customize params if needed, e.g., MyDepthAI(model="tinyYolo")
-    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, False), daemon=True)  # loc="TOP" or "BOTTOM", showRgbWindow=False, showDepthWindow=False
+    mdai = MyDepthAI()
+    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, False), daemon=True)
     mdai_thread.start()
-    time.sleep(2)  # Brief wait for mdai to initialize (adjust as needed)
+    time.sleep(2)  # Wait for camera to initialize
 
     mgr = NanoOwlManager(client, mdai)
+    mgr.start_streaming(fps=16)
+    mdai.show_yolo_boxes = False
 
-    prompt = "[lava lamp]"
-    if len(sys.argv) > 1:
-        prompt = sys.argv[1]
+    import queue as _queue
+    import sys as _sys
+    _input_q = _queue.Queue()
+    _stop = [False]
 
-    print(f"Setting prompt: {prompt}")
-    mgr.set_prompt(prompt)
+    # Input thread — uses readline so we control when "prompt> " appears,
+    # reprinting it immediately after each Enter without waiting for the detect loop.
+    def _input_loop():
+        print("\nEnter a prompt (e.g. 'lamp' or '[lamp, table lamp]') to search, or 'quit' to exit.")
+        _sys.stdout.write("prompt> ")
+        _sys.stdout.flush()
+        while not _stop[0]:
+            try:
+                raw = _sys.stdin.readline()
+            except EOFError:
+                _input_q.put("quit")
+                break
+            raw = raw.strip()
+            _input_q.put(raw)
+            if raw.lower() == "quit":
+                break
+            _sys.stdout.write("prompt> ")
+            _sys.stdout.flush()
 
-    # Start streaming frames from the OAK-D to the NanoOWL server
-    mgr.start_streaming(fps=5)
+    input_thread = Thread(target=_input_loop, name="owl_input", daemon=True)
+    input_thread.start()
 
-    print("Polling detections for 3 seconds")
+    # Main loop — handles detection; picks up new prompts from the queue
+    current_obj = ""
+    poll_interval = 1.0 / 16
+
     try:
-        for i in range(6):
-            dets = mgr.get_detections_nms()
-            if dets is not None:
-                det_list = dets.get("detections", [])
-                frame_seq = dets.get("frame_seq")
-                print(f"  [{i}] frame_seq={frame_seq}, {len(det_list)} detection(s)")
-                for d in det_list:
-                    label = d.get("label", "?")
-                    box = d.get("box", [])
-                    scores = d.get("scores", [])
-                    box_str = ", ".join(f"{v:.1f}" for v in box) if box else "N/A"
-                    score_str = ", ".join(f"{s:.3f}" for s in scores) if scores else "N/A"
-                    print(f"    {label}: box=[{box_str}] scores=[{score_str}]")
-            else:
-                print(f"  [{i}] No detections yet")
-            time.sleep(0.5)
+        while True:
+            # Check for new prompt (non-blocking)
+            try:
+                raw = _input_q.get_nowait()
+                if not raw or raw.lower() == "quit":
+                    break
+                prompt = raw if raw.startswith("[") else f"[{raw}]"
+                current_obj = raw.strip("[]").split(",")[0].strip()
+                mgr.set_prompt(prompt)
+            except _queue.Empty:
+                pass
 
-        # Test check_for_object (with spatial using the running mdai instance)
-        obj = prompt.strip("[]").split(",")[0].strip()
-        print(f"\ncheck_for_object('{obj}'):")
-        for i in range(1000):
-            found, spatial = mgr.check_for_object(obj)
-            print(f"  found={found}, spatial={spatial}")
-            if found and spatial:
-                mdai.drawText(f"{spatial.label}",1,24)
-                print(f"  label={spatial.label}, z={spatial.z:.2f}m, theta={spatial.theta:.1f}deg")
-            time.sleep(0.25)
-    except KeyboardInterrupt:
-        print("\nInterrupted")
+            # Detect against current prompt — update overlay, no terminal output
+            if current_obj:
+                found, spatials = mgr.check_for_all_objects(current_obj)
+                if found and spatials:
+                    mdai.drawText(f"{current_obj} x{len(spatials)}", 1, 24)
 
+            time.sleep(poll_interval)
     finally:
+        _stop[0] = True
+        mdai.show_yolo_boxes = True
         mgr.stop_streaming()
-
-    mgr.clear_prompt()
-    # Stop mdai
-    mdai.run_flag = False
-    mdai.outer_run_flag = False
-    mdai_thread.join(timeout=5)
-
-    client.disconnect()
-    print("Done.")
+        mgr.clear_prompt()
+        client.disable()
+        mdai.run_flag = False
+        mdai.outer_run_flag = False
+        mdai_thread.join(timeout=5)
+        client.disconnect()
+        print("Exited.")

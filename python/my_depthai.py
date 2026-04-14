@@ -72,6 +72,7 @@ class MyDepthAI:
         self.takePictureNow = False
         self._showRgbWindow = False
         self._showDepthWindow = False
+        self._show_yolo_boxes = True
         self._loc = "TOP"
         self._get_picture_cb = None
         self._closePictures = False
@@ -81,9 +82,8 @@ class MyDepthAI:
         self._text_overlay = {}
         self._text_overlay_lock = Lock()
 
-        # ROI overlay: (x1, y1, x2, y2) in pixel coords + text, or None
-        self._roi_rect = None
-        self._roi_text = None
+        # ROI overlay: list of ((x1,y1,x2,y2), text) entries
+        self._roi_rects = []
         self._roi_last_draw_time = 0
 
         # Latest frame storage for external consumers (e.g. NanoOwlManager)
@@ -296,7 +296,15 @@ class MyDepthAI:
     def showDepthWindow(self, value):
         if value != self._showDepthWindow:
             self._showDepthWindow = value
-            self.inner_run_flag = False            
+            self.inner_run_flag = False
+
+    @property
+    def show_yolo_boxes(self):
+        return self._show_yolo_boxes
+
+    @show_yolo_boxes.setter
+    def show_yolo_boxes(self, value):
+        self._show_yolo_boxes = value
 
     def drawText(self, text, line, size):
         """
@@ -328,7 +336,7 @@ class MyDepthAI:
                 return w, h
         return None
 
-    def getSpatialForROI(self, xmin, ymin, xmax, ymax, draw=False):
+    def getSpatialForROI(self, xmin, ymin, xmax, ymax, draw=False, confidence=0.0):
         """
         Query the VPU SpatialLocationCalculator for depth at a normalized ROI.
 
@@ -336,6 +344,7 @@ class MyDepthAI:
             xmin, ymin, xmax, ymax: normalized coordinates (0.0 - 1.0) in the
                 preview/color camera frame.
             draw: if True, draw the ROI rectangle and x,y,z on the RGB preview.
+            confidence: detection confidence 0-1 to show in the overlay (optional).
 
         Returns:
             (x, y, z) in meters, or None if unavailable.
@@ -355,38 +364,53 @@ class MyDepthAI:
 
         spatialData = self._spatialCalcQueue.get()
         if spatialData is None:
-            if draw:
-                self._roi_rect = None
-                self._roi_text = None
             return None
 
         locations = spatialData.getSpatialLocations()
         if len(locations) == 0:
-            if draw:
-                self._roi_rect = None
-                self._roi_text = None
             return None
 
         coords = locations[0].spatialCoordinates
         result = (coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0)
 
         if draw:
-            self._roi_last_draw_time = time.monotonic()
             size = self.getPreviewSize()
             if size is not None:
                 pw, ph = size
-                self._roi_rect = (int(xmin * pw), int(ymin * ph), int(xmax * pw), int(ymax * ph))
-                self._roi_text = f"X:{coords.x:.0f} Y:{coords.y:.0f} Z:{coords.z:.0f} mm"
-            else:
-                self._roi_rect = None
-                self._roi_text = None
+                rect = (int(xmin * pw), int(ymin * ph), int(xmax * pw), int(ymax * ph))
+                lines = []
+                if confidence > 0:
+                    lines.append(f"{confidence:.2f}")
+                lines += [f"X:{coords.x:.0f}", f"Y:{coords.y:.0f}", f"Z:{coords.z:.0f}mm"]
+                self._roi_rects.append((rect, lines))
+                self._roi_last_draw_time = time.monotonic()
 
         return result
 
+    def drawROIRect(self, xmin, ymin, xmax, ymax, text=""):
+        """Draw the ROI rectangle overlay directly from normalized coordinates.
+
+        Use this when you have a detection bbox but no depth data.
+        Args:
+            xmin, ymin, xmax, ymax: normalized 0-1 coordinates
+            text: optional overlay text (e.g. confidence)
+        """
+        size = self.getPreviewSize()
+        if size is None:
+            return
+        pw, ph = size
+        rect = (int(xmin * pw), int(ymin * ph), int(xmax * pw), int(ymax * ph))
+        lines = [text] if text else None
+        self._roi_rects.append((rect, lines))
+        self._roi_last_draw_time = time.monotonic()
+
+    def clear_roi_rects(self):
+        """Clear all ROI overlays (call before processing a new detection batch)."""
+        self._roi_rects = []
+
     def stopSpatialForROIDraw(self):
         """Clear the ROI overlay drawn by getSpatialForROI(draw=True)."""
-        self._roi_rect = None
-        self._roi_text = None
+        self._roi_rects = []
 
     def safe_startUp(self, *args, **kwargs):
         try:
@@ -530,7 +554,7 @@ class MyDepthAI:
                                     else:
                                         self.objectDetections.append(MyDetection(str_label, self.use_tracker, detection))
                                     
-                                    if self._showRgbWindow:
+                                    if self._showRgbWindow and self._show_yolo_boxes:
                                         # Denormalize bounding box
                                         if self.use_tracker:
                                             x1 = int(detection.srcImgDetection.xmin * width)
@@ -577,18 +601,29 @@ class MyDepthAI:
                                     for line_num in expired_lines:
                                         del self._text_overlay[line_num]
                                 
-                                # Auto-clear ROI overlay after 0.5s of no draw=True calls
-                                if self._roi_rect is not None and (current_time - self._roi_last_draw_time) > 5.0:
-                                    self._roi_rect = None
-                                    self._roi_text = None
+                                # Auto-clear ROI overlays after 0.35s of no draw calls
+                                if self._roi_rects and (current_time - self._roi_last_draw_time) > 0.35:
+                                    self._roi_rects = []
 
-                                # Draw ROI overlay if set by getSpatialForROI(draw=True)
-                                if self._roi_rect is not None:
-                                    rx1, ry1, rx2, ry2 = self._roi_rect
+                                # Draw all ROI overlays
+                                _font = cv2.FONT_HERSHEY_SIMPLEX
+                                _fscale = 0.4
+                                _lh = 16  # line height in pixels
+                                _fw = width
+                                for roi_rect, roi_lines in self._roi_rects:
+                                    rx1, ry1, rx2, ry2 = roi_rect
                                     cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
-                                    if self._roi_text is not None:
-                                        cv2.putText(frame, self._roi_text, (rx2 + 5, (ry1 + ry2) // 2),
-                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+                                    if roi_lines:
+                                        # Measure widest line to decide side
+                                        max_w = max(cv2.getTextSize(l, _font, _fscale, 1)[0][0] for l in roi_lines)
+                                        right_x = rx2 + 5
+                                        left_x  = rx1 - max_w - 5
+                                        tx = right_x if (right_x + max_w) < _fw else left_x
+                                        ty = (ry1 + ry2) // 2 - (_lh * (len(roi_lines) - 1)) // 2
+                                        for line in roi_lines:
+                                            cv2.putText(frame, line, (tx, ty), _font, _fscale, (0, 0, 0), 2, cv2.LINE_AA)
+                                            cv2.putText(frame, line, (tx, ty), _font, _fscale, (0, 255, 0), 1, cv2.LINE_AA)
+                                            ty += _lh
 
                                 cv2.imshow(rgb_win_name, frame)
 
@@ -646,8 +681,7 @@ if __name__ == '__main__':
                 mdai.showRgbWindow(True)
             print("Spatial ROI test ON (20x20 center box)")
         else:
-            mdai._roi_rect = None
-            mdai._roi_text = None
+            mdai.clear_roi_rects()
             print("Spatial ROI test OFF")
 
     keyboard.on_press_key('r', toggleRgbWindow)

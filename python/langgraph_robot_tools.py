@@ -418,6 +418,12 @@ class RobotTools:
         else:
             return self.call_tool_helper("go_to_location_with_narration", self._sdp, location_name, narration_interval_seconds)
 
+    def track_object(self, object_name: str, height: str = "eye level", duration: int = 30) -> str:
+        """Track an object via NanoOWL as fast as possible with no robot movement."""
+        if self.sim:
+            return f"Tracked '{object_name}' for {duration}s (simulated)."
+        return self.call_tool_helper("track_object", object_name, height, duration)
+
     def search_for_object(self, object_name: str, height: str, rot_clockwise: bool = True) -> str:
         """Search for a specific object by name by rotating and scanning."""
         if self.sim:
@@ -808,6 +814,11 @@ class RobotTools:
         location_name: str = Field(..., description="Name of the location to go to or 'across the room'")
         height: str = Field("eye level", description="Height to search at: floor, eye level (default), up high")
 
+    class ObjTrackInput(BaseModel):
+        object_name: str = Field(..., description="Name of the object to track")
+        height: str = Field("eye level", description="Height to search at: floor, eye level (default), up high")
+        duration: int = Field(30, description="How many seconds to track (default 30)")
+
     class ObjSearchInput(BaseModel):
         object_name: str = Field(..., description="Name of the object to search for")
         height: str = Field(..., description="Height to search at: floor, eye level (default), up high")
@@ -1067,6 +1078,13 @@ class RobotTools:
                 args_schema=self.LocationWithNarrationInput,
                 name="go_to_location_with_narration",
                 description="Go to a specific named location while periodically describing the scene."
+            ),
+
+            StructuredTool.from_function(
+                func=self.track_object,
+                args_schema=self.ObjTrackInput,
+                name="track_object",
+                description="Track an object via NanoOWL with no robot movement. Shows a green detection box around the object. Returns hit rate."
             ),
 
             StructuredTool.from_function(
