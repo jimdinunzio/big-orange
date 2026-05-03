@@ -58,6 +58,20 @@ typedef struct ExportPose
 	float yaw;
 } ExportPose;
 
+typedef struct RobotLocation
+{
+	double x;
+	double y;
+} RobotLocation;
+
+#define MAX_NUM_ROBOT_LOCATIONS 10
+
+typedef struct RobotLocations
+{
+	int count;
+	RobotLocation values[MAX_NUM_ROBOT_LOCATIONS];
+} RobotLocations;
+
 #define MAX_NUM_LASER_POINTS 360
 typedef struct LaserPointsStruct
 {
@@ -77,3 +91,4 @@ typedef struct SensorValueStruct
 	unsigned int time;
 	float value;
 } SensorValueStruct;
+

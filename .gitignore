@@ -34,3 +34,12 @@ slamware_sdk_windows_2.6.7_rtm.20190929/
 python/ai_vision/
 Dr. Bruce/
 *.pyc
+.vscode/
+depthcam_publish_demo/.vs/
+ManualController/.vs/
+Oak_D_depthcam_publish/.vs/
+Oak_D_depthcam_publish/depthcam_publish_demo/Debug/
+Oak_D_depthcam_publish/depthcam_publish_demo/Release/
+python/.vs/
+SlamtecDll/.vs/
+Oak_D_depthcam_publish/Release/

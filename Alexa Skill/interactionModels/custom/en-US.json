@@ -124,12 +124,21 @@
           "slots": [],
           "name": "StopAllMovementIntent",
           "samples": [
+            "stop all",
             "stop",
             "stop moving",
             "cancel",
             "halt",
             "cancel action",
             "stop movement"
+          ]
+        },
+        {
+          "slots": [],
+          "name": "ShutdownIntent",
+          "samples": [
+            "start shutting down",
+            "initiate shutdown"
           ]
         }
       ],

@@ -47,6 +47,8 @@ extern "C" __declspec(dllexport) void forward();
 extern "C" __declspec(dllexport) void left();
 extern "C" __declspec(dllexport) void right();
 extern "C" __declspec(dllexport) void back();
+extern "C" __declspec(dllexport) void moveTosFloat(RobotLocations locations);
+extern "C" __declspec(dllexport) void moveTosFloatWithYaw(RobotLocations locations, float yaw);
 extern "C" __declspec(dllexport) void moveToFloat(float xMove, float yMove);
 extern "C" __declspec(dllexport) void moveToFloatWithYaw(float xMove, float yMove, float yaw);
 extern "C" __declspec(dllexport) void moveToInteger(int xMove, int yMove);
@@ -192,6 +194,41 @@ extern "C" __declspec(dllexport) void moveToFloatWithYaw(float xMove, float yMov
 	MoveOptions options;
 	options.flag = MoveOptionFlagWithYaw;
 	MoveAction moveTo = sdp.moveTo(loc, options, yaw);		//move there and end at specified yaw
+}
+
+
+//-----------------------------------------------------
+// move tos float locations 
+//	Input: RobotLocations each with float x and y
+//	Output:	none
+extern "C" __declspec(dllexport) void moveTosFloat(RobotLocations locations)
+{
+	int i;
+	std::vector<rpos::core::Location> pointsToGo;
+
+	for (i = 0; i < locations.count; ++i)
+	{
+		pointsToGo.push_back(rpos::core::Location(locations.values[i].x, locations.values[i].y));
+	}
+	MoveAction moveTo = sdp.moveTo(pointsToGo, false, true);
+}
+
+//-----------------------------------------------------
+// move tos float locations with yaw after last location
+//	Input: RobotLocations each with float x and y
+//	Output:	none
+extern "C" __declspec(dllexport) void moveTosFloatWithYaw(RobotLocations locations, float yaw)
+{
+	int i;
+	std::vector<rpos::core::Location> pointsToGo;
+
+	for (i = 0; i < locations.count; ++i)
+	{
+		pointsToGo.push_back(rpos::core::Location(locations.values[i].x, locations.values[i].y));
+	}
+	MoveOptions options;
+	options.flag = (MoveOptionFlag) (MoveOptionFlagWithYaw | MoveOptionFlagMilestone);
+	MoveAction moveTo = sdp.moveTo(pointsToGo, options, yaw);
 }
 
 //-----------------------------------------------------
@@ -504,7 +541,6 @@ extern "C" __declspec(dllexport) int recoverLocalization(float left, float botto
 {
 	RectangleF area(left, bottom, width, height);
 	MoveAction action = sdp.recoverLocalization(area);
-	return action.waitUntilDone();
 }
 
 //-----------------------------------------------------------

@@ -27,12 +27,12 @@ class AWSMQTTPublisher(object):
     def __init__(self):
 
         # Parameters for AWS IoT MQTT Client.
-        self.iotThingEndpoint = "<insert end point>"
+        self.iotThingEndpoint = "a2kflp1winbg2a-ats.iot.us-west-1.amazonaws.com"
         self.iotThingPort = 8883
         self.certificatePath = "certificates/"
         self.rootCAPath = self.certificatePath + "AmazonRootCA1.pem" # eg. "AmazonRootCA1.pem"
-        self.privateKeyPath = self.certificatePath + "<your bot>.private.key" # eg. "VoiceControlledRobot.private.key"
-        self.certificatePath = self.certificatePath + "<your bot>.cert.pem" # eg. "VoiceControlledRobot.cert.pem"
+        self.privateKeyPath = self.certificatePath + "BigOrange.private.key" # eg. "VoiceControlledRobot.private.key"
+        self.certificatePath = self.certificatePath + "BigOrange.cert.pem" # eg. "VoiceControlledRobot.cert.pem"
         self.commandTopic = "command_topic"
         self.responseTopic = "response_topic"
         self.clientID = "sdk-nodejs-publisher"
@@ -321,6 +321,25 @@ class StopAllMovementIntentHandler(AbstractRequestHandler):
                 .response
         )
 
+class ShutdownIntentHandler(AbstractRequestHandler):
+    """Handler for Shutdown Intent."""
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+        return ask_utils.is_intent_name("ShutdownIntent")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        #speak_output = "ok"
+        response = publisher.publish_command("initiate shutdown")
+        speak_output = publisher.waitForResponse()
+        publisher.disconnect()
+        
+        return (
+            handler_input.response_builder
+                .speak(speak_output)
+                # .ask("add a reprompt if you want to keep the session open for the user to respond")
+                .response
+        )
 
 class HelpIntentHandler(AbstractRequestHandler):
     """Handler for Help Intent."""
@@ -443,6 +462,9 @@ sb.add_request_handler(TakePictureIntentHandler())
 sb.add_request_handler(RechargeIntentHandler())
 sb.add_request_handler(WhereAreYouIntentHandler())
 sb.add_request_handler(StopAllMovementIntentHandler())
+sb.add_request_handler(ShutdownIntentHandler())
+
+# put custom commands above this
 sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(FallbackIntentHandler())
