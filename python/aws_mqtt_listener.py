@@ -135,9 +135,12 @@ class AwsMqttListener(object):
         elif command == "take a picture":
             self._handle_op_request(self._sdp, OrangeOpType.TakeAPictureCommand)
             response = "Ok. Big Orange took a picture. It will be shown on his screen."
-        elif command == "stop all movement":
+        elif "stop all" in command:
             self._handle_op_request(self._sdp, OrangeOpType.StopAllMovement)
             response = "Ok. I told Big Orange to stop all motors."
+        elif command == "initiate shutdown":
+            self._handle_op_request(self._sdp, OrangeOpType.InitiateShutdown)
+            response = "Ok. I told Big Orange to shut down."
         else:
             print("MQTT: unknown command")
             return

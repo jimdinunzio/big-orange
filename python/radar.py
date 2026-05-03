@@ -1,7 +1,7 @@
 from re import I
 import time
 from numpy import array, byte
-from pyfirmata import Board, SW_SERIAL0
+from pyFirmata.pyfirmata import Board, SW_SERIAL0
 import struct
 from threading import Lock
 

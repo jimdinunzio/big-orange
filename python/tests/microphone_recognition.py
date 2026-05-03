@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join('..')))
+
+#set the working dir to ..
+os.chdir(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # NOTE: this example requires PyAudio because it uses the Microphone class
 
@@ -54,6 +60,9 @@ def test():
                 print("listening timed out")
             except KeyboardInterrupt:
                 break
+
+if __name__ == "__main__":
+    test()
 
 # # recognize speech using Google Cloud Speech
 # GOOGLE_CLOUD_SPEECH_CREDENTIALS = r"""INSERT THE CONTENTS OF THE GOOGLE CLOUD SPEECH JSON CREDENTIALS FILE HERE"""

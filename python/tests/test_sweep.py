@@ -1,6 +1,11 @@
+
 import sys
+import os
+
+# allow importing from parent directory
+sys.path.append(os.path.abspath(os.path.join('..')))
+
 from xml.etree.ElementTree import PI
-sys.path.append('..')
 
 from my_sdp_client import MyClient
 from my_sdp_server import *
@@ -8,7 +13,7 @@ import sdp_comm
 import math
 import time
 from latte_panda_arduino import LattePandaArduino
-from pyfirmata import util as pyfirmata_util, Pin
+from pyFirmata import util as pyfirmata_util, Pin
 
 _sonar_grasp_offset = -0.063 # distance to back of grasper
 _last_grasper_sonar : float = 4.50

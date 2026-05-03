@@ -1,11 +1,32 @@
 import os
-import openai
-openai.api_key = os.getenv("OPENAI_API_KEY")
+import base64
+from openai import OpenAI
+
+api_key = os.getenv("OPENAI_API_KEY")
+if api_key is None:
+    raise ValueError("OPENAI_API_KEY environment variable not set. Please set it to your OpenAI API key.")
+
+client = OpenAI()
 
 #roles: system, user, or assistant
 # user is the role that gives instructions or asks questions
 # system is the role that responds. content contains description of that role (e.g. friendly assistant)
 # assistant is the role that 
+
+# messages=[
+#         {
+#             "role": "user",
+#             "content": [
+#                 { "type": "text", "text": "what's in this image?" },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": {
+#                         "url": f"data:image/jpeg;base64,{base64_image}",
+#                     },
+#                 },
+#             ],
+#         }
+#     ],
 
 class OpenAiChatbot:
     def __init__(self, mname, init_prompt, intro_line, name1_label, name2_label, prompt_messages):
@@ -21,10 +42,26 @@ class OpenAiChatbot:
     def get_intro_line(self):
         return self.intro_line
     
-    def get_response(self, input):
-        self.messages.append({"role": "user", "content": input})
+    def get_response(self, input, image=None):
+        if image is None:
+            self.messages.append({"role": "user", "content": input})
+        else:
+            base64_image = base64.b64encode(image).decode('utf-8')
+            messsage = {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": input },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                        },
+                    },
+                ],
+            }
+            self.messages.append(messsage)
 
-        completion = openai.ChatCompletion.create(
+        completion = client.chat.completions.create(
             model=self.mname,
             #top_p=1.0,                # range 0 to 1.0, default 1.0, alternative to temp, 0.1 means only top 10% probability mass are considered
             #temperature=0.9,          # range: 0.0 to 2.0, default 0.8  Higher values like 0.8 make output more random, lower more deterministic
@@ -67,4 +104,3 @@ class OpenAiChatbot:
                 log += f"{self.name2_label}: {msg['content']}\n"
         return log
             
-

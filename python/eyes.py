@@ -1,7 +1,6 @@
 from tkinter import E
 import pygame
 from pygame.locals import *
-from pygame.compat import geterror
 import math
 import random
 from threading import Lock

@@ -1,3 +1,24 @@
-[submodule "winspeech"]
-	path = winspeech
-	url = https://github.com/jimdinunzio/winspeech
+[submodule "python/pyFirmata"]
+	path = python/pyFirmata
+	url = https://github.com/jimdinunzio/pyFirmata.git
+[submodule "python/riva-sample-apps"]
+	path = python/riva-sample-apps
+	url = https://github.com/jimdinunzio/riva-sample-apps
+[submodule "python/depthai_blazepose"]
+	path = python/depthai_blazepose
+	url = https://github.com/jimdinunzio/depthai_blazepose.git
+[submodule "python/speech_recognition"]
+	path = python/speech_recognition
+	url = https://github.com/jimdinunzio/speech_recognition.git
+[submodule "python/usb_4_mic_array"]
+	path = python/usb_4_mic_array
+	url = https://github.com/respeaker/usb_4_mic_array.git
+[submodule "python/mycroft-precise"]
+	path = python/mycroft-precise
+	url = https://github.com/jimdinunzio/mycroft-precise
+[submodule "firmata_arduino"]
+	path = firmata_arduino
+	url = https://github.com/jimdinunzio/arduino/
+[submodule "sdp_mini_reference_code"]
+	path = sdp_mini_reference_code
+	url = https://github.com/jimdinunzio/sdp_mini_reference_code

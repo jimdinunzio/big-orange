@@ -1,3 +1,9 @@
+import sys
+import os
+
+# allow importing from parent directory
+sys.path.append(os.path.abspath(os.path.join('..')))
+
 from latte_panda_arduino import LattePandaArduino
 from radar import Radar
 import time

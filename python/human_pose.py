@@ -1,12 +1,18 @@
 from array import ArrayType
-from blazepose.BlazeposeDepthaiEdge import BlazeposeDepthai
-from blazepose.BlazeposeRenderer import BlazeposeRenderer
-from blazepose.mediapipe_utils import KEYPOINT_DICT
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), 'depthai_blazepose'))
+from BlazeposeDepthaiEdge import BlazeposeDepthai
+from BlazeposeRenderer import BlazeposeRenderer
+from mediapipe_utils import KEYPOINT_DICT
 import time
 from math import acos, degrees
 
 #Based on http://geomalgorithms.com/a05-_intersect-1.html
 import numpy as np
+import sys
+import os
 
 epsilon=1e-6
 
@@ -99,8 +105,9 @@ def recognize_gesture(body):
     return result
 
 class MyBlazePose:
-    def __init__(self):
+    def __init__(self, device_id=None):
         self.run_flag = False
+        self.device_id_ = device_id
         self.reset()
         
     def reset(self):
@@ -128,7 +135,7 @@ class MyBlazePose:
         return self.person_loc / 1000.0
 
     def run(self):
-        pose = BlazeposeDepthai(input_src='rgb', lm_model='lite', xyz=True, internal_frame_height=432, internal_fps=15)
+        pose = BlazeposeDepthai(input_src='rgb', lm_model='lite', xyz=True, internal_frame_height=432, internal_fps=15, device_id=self.device_id_)
         renderer = BlazeposeRenderer(pose)
 
         self.target = None

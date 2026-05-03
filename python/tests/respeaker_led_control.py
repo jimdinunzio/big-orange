@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join('..')))
+
 from usb_pixel_ring_v2 import PixelRing
 import usb.core
 import usb.util

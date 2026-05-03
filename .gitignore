@@ -43,3 +43,7 @@ Oak_D_depthcam_publish/depthcam_publish_demo/Release/
 python/.vs/
 SlamtecDll/.vs/
 Oak_D_depthcam_publish/Release/
+python/databases/
+python/maps/
+python/model*/
+python/certificates/

@@ -2,7 +2,7 @@ import time
 from threading import Thread
 from enum import Enum
 from copy import deepcopy
-from pyfirmata import INPUT, Board
+from pyFirmata.pyfirmata import INPUT, Board
 
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""

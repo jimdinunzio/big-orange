@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join('..')))
+
 from mic_array_tuning import Tuning
 import usb.core
 import usb.util
