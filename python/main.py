@@ -35,7 +35,7 @@ _show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _current_map_name = ''
-_hotword = "orange"
+_hotword = "hey orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
@@ -2559,13 +2559,13 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             return HandleResponseResult.Handled
 
         # check if the hot word is in the string, and take the words after it, otherwise ignore speech
-        # if check_hot_word and not tried_closest_cmd:
-        #     hot_word_idx = phrase.rfind(_hotword)
-        #     if hot_word_idx >= 0:
-        #         phrase = phrase[hot_word_idx + len(_hotword):].strip()
-        #         print("cmd extracted: ", phrase)
-        #     else:
-        #         return HandleResponseResult.NotHandledNoHotWord
+        if check_hot_word and not tried_closest_cmd:
+            hot_word_idx = phrase.rfind(_hotword)
+            if hot_word_idx >= 0:
+                phrase = phrase[hot_word_idx + len(_hotword):].strip()
+                print("cmd extracted: ", phrase)
+            else:
+                return HandleResponseResult.NotHandledNoHotWord
 
         # some verbal commands are handled inside the listen thread
         if phrase == "":
@@ -3807,21 +3807,17 @@ def listen():
 
     #speak("Hello, My name is Orange. Pleased to be at your service.")
 
-    HEY_ORANGE_KEYWORD_IDX = 0
-    STOP_NOW_KEYWORD_IDX = 1
     GET_RESPONSE_IDX = 2
     
-    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr, 
-                                  porcupine_config : typing.Union[sr.Recognizer.PorcupineListener.Config, None],
+    def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr,
                                   timeout=None) -> tuple[str, float]:
         global _last_speech_heard
       # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
-                if porcupine_config is not None:
-                    _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10, porcupine_config = porcupine_config, 
+                #_pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
+                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10,
                                  is_speech_cb=None if _mic_array.is_sim_mode() else _mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
@@ -3829,12 +3825,7 @@ def listen():
         except sr.WaitTimeoutError:
             adj_spch_recog_ambient(r, mic)
             return "", 0
-        except sr.ReturnAfterKeywordDetection as e:
-            phrase = ""
-            if e.args[0] == STOP_NOW_KEYWORD_IDX:
-                phrase = "stop moving"
-            return phrase, 0
-        except Exception as e:                
+        except Exception as e:
             print(e)
             if e.__context__:
                 print(e.__context__)
@@ -3916,14 +3907,14 @@ def listen():
     def listenFromVoskResponse(sdp, timeout=5):
         on_detection(GET_RESPONSE_IDX)
         try:
-            phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, None, timeout=5)
+            phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, timeout=5)
         except:
             speak("sorry, i am having trouble understanding.")
         return phrase
 
-    def listenFromVosk(sdp, porcupine_config : sr.Recognizer.PorcupineListener.Config, finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromVosk(sdp, finallyFunc=lambda:None, check_hot_word=True):
         try:
-            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, porcupine_config)
+            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr)
             if phrase != "stop moving":
                 setPixelRingTrace()
             try:
@@ -4005,40 +3996,10 @@ def listen():
     _pixel_ring.setEndStartup() # restore pixel ring to default sound sensitive mode after boot up
 
     def on_detection(index):
-        if index == HEY_ORANGE_KEYWORD_IDX:
-            stop_speaking()
-            for i in range(1, 12):
-                _pixel_ring.setColoredVolume(i)
-                time.sleep(0.005)
-        elif index == STOP_NOW_KEYWORD_IDX:
-            stop_speaking()
-            _pixel_ring.setRedVolume()
-        elif index == GET_RESPONSE_IDX:
+        if index == GET_RESPONSE_IDX:
             for i in range(1, 12):
                 _pixel_ring.setBlueVolume(i)
                 time.sleep(0.0075)
-                
-    def on_listen_timeout(index):
-        if index == HEY_ORANGE_KEYWORD_IDX:
-            for i in range(11, -1, -1):
-                _pixel_ring.setColoredVolume(i)
-                time.sleep(0.005)
-
-    keyword_path_wake = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "Hey-Orange_en_windows_v3_0_0.ppn"))
-    keyword_path_stop = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "stop-now_en_windows_v3_0_0.ppn"))
-    access_key = os.getenv("PORCUPINE_ACCESS_KEY")
-    if access_key is None:
-        porcupine_config = None
-        print("No Porcupine access key set. Hot word detection will not be available.")
-        keyword_path = None
-    else:
-        from pvporcupine import KEYWORD_PATHS
-        porcupine_config = r.PorcupineListener.Config(access_key=access_key, 
-                                                      keyword_paths=[keyword_path_wake, keyword_path_stop],
-                                                      keyword_types=[r.PorcupineListener.KeywordType.LISTEN, r.PorcupineListener.KeywordType.IMMEDIATE],
-                                                      sensitivities=[0.25, 0.5],
-                                                      on_detection=on_detection,
-                                                      on_det_timeout=on_listen_timeout)
 
     while _run_flag:
         #local_listener = None
@@ -4048,7 +4009,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp, porcupine_config=porcupine_config)
+                listenFromVosk(sdp)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
