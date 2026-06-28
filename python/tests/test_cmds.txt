@@ -1,0 +1,25 @@
+take a snapshot
+where you at?
+turn on mapping
+turn off mapping
+turn on map updating
+show rgb view
+hide rgb view
+preload a map
+what's the time?
+huh?
+what?
+show color window
+erase map
+get map
+show depth view
+go to the moon
+go stright forward
+shut your eyes
+show your eyes
+reload map
+keep your eyes on me
+move with me
+come after me
+record this scene
+take a selfie
