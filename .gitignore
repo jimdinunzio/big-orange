@@ -38,3 +38,5 @@ python/databases/
 python/maps/
 python/model*/
 python/certificates/
+.vscode/
+python/commands_embeddings.pkl
