@@ -60,19 +60,12 @@ cd ..
 REM For Respeaker Mic Array V2.0 see git/usb_4_mic_array/requirements.txt
 pip install -r python\usb_4_mic_array\requirements.txt
 
-REM Install these prerequisites using conda for the Mycroft Precise wake word detection because pip couldn't do it alone
-@REM conda install -c conda-forge hdf5
-@REM conda install -c conda-forge netcdf4
-
-@REM conda install tensorflow=1.13.1
-REM For Mycroft Precise wake word detection
-
-@REM cd mycroft-precise
-@REM python setup.py install
-
-@REM cd runner
-@REM python setup.py install
-@REM cd ..
+REM For openWakeWord wake word detection (Windows uses the onnx inference framework only).
+REM Custom "hey orange" / "stop now" models (.onnx) are trained via the openWakeWord Colab
+REM notebook and placed in python\models\.
+pip install openwakeword onnxruntime
+REM Download the base feature models (melspectrogram + embedding) required at runtime.
+python -c "import openwakeword; openwakeword.utils.download_models()"
 
 pip install vosk
 

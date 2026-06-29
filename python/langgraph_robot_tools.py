@@ -731,6 +731,12 @@ class RobotTools:
         if self.sim:
             return f"Simulated answer to the question: {question}"
         return self.call_tool_helper("ask_question_about_scene", question)
+
+    def wave_arm(self) -> str:
+        """Wave the robot's arm to greet someone."""
+        if self.sim:
+            return "Waved the arm (simulated)."
+        return self.call_tool_helper("wave_arm")
     
     # Tool definitions for LangGraph
 
@@ -1098,6 +1104,12 @@ class RobotTools:
                 func=self.get_yolo_object_detections,
                 name="get_yolo_object_detections",
                 description="Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."
+            ),
+
+            StructuredTool.from_function(
+                func=self.wave_arm,
+                name="wave_arm",
+                description="Wave the robot's arm to greet someone."
             ),
 
             self.get_move_by_deltas_tool(),

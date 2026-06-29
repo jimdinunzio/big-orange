@@ -24,6 +24,7 @@ from cmd_embed_mgr import CmdEmbedMgr
 from nano_vlm_client import NanoVlmClient
 from nano_owl_client import NanoOwlClient
 from nano_owl_manager import NanoOwlManager
+from arm_client import ArmClient
 import pyautogui
 from my_langgraph import RobotPlannerGraph
 import traceback
@@ -31,11 +32,11 @@ from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple, Optional
 
 # Constants
-_show_rgb_window = True
+_show_rgb_window = False
 _show_depth_window = False
 _default_map_name = 'my house'
 _current_map_name = ''
-_hotword = "hey orange"
+_hotword = "orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
 _run_flag = True # setting this to false kills all threads for shut down
@@ -137,6 +138,7 @@ _goto_location_status = "idle"
 _nano_vlm : NanoVlmClient = None
 _nano_owl : NanoOwlClient = None
 _nano_owl_mgr : NanoOwlManager = None
+_arm_client : ArmClient = None
 
 # Async operation callback globals
 
@@ -184,8 +186,6 @@ class HandleResponseResult(Enum):
     NotHandledBusy = -2
     # The response was not handled because the request was unknown
     NotHandledUnknown = -1
-    # The response was not handle because no hot word was given
-    NotHandledNoHotWord = 0
     # The response was handled
     Handled = 1
     # The response was handled by LangGraph
@@ -2465,13 +2465,13 @@ def handling_response():
     with _handling_resp_lock:
         return _handling_resp or _handle_resp_thread is not None and _handle_resp_thread.is_alive()
 
-def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False, listenResponseFn=None):
+def handle_response_sync(sdp, phrase, doa, assist = False, listenResponseFn=None):
     if handling_response():
         print("already handling response, try again later.")
         return HandleResponseResult.NotHandledBusy
     set_handling_response(True)
     try:
-        handled_result = handle_response(sdp, phrase, doa, check_hot_word, listenResponseFn=listenResponseFn)
+        handled_result = handle_response(sdp, phrase, doa, listenResponseFn=listenResponseFn)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             # add the human speech to memory
             speak("Sorry, I don't understand \"" + phrase.split(_hotword)[-1] + "\"?")
@@ -2480,16 +2480,16 @@ def handle_response_sync(sdp, phrase, doa, check_hot_word = True, assist = False
     finally:
         set_handling_response(False)
 
-def handle_response_async(sdp, phrase, doa, check_hot_word = True):
+def handle_response_async(sdp, phrase, doa):
     # issue the command in its own thread
-    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, doa, check_hot_word), name = "handle_response_async", daemon=False)
+    _handle_resp_thread = Thread(target = handle_response_sync, args=(sdp, phrase, doa), name = "handle_response_async", daemon=False)
     _handle_resp_thread.start()
 
 
 
 ###############################################################
 # Command Handler
-def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : typing.Union[typing.Callable[[object, int], str], None] = None):
+def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Callable[[object, int], str], None] = None):
     global _run_flag, _goal, _listen_flag, _last_phrase
     global _person, _mood, _time
     global _action_flag, _internet, _use_internet
@@ -2557,15 +2557,6 @@ def handle_response(sdp, phrase, doa, check_hot_word = True, listenResponseFn : 
             speak(answer)
             _person = "nobody"
             return HandleResponseResult.Handled
-
-        # check if the hot word is in the string, and take the words after it, otherwise ignore speech
-        if check_hot_word and not tried_closest_cmd:
-            hot_word_idx = phrase.rfind(_hotword)
-            if hot_word_idx >= 0:
-                phrase = phrase[hot_word_idx + len(_hotword):].strip()
-                print("cmd extracted: ", phrase)
-            else:
-                return HandleResponseResult.NotHandledNoHotWord
 
         # some verbal commands are handled inside the listen thread
         if phrase == "":
@@ -3807,17 +3798,21 @@ def listen():
 
     #speak("Hello, My name is Orange. Pleased to be at your service.")
 
+    HEY_ORANGE_KEYWORD_IDX = 0
+    STOP_NOW_KEYWORD_IDX = 1
     GET_RESPONSE_IDX = 2
-    
+
     def listenFromVoskSpeechRecog(r : sr.Recognizer, mic, sr,
+                                  oww_config : typing.Union[sr.Recognizer.OpenWakeWordListener.Config, None],
                                   timeout=None) -> tuple[str, float]:
         global _last_speech_heard
       # obtain audio from the microphone
         try:
             with mic as source:
                 print("Say something!")
-                #_pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
-                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10,
+                if oww_config is not None:
+                    _pixel_ring.setOff() # turn off from trace mode so wake word volume effect is noticable
+                audio = r.listen(source, timeout = timeout, phrase_time_limit = 10, oww_config = oww_config,
                                  is_speech_cb=None if _mic_array.is_sim_mode() else _mic_array.getIsSpeech)
                 doa = _mic_array.getDoa()
                 _pixel_ring.setThink()
@@ -3825,6 +3820,11 @@ def listen():
         except sr.WaitTimeoutError:
             adj_spch_recog_ambient(r, mic)
             return "", 0
+        except sr.ReturnAfterKeywordDetection as e:
+            phrase = ""
+            if e.args[0] == STOP_NOW_KEYWORD_IDX:
+                phrase = "stop moving"
+            return phrase, 0
         except Exception as e:
             print(e)
             if e.__context__:
@@ -3907,18 +3907,18 @@ def listen():
     def listenFromVoskResponse(sdp, timeout=5):
         on_detection(GET_RESPONSE_IDX)
         try:
-            phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, timeout=5)
+            phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, None, timeout=5)
         except:
             speak("sorry, i am having trouble understanding.")
         return phrase
 
-    def listenFromVosk(sdp, finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromVosk(sdp, oww_config, finallyFunc=lambda:None):
         try:
-            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr)
+            phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, oww_config)
             if phrase != "stop moving":
                 setPixelRingTrace()
             try:
-                handle_response_sync(sdp, phrase, doa, check_hot_word, listenResponseFn=listenFromVoskResponse)
+                handle_response_sync(sdp, phrase, doa, listenResponseFn=listenFromVoskResponse)
             except Exception as e:
                 print(str(e))
                 traceback.print_exc()
@@ -3926,14 +3926,14 @@ def listen():
         finally:
            finallyFunc()
 
-    def listenFromGoogle(sdp, finallyFunc=lambda:None, check_hot_word=True):
+    def listenFromGoogle(sdp, finallyFunc=lambda:None):
         try:
             phrase, doa = listenFromGoogleSpeechRecog(r, mic, sr)
-            # slip in an ambient noise level adjustment here because some speech may have just 
+            # slip in an ambient noise level adjustment here because some speech may have just
             # ended or a timeout occurred.
             #adj_spch_recog_ambient(r, mic)
             setPixelRingTrace()
-            handle_response_sync(sdp, phrase, doa, check_hot_word)
+            handle_response_sync(sdp, phrase, doa)
         except Exception as e:
             print(str(e))
             traceback.print_exc()
@@ -3984,8 +3984,6 @@ def listen():
         handled_result = handle_response_sync(sdp, phrase, doa, assist = False)
         if handled_result == HandleResponseResult.NotHandledUnknown:
             speak("I am not sure how to help with that.")
-        elif handled_result == HandleResponseResult.NotHandledNoHotWord:
-            print("No hot word, ignoring.")
 #        except:
 #           speak("sorry, i could not do what you wanted.")
 #        finally:
@@ -3996,10 +3994,40 @@ def listen():
     _pixel_ring.setEndStartup() # restore pixel ring to default sound sensitive mode after boot up
 
     def on_detection(index):
-        if index == GET_RESPONSE_IDX:
+        if index == HEY_ORANGE_KEYWORD_IDX:
+            stop_speaking()
+            for i in range(1, 12):
+                _pixel_ring.setColoredVolume(i)
+                time.sleep(0.005)
+        elif index == STOP_NOW_KEYWORD_IDX:
+            stop_speaking()
+            _pixel_ring.setRedVolume()
+        elif index == GET_RESPONSE_IDX:
             for i in range(1, 12):
                 _pixel_ring.setBlueVolume(i)
                 time.sleep(0.0075)
+
+    def on_listen_timeout(index):
+        if index == HEY_ORANGE_KEYWORD_IDX:
+            for i in range(11, -1, -1):
+                _pixel_ring.setColoredVolume(i)
+                time.sleep(0.005)
+
+    models_dir = os.path.join(os.path.dirname(__file__), "models")
+    wake_path = os.path.join(models_dir, "hey_orange.onnx")
+    stop_path = os.path.join(models_dir, "stop_now.onnx")
+    for p in (wake_path, stop_path):
+        if not os.path.isfile(p):
+            speak("I cannot find one of my wake word model files. Shutting down.")
+            _run_flag = False
+            break
+    oww_config = r.OpenWakeWordListener.Config(
+        model_paths=[wake_path, stop_path],
+        keyword_types=[r.OpenWakeWordListener.KeywordType.LISTEN,
+                       r.OpenWakeWordListener.KeywordType.IMMEDIATE],
+        thresholds=[0.5, 0.5],
+        on_detection=on_detection,
+        on_det_timeout=on_listen_timeout)
 
     while _run_flag:
         #local_listener = None
@@ -4009,7 +4037,7 @@ def listen():
                 print("local listener")
                 # if no internet access or google mode is inactive, use WSR / SAPI
                 # to recognize a command subset
-                listenFromVosk(sdp)
+                listenFromVosk(sdp, oww_config=oww_config)
                 #local_listener = winspeech.listen_for(None, "speech.xml", 
                 #"RobotCommands", lambda phrase, listener, hotword=_hotword, r=r,
                 #sr=sr, sdp=sdp: local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp))
@@ -4350,7 +4378,7 @@ from orange_utils import *
 def handle_op_request(sdp : MyClient, opType : OrangeOpType, arg1=None, arg2=None):
     global _last_speech_heard, _goal
     if opType == OrangeOpType.TextCommand:
-        return handle_response_async(sdp, arg1, 0, check_hot_word=False)
+        return handle_response_async(sdp, arg1, 0)
     elif opType == OrangeOpType.BatteryPercent:
         return sdp.battery()
     elif opType == OrangeOpType.Location:
@@ -5104,6 +5132,17 @@ def get_yolo_detections_tool_helper(sdp: MyClient):
     except Exception as e:
         return [{'error': f"Error getting YOLO detections: {str(e)}"}]
 
+def wave_arm_tool_helper():
+    """Wave the robot's arm using the arm client."""
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: Arm client not available to wave the arm."
+    try:
+        if _arm_client.wave():
+            return "Waved the arm."
+        return "Error: the arm failed to wave."
+    except Exception as e:
+        return f"Error waving the arm: {str(e)}"
+
 # Export dictionary for LangGraph tools
 langgraph_tool_funcs = {
     # Location & Navigation
@@ -5154,7 +5193,10 @@ langgraph_tool_funcs = {
     "move_by_deltas": move_by_deltas_tool_helper,
     "forward": forward,
     "backup": backup,
-    "turn": turn
+    "turn": turn,
+
+    # Arm control
+    "wave_arm": wave_arm_tool_helper
 }
 
 ################################################################   
@@ -5163,12 +5205,28 @@ langgraph_tool_funcs = {
 def initialize_robot():
     global _moods, _internet, _eyes_flag, _facial_recog
     global _listen_thread, _cmdEmbedMgr, _langgraph, _nano_vlm, _nano_owl, _nano_owl_mgr
+    global _arm_client
 
     _internet = True
 
     if _jetson_on:
         max_retries = 3
         retry_wait = 10  # seconds
+
+        # Initialize Arm client with retry logic
+        _arm_client = ArmClient()
+        for attempt in range(1, max_retries + 1):
+            print(f"Attempting to connect to Arm server (attempt {attempt}/{max_retries})...")
+            if _arm_client.connect():
+                print("Arm connection established.")
+                break
+            else:
+                if attempt < max_retries:
+                    print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
+                    time.sleep(retry_wait)
+                else:
+                    print("WARNING: No Arm connection available after all retries.")
+                    _arm_client = None
 
         # Initialize NanoOwl client with retry logic
         _nano_owl = NanoOwlClient()
@@ -5256,7 +5314,8 @@ def initialize_robot():
 # and by setting _run_flag to False, threads are told to terminate
 def shutdown_robot():
     global _run_flag, _moods, _sdp, _grasper, _sdp, _lpArduino, _cmdEmbedMgr, _map_proc
-    
+    global _arm_client, _nano_owl, _nano_vlm
+
     cancelAction(True, _sdp)
     _run_flag = False
 
@@ -5283,6 +5342,18 @@ def shutdown_robot():
         print("shutting down grasper")
         _grasper.shutdown()
         _grasper = None
+    if _arm_client is not None:
+        print("disconnecting arm client")
+        _arm_client.disconnect()
+        _arm_client = None
+    if _nano_owl is not None:
+        print("disconnecting nano owl client")
+        _nano_owl.disconnect()
+        _nano_owl = None
+    # if _nano_vlm is not None:
+    #     print("disconnecting nano vlm client")
+    #     _nano_vlm.disconnect()
+    #     _nano_vlm = None
     print("shutting down aws mqtt listener")
     stop_aws_mqtt_listener()
     print("shutting down button pad")
