@@ -1,0 +1,304 @@
+four meters
+four inches
+four feet
+four yards
+two meters
+two inches
+two feet
+two yards
+what's your name
+what is your name
+who are you
+stop all
+you are in the
+ask google
+resume listening
+start listening
+start listening again
+pause listening
+stop listening
+what
+what did you say
+please repeat what you just said
+this is 
+i am 
+i'm 
+my name is 
+hello
+hi
+goodbye
+who are you with
+how are you
+how are you feeling
+where are you
+what time is it
+go across the room and come back
+wake up
+go to sleep
+go forward
+go backward
+go right
+go left
+at  degrees
+centimeters
+inches
+yards
+meters
+centimeter
+inch
+yard
+meter
+list your threads
+list locations
+update location of
+set location of
+save location of 
+recover localization
+close your eyes
+open your eyes
+initiate shutdown
+initiate shut down
+initiate restart
+begin shutdown
+begin restart
+shutdown system
+status
+what is your status?
+clear map
+clear locations
+house
+my house
+cal state
+beer
+spoon
+number
+load map 
+save map 
+motion
+voltage
+battery
+enable map updating
+disable map updating
+enable map update
+disable map update
+go home
+go recharge
+go to dock
+find a 
+find the 
+in the 
+take a picture
+take my picture
+bring this to 
+take this to 
+bring these to 
+take these to 
+bring this  to 
+take this  to 
+bring these  to 
+take these  to 
+in the 
+at the 
+set speed low
+set speed medium
+set speed high
+what do you see
+clear windows
+go to the 
+go to 
+turn around
+rotate around
+turn  degrees
+turn  degrees clockwise
+rotate  degrees
+rotate  degrees clockwise
+track me
+stop tracking me
+follow me
+stop following me
+come here
+cloud speech
+local speech
+jim
+evelyn
+room
+kitchen
+kitchen nook
+living room
+back slider
+dining area
+office
+front door
+end of hall
+home
+person
+baseball glove
+suitcase
+chair
+book
+teddy bear
+cat
+frisbee
+potted plant
+remote
+backpack
+bowl
+baseball
+bottle
+handbag
+tv monitor
+banana
+cup
+cell phone
+spoon
+fork
+apple
+orange
+donut
+sink
+hair drier
+carrot
+keyboard
+scissors
+zero
+one
+two
+three
+four
+five
+six
+seven
+eight
+nine
+ten
+point
+negative
+minus
+ten
+fifteen
+thirty
+sixty
+forty five
+ninety
+one thirty five
+one eighty
+two seventy
+three sixty
+dance with me
+find jim
+notify me if anybody else comes in here
+raise alert if someone falls
+where is my phone
+open chat
+reset chat
+restart chat
+show log
+show rgb view
+show depth view
+hide rgb view
+hide depth view
+enable radar
+disable radar
+all loaded
+all taken
+go there
+retrieve the bottle
+and bring it to me
+list people you know
+list faces you know
+and take it to
+find the bottle
+go to the dock
+go to dock
+stop all motors
+backup
+back up
+stop stop
+orange stop
+open chat cloud
+open chat local
+stop
+stop moving
+stop motors
+locate yourself
+show your eyes
+hide your eyes
+begin shut down
+shut down system
+show map
+open map
+close map
+hide map
+open rgb window
+close rgb window
+open depth window
+close depth window
+look over here
+never mind
+nevermind
+forget it
+go where i am pointing
+nice to meet you
+forget the face of
+rename location
+delete location
+list persons you know
+where are you going
+reset memory
+show chat log
+list your threads
+list your threads
+list your threads
+list your threads
+go to your dock
+go to your dock
+go to your dock
+go to your dock
+clear locations
+clear locations
+clear locations
+clear locations
+all taken
+all taken
+all taken
+all taken
+all loaded
+all loaded
+all loaded
+all loaded
+recover localization
+recover localization
+recover localization
+recover localization
+initiate shutdown
+initiate shutdown
+initiate shutdown
+initiate shutdown
+begin shutdown
+begin shutdown
+begin shutdown
+begin shutdown
+shutdown system
+shutdown system
+shutdown system
+shutdown system
+enable mapping
+enable mapping
+enable mapping
+enable mapping
+disable mapping
+disable mapping
+disable mapping
+disable mapping
+close pictures
+close pictures
+close pictures
+close pictures
+capybara
+jetson
+orin
+ollama
+luxonis
+slamware
+yolo
+jim dinunzio

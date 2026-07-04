@@ -20,7 +20,7 @@ from my_sdp_server import *
 from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 import facial_recognize as fr
 import re
-from cmd_embed_mgr import CmdEmbedMgr
+#from cmd_embed_mgr import CmdEmbedMgr
 from nano_vlm_client import NanoVlmClient
 from nano_owl_client import NanoOwlClient
 from nano_owl_manager import NanoOwlManager
@@ -129,7 +129,7 @@ _enable_aws_mqtt_listener = False
 _button_pad = Button4Pad()
 _grasper_sonar : Pin
 _last_grasper_sonar : float = 4.50
-_cmdEmbedMgr : CmdEmbedMgr = None
+#_cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
 _langgraph_initiated_move = False
@@ -2603,7 +2603,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
             speak(answer)
             return HandleResponseResult.Handled
                     
-        if phrase == "where are you going?":
+        if phrase == "where are you going":
             if _action_flag == True and _goal != "":
                 speak("I'm going to the " + _goal)
             else:
@@ -3403,16 +3403,6 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
         if phrase == "disable radar":
             speak("ok, i've disabled radar.")
             stop_radar()
-            return HandleResponseResult.Handled
-
-        if phrase == "open weather chat":
-            p = os.path.join(os.path.abspath(''),'riva-sample-apps/virtual-assistant')
-            os.chdir(p)
-            result = os.system('riva_weather')
-            os.chdir('..')
-            print(result)
-            if result != 0:
-                speak("Sorry, I could not open the weather chat.")
             return HandleResponseResult.Handled
             
         # parse var    
@@ -5269,8 +5259,8 @@ def initialize_robot():
         _nano_owl_mgr = NanoOwlManager(_nano_owl, _mdai)
         print("NanoOwlManager created.")
 
-    _cmdEmbedMgr = CmdEmbedMgr()
-    _cmdEmbedMgr.load_cmds_embeddings()
+    #_cmdEmbedMgr = CmdEmbedMgr()
+    #_cmdEmbedMgr.load_cmds_embeddings()
     _listen_thread = Thread(target = listen, name = "Listen")
     _listen_thread.start()
 
