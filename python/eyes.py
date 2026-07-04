@@ -7,6 +7,7 @@ from threading import Lock
 from orange_utils import OrangeOpType
 import my_sdp_client
 import sdp_comm
+from sdp_client_manager import manager
 
 WIDTH = 1024
 HEIGHT = 600
@@ -180,8 +181,8 @@ def start(handle_op_request, connect_sdp=True):
     _going = True
 
     if connect_sdp:
-        sdp = my_sdp_client.MyClient()
-        connected = sdp_comm.connectToSdp(sdp) == 0
+        sdp = manager.dedicated('eyes')
+        connected = sdp.connected
     else:
         sdp = None
         connected = False
@@ -502,8 +503,7 @@ def start(handle_op_request, connect_sdp=True):
         None
 
     if sdp is not None:
-        sdp.disconnect()
-        sdp.shutdown_server32(kill_timeout=1)
+        manager.release(sdp)
         sdp = None
 
     pygame.quit()

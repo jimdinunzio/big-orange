@@ -328,6 +328,15 @@ class RobotPlannerGraph:
         # we don't break the OpenAI tools protocol.
         self._cancel = True
 
+    def shutdown(self):
+        """Cancel any in-flight run, wait for the stream thread to finish, then
+        release the robot tools' SDP client. Called by main during robot shutdown."""
+        self.cancel_stream()
+        t = self._stream_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=5)
+        self.tools.shutdown()
+
     def reset_memory(self):
         """Reset the memory of the agent."""
         self.memory.delete_thread(self.thread_id)

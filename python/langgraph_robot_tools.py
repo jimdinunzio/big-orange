@@ -3,6 +3,7 @@ from typing_extensions import Self
 from my_sdp_client import MyClient
 from my_sdp_server import ActionStatus
 import sdp_comm
+from sdp_client_manager import manager
 from pydantic import BaseModel, Field, model_validator
 from langchain.tools import StructuredTool
 import os
@@ -141,8 +142,10 @@ class RobotTools:
         if self.sim:
             self._sdp: Union[MyClient, SDPSimClient] = SDPSimClient()
         else:
-            self._sdp: Union[MyClient, SDPSimClient] = MyClient()
-            sdp_comm.connectToSdp(self._sdp)
+            # Tracked but NOT thread-guarded: langgraph tools run on a fresh
+            # per-request _stream_thread (one at a time), so a GuardedClient would
+            # false-trip. manager.unguarded ensures shutdown_all()/active() cover it.
+            self._sdp: Union[MyClient, SDPSimClient] = manager.unguarded('langgraph')
 
     @property
     def sdp(self):
@@ -151,6 +154,18 @@ class RobotTools:
     @sdp.setter
     def sdp(self, value):
         self._sdp = value
+
+    def shutdown(self):
+        """Release the SDP client. Real clients are returned to the manager;
+        the sim client is a no-op shim."""
+        if self._sdp is None:
+            return
+        if self.sim:
+            self._sdp.disconnect()
+            self._sdp.shutdown_server32()
+        else:
+            manager.release(self._sdp)
+        self._sdp = None
 
     def move_by_deltas_sim(self, sdp, deltas: List[Dict[str, float]], final_yaw: float) -> str:
         """Simulated function to move by deltas."""

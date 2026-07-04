@@ -3,6 +3,7 @@ from pyFirmata.pyfirmata import INPUT, Board
 import time
 import my_sdp_client
 import sdp_comm
+from sdp_client_manager import manager
 
 class Button4Pad(object):
     """Driver class for 4 button pad"""
@@ -42,8 +43,8 @@ class Button4Pad(object):
 
     def startUp(self, connect_sdp=True):
       if connect_sdp:
-        sdp = my_sdp_client.MyClient()
-        connected = sdp_comm.connectToSdp(sdp) == 0
+        sdp = manager.dedicated('button_pad')
+        connected = sdp.connected
       else:
         sdp = None
         connected = False
@@ -58,9 +59,8 @@ class Button4Pad(object):
           self.buttonEventCb(change_mask, self.btn_state_mask, sdp)
         time.sleep(0.1)     
       if sdp is not None:
-        sdp.disconnect()
-        sdp.shutdown_server32(kill_timeout=1)
-        sdp = None     
+        manager.release(sdp)
+        sdp = None
         
 if __name__ == '__main__':
   from button_pad import Button4Pad

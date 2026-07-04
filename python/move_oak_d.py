@@ -8,6 +8,7 @@ from threading import Lock
 from copy import deepcopy
 import my_sdp_client
 import sdp_comm
+from sdp_client_manager import manager
 from pyFirmata.pyfirmata import INPUT, Board
 
 class ServoAxis(Enum):
@@ -396,9 +397,8 @@ class MoveOakD(object):
 
     def tracker_thread(self, mdai, mode):
         #print("Tracking thread started")
-        # must establish a separate client and server and connection to SDP because msl loadlib is not thread safe
-        self.oakd_sdp = my_sdp_client.MyClient()
-        sdp_comm.connectToSdp(self.oakd_sdp)
+        # A dedicated, thread-affine command client (msl.loadlib is not thread safe).
+        self.oakd_sdp = manager.dedicated('tracker')
 
         self.oakd_sdp.wakeup()
         last_wakeup = time.monotonic()
@@ -439,8 +439,7 @@ class MoveOakD(object):
             
             time.sleep(0.050)
             
-        self.oakd_sdp.disconnect()
-        self.oakd_sdp.shutdown_server32(kill_timeout=1)
+        manager.release(self.oakd_sdp)
         self.oakd_sdp = None
         self.allHome()
         eyes.setHome()

@@ -17,6 +17,7 @@ from robo_gripper import RoboGripper
 from button_pad import Button4Pad
 from my_sdp_client import MyClient
 from my_sdp_server import *
+from sdp_client_manager import manager
 from pyFirmata.pyfirmata import util as pyfirmata_util, Pin
 import facial_recognize as fr
 import re
@@ -288,7 +289,7 @@ def nearest_location(x, y):
 
 def where_am_i(sdp=None):
     if sdp is None:
-        sdp = _sdp
+        sdp = manager.reader()  # pose read: safe shared, lock-guarded, any thread
     try:
         pose = sdp.pose()
     except:
@@ -306,7 +307,7 @@ def is_close_to(loc, max_dist=1.0, max_heading_diff=math.radians(15)):
         print("is_close_to: location not found: ", loc)
         return -1
     try:
-        pose = _sdp.pose()
+        pose = manager.reader().pose()  # read: safe shared, lock-guarded, any thread
     except:
         print("is_close_to: error getting pose.")
         return -1
@@ -363,9 +364,9 @@ _reported_18 = False
 _reported_15 = False
 
 def batteryMonitor():
-    global _sdp, _run_flag, _person, _goal, _reported_35, _reported_25, _reported_18, _reported_15
+    global _run_flag, _person, _goal, _reported_35, _reported_25, _reported_18, _reported_15
     try:
-        batteryPercent = _sdp.battery()
+        batteryPercent = manager.reader().battery()  # read: safe shared, any thread
         person = _person if _person != "nobody" else "hello anyone"
         # if batteryPercent <= 15:
         #     if not _reported_15:
@@ -814,8 +815,7 @@ def handleGotoLocation():
             _goal = ""
             _deliveree = ""
 
-    sdp = MyClient()
-    sdp_comm.connectToSdp(sdp)
+    sdp = manager.dedicated('goto')
 
     retrieve_to_loc = None
     sub_goal_cleanup = None
@@ -1167,8 +1167,7 @@ def handleGotoLocation():
         _move_oak_d.stopSweepingBackAndForth()
         setNextGoal()
         time.sleep(0.5)
-    sdp.disconnect()
-    sdp.shutdown_server32(kill_timeout=1)
+    manager.release(sdp)
     sdp = None
             
 def moveActionMonitor(sdp=None, location_name=None):
@@ -1554,15 +1553,15 @@ def speak(phrase, flag=tts.flags.SpeechVoiceSpeakFlags.Default.value, add_to_mem
 ###############################################################
 # Miscellaneous
 
-def loadMap(filename):
-    global _sdp, _current_map_name
-    _sdp.wakeup()
+def loadMap(filename, sdp):
+    global _current_map_name
+    sdp.wakeup()
     print("Loading map and its locations")
     filepath = os.path.join(_maps_dir, filename)
-    res = _sdp.loadSlamtecMap(str.encode(filepath) + b'.stcm')
+    res = sdp.loadSlamtecMap(str.encode(filepath) + b'.stcm')
     if (res == 0):
         # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
-        _sdp.setMapUpdate(False)
+        sdp.setMapUpdate(False)
         speak("Map and locations are loaded. Mapping is off.")
         # speak("Now let me get my bearings.")
         # result, errStr = recoverLocalization(_INIT_RECT)
@@ -1575,11 +1574,11 @@ def loadMap(filename):
         speak("Something is wrong. I could not load the map.")
     return res
 
-def saveMap(filename):
-    global _sdp, _current_map_name
+def saveMap(filename, sdp):
+    global _current_map_name
     filepath = os.path.join(_maps_dir, filename)
     print("saving map and its locations")
-    res = _sdp.saveSlamtecMap(str.encode(filepath) + b'.stcm')
+    res = sdp.saveSlamtecMap(str.encode(filepath) + b'.stcm')
     if res != 0:
         speak("Something is wrong. I could not save the map.")
     save_locations(filepath)
@@ -1604,8 +1603,8 @@ def take_picture(filename):
     return image
     
 def statusReport():
-    global _person, _mood, _sdp
-    
+    global _person, _mood
+
     speak("This is my current status.")
     location, distance, closeEnough = where_am_i()
     if not closeEnough:
@@ -1617,7 +1616,7 @@ def statusReport():
         answer = "I'm with " + _person
         speak(answer)
     answer = "Battery is at "
-    answer = answer + str(_sdp.battery()) + " percent"
+    answer = answer + str(manager.reader().battery()) + " percent"
     speak(answer)
     answer = "And I'm feeling " + _mood
     speak(answer)
@@ -1882,7 +1881,7 @@ def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
 
 def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=None):
     if sdp is None:
-        sdp = _sdp
+        sdp = manager.reader()  # only reads pose (setLocationOfObj); safe shared
     found, p = checkForObject(obj)
     if found:
         setLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
@@ -2060,7 +2059,7 @@ def checkForFaces(faceDict, numChecks, needCentered=False,
 
 def setFoundFaceAsGoal(name, cam_yaw=0, offset_dist=1, sdp=None):
     if sdp is None:
-        sdp = _sdp
+        sdp = manager.reader()  # only reads pose (setLocationOfObj); safe shared
     p = findFace(name, 1)
     if p is not None and p is not False:
         setLocationOfObj(sdp, name, p, cam_yaw, offset_dist)
@@ -2323,8 +2322,7 @@ def findAndSetLocOfPersonFromSound(person, doa, sdp):
 def come_here(doa):
     global _goal, _interrupt_action
 
-    sdp = MyClient()
-    sdp_comm.connectToSdp(sdp)
+    sdp = manager.dedicated('come_here')
     
     yawDelta = _mic_array.rotateToDoa(doa, sdp)
 
@@ -2344,8 +2342,7 @@ def come_here(doa):
         else:
             speak("sorry, i could not find you.")
             move_oak_d.pitchHome()
-    sdp.disconnect()
-    sdp.shutdown_server32(kill_timeout=1)
+    manager.release(sdp)
     sdp = None
 
 def forward(sdp, n=5):
@@ -2951,7 +2948,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                 if len(name) == 0:
                     name = _default_map_name
             speak("Ok. I will load map " + name)
-            loadMap(name)
+            loadMap(name, sdp)
             return HandleResponseResult.Handled
         
         # parse var
@@ -2963,7 +2960,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                     speak("please include the name of the map")
                     return HandleResponseResult.Handled
             speak("Ok. I will save map " + name)
-            saveMap(name)
+            saveMap(name, sdp)
             return HandleResponseResult.Handled
         
         if phrase == "clear map":
@@ -3158,7 +3155,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
             eyes.setTargetPitchYaw(-70, 0)
             _move_oak_d.setPitch(75) # pitch up to see person better
             speak("Ok. Let's dance.")
-            _sdp.setSpeed(3)
+            sdp.setSpeed(3)
             timeout = time.monotonic() + 30
             dir = random.randint(0,1)
             if dir == 0:
@@ -3176,7 +3173,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                 #rotateToPrecise(sdp, orig_yaw - spread_angle)
                 
             speak("ok. i'm tired and need to rest a minute. Thank you.")
-            _sdp.setSpeed(_user_set_speed)
+            sdp.setSpeed(_user_set_speed)
             _move_oak_d.allHome()
             eyes.setHome()
             return HandleResponseResult.Handled
@@ -3512,7 +3509,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                     deg = 180
                 else:
                     None
-            turn(deg)
+            turn(deg, sdp)
             return HandleResponseResult.Handled
 
         break # exit parse while loop
@@ -3628,9 +3625,8 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
 def listen():
     global _run_flag, _goal, _last_speech_heard
     global _internet, _use_internet, _hotword, _google_mode
-    
-    sdp = MyClient()
-    sdp_comm.connectToSdp(sdp)
+
+    sdp = manager.dedicated('listen')
     
     ###########################################################
     # Text input to Google Assistant for web based queries
@@ -3828,7 +3824,7 @@ def listen():
             print(result)
             phrase = json.loads(result)
             phrase = phrase["alternatives"][0]["text"].strip()          
-            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+            print("I heard: \"%s\" at %d degrees." % (phrase, manager.reader().heading() + _mic_array.doa2YawDelta(doa)))
             _last_speech_heard = phrase
         except sr.UnknownValueError:
             phrase = ""
@@ -3859,7 +3855,7 @@ def listen():
         try:
             phrase = r.recognize_google(audio)
             _internet = True
-            print("I heard: \"%s\" at %d degrees." % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+            print("I heard: \"%s\" at %d degrees." % (phrase, manager.reader().heading() + _mic_array.doa2YawDelta(doa)))
             _last_speech_heard = phrase
         except sr.UnknownValueError:
             phrase = ""
@@ -3960,7 +3956,7 @@ def listen():
     def local_speech_recog_cb(phrase, listener, hotword, r, mic, sr, sdp):
         global _internet, _use_internet, _last_speech_heard
         doa = _mic_array.getDoa()
-        print("I heard: \"%s\" at %d degrees" % (phrase, _sdp.heading() + _mic_array.doa2YawDelta(doa)))
+        print("I heard: \"%s\" at %d degrees" % (phrase, manager.reader().heading() + _mic_array.doa2YawDelta(doa)))
         _last_speech_heard = phrase
         phrase = phrase.lower()
         listener.set_active(False)
@@ -4050,12 +4046,13 @@ def listen():
     
     # if no longer running, stop listening 
     #winspeech.stop_listening()
-    sdp.disconnect()
-    sdp.shutdown_server32(kill_timeout=1)
+    manager.release(sdp)
     sdp = None
 
-def recoverLocalization(sdp=_sdp, rect=_WHOLE_MAP_RECT):
-    sdp.recoverLocalization(rect["left"], 
+def recoverLocalization(sdp=None, rect=_WHOLE_MAP_RECT):
+    if sdp is None:
+        sdp = _sdp
+    sdp.recoverLocalization(rect["left"],
                                       rect["bottom"],
                                       rect["width"],
                                       rect["height"])
@@ -4229,9 +4226,8 @@ def follow_me():
     print("Follow Me thread starting")
     _following = True
 
-    # must establish a separate client and server and connection to SDP because msl loadlib is not thread safe
-    sdp = MyClient()
-    sdp_comm.connectToSdp(sdp)
+    # A dedicated, thread-affine command client (msl.loadlib is not thread safe).
+    sdp = manager.dedicated('follow_me')
 
     start_tracking()
     last_track_update = 0
@@ -4273,8 +4269,7 @@ def follow_me():
         time.sleep(0.1)
     print("Follow Me thread ending")
     stop_tracking()
-    sdp.disconnect()
-    sdp.shutdown_server32(kill_timeout=1)
+    manager.release(sdp)
     sdp = None
 
 def start_following():
@@ -5377,8 +5372,10 @@ def shutdown_robot():
     #print("waiting for listening thread to complete.")
     #if _listen_thread is not None:
     #    _listen_thread.join()
-    _sdp.disconnect()
-    _sdp.shutdown_server32(kill_timeout=1)
+    if _langgraph is not None:
+        print("shutting down langgraph agent")
+        _langgraph.shutdown()   # cancels any run, joins stream thread, releases its client
+    manager.shutdown_all()  # tears down 'main', the shared reader, and any stragglers
     _sdp = None
     print("\nDone!")
    
@@ -5512,7 +5509,7 @@ def handleButton4Event(pressed, sdp: MyClient):
     if pressed:
         if len(_current_map_name) != 0:
             speak("Ok. I will save map " + _current_map_name)
-            saveMap(_current_map_name)
+            saveMap(_current_map_name, sdp)
         else:
             speak("please ask me to save map <name>.")
 
@@ -5533,8 +5530,8 @@ def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
 def run(no_move=False):
     global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _grasper_sonar
 
-    # Start 32 bit bridge server
-    _sdp = MyClient()
+    # Start 32 bit bridge server (main-thread command client; connect below, conditionally)
+    _sdp = manager.dedicated('main', connect=False)
     _lpArduino = LattePandaArduino()
     _lpArduino.initialize()
     #init_local_speech_rec()
@@ -5574,7 +5571,7 @@ def run(no_move=False):
             _sdp.setMapUpdate(True)
             pose = _sdp.pose()
             _locations["home"] = (pose.x, pose.y, math.radians(pose.yaw))
-            loadMap(_default_map_name)
+            loadMap(_default_map_name, _sdp)
             None
         else:
             speak("Movement is disabled.")

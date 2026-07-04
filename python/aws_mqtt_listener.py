@@ -6,6 +6,7 @@ from threading import Thread
 from orange_utils import OrangeOpType
 import my_sdp_client
 import sdp_comm
+from sdp_client_manager import manager
 
 class AwsMqttListener(object):
     def __init__(self):
@@ -53,8 +54,7 @@ class AwsMqttListener(object):
         self.connect()
         
         if connect_sdp:
-            self._sdp = my_sdp_client.MyClient()
-            sdp_comm.connectToSdp(self._sdp)
+            self._sdp = manager.dedicated('aws_mqtt')
         else:
             self._sdp = None
 
@@ -68,8 +68,7 @@ class AwsMqttListener(object):
         print("MQTT Disconnected!")
 
         if self._sdp is not None:
-            self._sdp.disconnect()
-            self._sdp.shutdown_server32(kill_timeout=1)
+            manager.release(self._sdp)
             self._sdp = None
 
     def connect(self):
