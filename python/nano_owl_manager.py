@@ -18,7 +18,8 @@ Usage from main.py:
 import math
 import time
 from threading import Thread
-
+from move_oak_d import MoveOakD
+from latte_panda_arduino import LattePandaArduino
 
 # OAK-D color camera horizontal field of view (degrees)
 OAKD_HFOV_DEG = 69.0
@@ -277,6 +278,12 @@ if __name__ == "__main__":
 
     print(f"Server status: {client.get_status()}")
     print(f"is_enabled={client.is_enabled()}  is_running={client.is_running()}")
+
+    _lpArduino = LattePandaArduino()
+    _lpArduino.initialize()
+    m = MoveOakD()
+    m.initialize(_lpArduino.board)
+    m.pitchServo.setAngle(145)
 
     client.enable()
     time.sleep(0.5)

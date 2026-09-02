@@ -747,6 +747,18 @@ class RobotTools:
             return f"Simulated answer to the question: {question}"
         return self.call_tool_helper("ask_question_about_scene", question)
 
+    def enable_scene_description_skill(self) -> str:
+        """Switch the camera AI to the scene description (VLM) skill."""
+        if self.sim:
+            return "Switched to the scene description skill (simulated)."
+        return self.call_tool_helper("enable_scene_description")
+
+    def enable_object_search_skill(self) -> str:
+        """Switch the camera AI to the open-vocabulary object search (OWL) skill."""
+        if self.sim:
+            return "Switched to the object search skill (simulated)."
+        return self.call_tool_helper("enable_object_search")
+
     def wave_arm(self) -> str:
         """Wave the robot's arm to greet someone."""
         if self.sim:
@@ -1119,6 +1131,28 @@ class RobotTools:
                 func=self.get_yolo_object_detections,
                 name="get_yolo_object_detections",
                 description="Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."
+            ),
+
+            # Camera-AI service switching. Only one camera skill can be active at
+            # a time (they share the Jetson GPU); switching loads a model and
+            # takes ~40-50s. The vision (scene description) and object search
+            # tools each require their skill to be active.
+            StructuredTool.from_function(
+                func=self.enable_scene_description_skill,
+                name="enable_scene_description_skill",
+                description="Activate the vision/scene-description skill (VLM), needed by describe_scene, "
+                            "ask_question_about_scene, and go_to_location_with_narration. Switching takes "
+                            "about 50 seconds; warn the user of the delay first. Use for requests like "
+                            "'enable vision description skill'."
+            ),
+
+            StructuredTool.from_function(
+                func=self.enable_object_search_skill,
+                name="enable_object_search_skill",
+                description="Activate the open-vocabulary object-search skill (OWL), needed by track_object, "
+                            "search_for_object, and while_go_to_loc_find_object. Switching takes about 40 "
+                            "seconds; warn the user of the delay first. Use for requests like "
+                            "'enable object search skill'."
             ),
 
             StructuredTool.from_function(

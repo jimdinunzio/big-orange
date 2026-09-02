@@ -25,6 +25,7 @@ import re
 from nano_vlm_client import NanoVlmClient
 from nano_owl_client import NanoOwlClient
 from nano_owl_manager import NanoOwlManager
+from jetson_supervisor_client import SupervisorClient
 from arm_client import ArmClient
 import pyautogui
 from my_langgraph import RobotPlannerGraph
@@ -140,6 +141,20 @@ _nano_vlm : NanoVlmClient = None
 _nano_owl : NanoOwlClient = None
 _nano_owl_mgr : NanoOwlManager = None
 _arm_client : ArmClient = None
+
+# --- Camera-AI service switching (Jetson supervisor) -------------------------
+# The Jetson runs two GPU services that cannot run at once: NanoOWL (object
+# search) and NanoVLM (scene description). The supervisor switches between them;
+# the single camera-AI layer below (see _activate_camera_ai) is the ONLY code
+# that constructs/connects/disconnects _nano_owl / _nano_vlm. A switch is fired
+# non-blocking and a short-lived poll thread (_poll_switch) waits for it to
+# settle, then connects the client and voices readiness.
+_supervisor : SupervisorClient = None
+_active_camera_ai = "owl"                 # "owl" | "vlm" | None (connected + ready now)
+_pending_camera_ai = None                 # target of an in-flight switch, else None
+_SWITCH_SECONDS = {"owl": 40, "vlm": 50}  # approx model-load wall-clock, voiced to user
+_CAMERA_AI_FRIENDLY = {"owl": "object search", "vlm": "scene description"}
+_awaiting_user_response = False           # True only during an interactive user-speech capture window
 
 # Async operation callback globals
 
@@ -3891,16 +3906,21 @@ def listen():
     # _sendToGoogleAssistantFn = sendToGoogleAssistant
 
     def listenFromVoskResponse(sdp, timeout=5):
+        global _awaiting_user_response
         on_detection(GET_RESPONSE_IDX)
         try:
             phrase, _ = listenFromVoskSpeechRecog(r, mic, sr, None, timeout=5)
         except:
             speak("sorry, i am having trouble understanding.")
+        finally:
+            _awaiting_user_response = False  # user-speech capture window closed
         return phrase
 
     def listenFromVosk(sdp, oww_config, finallyFunc=lambda:None):
+        global _awaiting_user_response
         try:
             phrase, doa = listenFromVoskSpeechRecog(r, mic, sr, oww_config)
+            _awaiting_user_response = False  # command capture done (wake-word wait is idle, not counted)
             if phrase != "stop moving":
                 setPixelRingTrace()
             try:
@@ -3980,7 +4000,9 @@ def listen():
     _pixel_ring.setEndStartup() # restore pixel ring to default sound sensitive mode after boot up
 
     def on_detection(index):
+        global _awaiting_user_response
         if index == HEY_ORANGE_KEYWORD_IDX:
+            _awaiting_user_response = True  # user just triggered; about to speak a command
             stop_speaking()
             for i in range(1, 12):
                 _pixel_ring.setColoredVolume(i)
@@ -3989,6 +4011,7 @@ def listen():
             stop_speaking()
             _pixel_ring.setRedVolume()
         elif index == GET_RESPONSE_IDX:
+            _awaiting_user_response = True  # robot prompted; awaiting the user's reply
             for i in range(1, 12):
                 _pixel_ring.setBlueVolume(i)
                 time.sleep(0.0075)
@@ -4613,6 +4636,10 @@ def go_to_location_with_narration_tool_helper(sdp, location_name: str, narration
     """Go to a specific named location while periodically describing the scene."""
     global _langgraph_initiated_move
 
+    guard = _require_camera_ai("vlm")
+    if guard:
+        return guard
+
     def narrate_scene_during_move(output):
         try:
             _mdai.drawText(output, 1, 14)
@@ -4762,6 +4789,10 @@ def track_object_tool_helper(obj: str, height: str = "eye level", duration: int 
     """Track object via NanoOWL at inference rate with no robot movement. Shows green bbox."""
     global _interrupt_action, _keep_camera_orientation
 
+    guard = _require_camera_ai("owl")
+    if guard:
+        return guard
+
     if _nano_owl_mgr is None:
         return "Error: NanoOWL not available."
 
@@ -4820,6 +4851,10 @@ def track_object_tool_helper(obj: str, height: str = "eye level", duration: int 
 def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
     """Search for object by rotating in place."""
     global _interrupt_action, _keep_camera_orientation
+
+    guard = _require_camera_ai("owl")
+    if guard:
+        return guard
 
     obj_loc = None
     yolo_obj = obj.replace(' ','')
@@ -4913,6 +4948,10 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str = "eye level"):
     """While going to loc, look for object and stop as soon as it is seen and report its coords."""
     global _langgraph_initiated_move, _locations, _user_set_speed, _keep_camera_orientation
+
+    guard = _require_camera_ai("owl")
+    if guard:
+        return guard
 
     # Set camera pitch based on height specification
     if height == "floor":
@@ -5075,6 +5114,9 @@ def stop_tracking_tool_helper():
 
 def describe_scene_tool_helper():
     """Describe the scene concisely."""
+    guard = _require_camera_ai("vlm")
+    if guard:
+        return guard
     if _nano_vlm is None:
         return "Error: NanoVLM client not available to describe the scene."
     try:
@@ -5088,6 +5130,9 @@ def describe_scene_tool_helper():
 
 def ask_question_about_scene_tool_helper(prompt: str):
     """Ask question about the scene."""
+    guard = _require_camera_ai("vlm")
+    if guard:
+        return guard
     if _nano_vlm is None:
         return "Error: NanoVLM client not available to answer questions about the scene."
     try:
@@ -5128,6 +5173,242 @@ def wave_arm_tool_helper():
     except Exception as e:
         return f"Error waving the arm: {str(e)}"
 
+# --- Camera-AI service switching layer --------------------------------------
+# The ONLY code that constructs/connects/disconnects the OWL/VLM clients. All of
+# initialize_robot, the enable_* tools, and the inactive-service prompts funnel
+# through _activate_camera_ai; the supervisor decides which single GPU service
+# is up on the Jetson.
+
+def _connect_nano_owl(max_retries: int = 3, retry_wait: float = 10.0):
+    """Construct + connect (+ enable) the NanoOwl client. Sole owl constructor."""
+    client = NanoOwlClient()
+    for attempt in range(1, max_retries + 1):
+        print(f"Attempting to connect to NanoOwl server (attempt {attempt}/{max_retries})...")
+        if client.connect():
+            print("NanoOwl connection established.")
+            client.enable()
+            return client
+        if attempt < max_retries:
+            print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
+            time.sleep(retry_wait)
+    print("WARNING: No Owl connection available after all retries.")
+    return None
+
+def _connect_nano_vlm(max_retries: int = 3, retry_wait: float = 10.0):
+    """Construct + connect (+ enable) the NanoVlm client. Sole vlm constructor."""
+    client = NanoVlmClient()
+    for attempt in range(1, max_retries + 1):
+        print(f"Attempting to connect to NanoVLM server (attempt {attempt}/{max_retries})...")
+        if client.connect():
+            print("NanoVLM connection established.")
+            client.enable()
+            return client
+        if attempt < max_retries:
+            print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
+            time.sleep(retry_wait)
+    print("WARNING: No VLM connection available after all retries.")
+    return None
+
+def _connect_camera_ai_client(target: str) -> bool:
+    """Tear down the outgoing client and bring up `target`'s client. Sets the
+    active-service globals. Returns True on success."""
+    global _nano_owl, _nano_vlm, _nano_owl_mgr, _active_camera_ai, _pending_camera_ai
+
+    if target == "vlm":
+        # OWL is now stopped on the Jetson.
+        _nano_owl_mgr = None
+        if _nano_owl is not None:
+            try:
+                _nano_owl.disconnect()
+            except Exception:
+                pass
+            _nano_owl = None
+        _nano_vlm = _connect_nano_vlm()
+        ok = _nano_vlm is not None
+    else:  # owl
+        if _nano_vlm is not None:
+            try:
+                _nano_vlm.disconnect()
+            except Exception:
+                pass
+            _nano_vlm = None
+        _nano_owl = _connect_nano_owl()
+        ok = _nano_owl is not None
+        if ok and _mdai is not None:
+            _nano_owl_mgr = NanoOwlManager(_nano_owl, _mdai)
+            print("NanoOwlManager created.")
+
+    _pending_camera_ai = None
+    _active_camera_ai = target if ok else None
+    return ok
+
+def _activate_camera_ai(target: str, announce: bool = True) -> str:
+    """The one shared entry to bring up a camera-AI service. Non-blocking: if a
+    real switch is needed it fires switch_to() and returns immediately while a
+    background poller (_poll_switch) waits for it to settle, connects the client,
+    and announces readiness. Used by initialize_robot and the enable_* tools."""
+    global _active_camera_ai, _pending_camera_ai, _nano_owl, _nano_vlm, _nano_owl_mgr
+
+    if target not in ("owl", "vlm"):
+        return f"Error: unknown camera skill '{target}'."
+
+    friendly = _CAMERA_AI_FRIENDLY[target]
+    secs = _SWITCH_SECONDS.get(target, 45)
+
+    # Already active and connected?
+    if _active_camera_ai == target and (_nano_owl if target == "owl" else _nano_vlm) is not None:
+        return f"The {friendly} skill is already active."
+
+    # A switch is already in flight.
+    if _pending_camera_ai is not None:
+        pend = _CAMERA_AI_FRIENDLY.get(_pending_camera_ai, _pending_camera_ai)
+        return f"Still switching to the {pend} skill; I'll let you know when it's ready."
+
+    # If the requested service is already the one running on the Jetson, just
+    # (re)connect its client synchronously -- no switch, no delay.
+    if _supervisor is not None and _supervisor.is_connected() and _supervisor.current() == target:
+        if _connect_camera_ai_client(target):
+            return f"The {friendly} skill is now active."
+        return f"Switched to {friendly} but could not connect its client."
+
+    # No supervisor: we cannot orchestrate a switch. Try to connect the requested
+    # client directly (legacy single-service setup); if its service isn't running
+    # the connect simply fails.
+    if _supervisor is None or not _supervisor.is_connected():
+        if _connect_camera_ai_client(target):
+            return f"The {friendly} skill is now active."
+        return (f"The {friendly} skill is not available and the camera AI cannot be "
+                f"switched right now (supervisor unavailable).")
+
+    # Tear down the outgoing client now (its service is about to stop) and mark
+    # the switch pending so tools report "not active yet".
+    _pending_camera_ai = target
+    _active_camera_ai = None
+    _nano_owl_mgr = None
+    if _nano_owl is not None:
+        try:
+            _nano_owl.disconnect()
+        except Exception:
+            pass
+        _nano_owl = None
+    if _nano_vlm is not None:
+        try:
+            _nano_vlm.disconnect()
+        except Exception:
+            pass
+        _nano_vlm = None
+
+    if announce:
+        speak(f"Switching to the {friendly} skill. This takes about {secs} seconds "
+              f"— you can keep talking to me; I'll tell you when it's ready.")
+
+    result = _supervisor.switch_to(target)
+    if not result or not result.get("accepted"):
+        _pending_camera_ai = None
+        return f"Error: the supervisor did not accept the switch to the {friendly} skill."
+
+    # Wait for the switch to settle in the background so the listen loop stays
+    # free; _poll_switch connects the client and announces readiness.
+    Thread(target=_poll_switch, args=(target,), name="camera-ai-switch",
+           daemon=True).start()
+    return f"Switching to the {friendly} skill; I'll announce when it's ready."
+
+def _tts_idle() -> bool:
+    """True when the robot is not currently speaking."""
+    try:
+        return bool(_voice.voice.WaitUntilDone(0))
+    except Exception:
+        return True
+
+def _safe_to_announce() -> bool:
+    """Safe to voice a switch announcement when the robot isn't speaking and
+    isn't in an interactive user-speech capture window. A silent long command
+    run (movement/vision) counts as safe."""
+    return _tts_idle() and not _awaiting_user_response
+
+def _poll_switch(target: str):
+    """Background poller (one short-lived thread per switch): wait for the fired
+    switch to settle via get_status(), then connect the client and voice a
+    queued announcement once it's safe to speak. Blocking here is fine -- it's
+    off the listen loop -- so we avoid a persistent callback server."""
+    global _pending_camera_ai, _active_camera_ai
+    try:
+        friendly = _CAMERA_AI_FRIENDLY.get(target, target)
+        status = _supervisor.wait_until_settled() if _supervisor is not None else None
+        phase = status.get("phase") if status else None
+
+        if phase == "up":
+            _connect_camera_ai_client(target)  # tools usable immediately
+            msg = f"Pardon me, the {friendly} skill is now ready."
+        elif phase == "rebooting":
+            _pending_camera_ai = None
+            _active_camera_ai = None
+            msg = (f"Pardon me, the {friendly} skill failed to load and the Jetson "
+                   f"is restarting. Please try again shortly.")
+        else:
+            _pending_camera_ai = None
+            _active_camera_ai = None
+            msg = (f"Pardon me, the {friendly} skill did not come up "
+                   f"(status: {phase}). Please try again.")
+
+        while _run_flag and not _safe_to_announce():
+            time.sleep(0.25)
+        speak(msg)
+    except Exception as e:
+        print(f"Switch poll error: {e}")
+        _pending_camera_ai = None
+
+def _require_camera_ai(target: str):
+    """Return None if `target` is the active camera AI, else a message telling
+    the agent to ask the user to switch (same switch the enable_* tools run)."""
+    if _active_camera_ai == target:
+        return None
+    friendly = _CAMERA_AI_FRIENDLY[target]
+    secs = _SWITCH_SECONDS.get(target, 45)
+    enable_tool = "enable_scene_description_skill" if target == "vlm" else "enable_object_search_skill"
+    if _pending_camera_ai == target:
+        return f"The {friendly} skill is still starting up; please wait a moment and try again."
+    if _supervisor is None or not _supervisor.is_connected():
+        return (f"The {friendly} skill is not active and the camera AI cannot be "
+                f"switched right now (supervisor unavailable).")
+    return (f"The {friendly} skill is not active right now. Switching to it takes "
+            f"about {secs} seconds, during which the other camera skill is "
+            f"unavailable. Ask the user whether to switch; if they agree, call "
+            f"{enable_tool} and then retry this request.")
+
+def _disconnect_camera_ai():
+    """Tear down all camera-AI resources. Used by shutdown_robot."""
+    global _nano_owl, _nano_vlm, _nano_owl_mgr, _supervisor
+    _nano_owl_mgr = None
+    if _nano_owl is not None:
+        print("disconnecting nano owl client")
+        try:
+            _nano_owl.disconnect()
+        except Exception:
+            pass
+        _nano_owl = None
+    if _nano_vlm is not None:
+        print("disconnecting nano vlm client")
+        try:
+            _nano_vlm.disconnect()
+        except Exception:
+            pass
+        _nano_vlm = None
+    if _supervisor is not None:
+        try:
+            _supervisor.disconnect()
+        except Exception:
+            pass
+        _supervisor = None
+
+def enable_scene_description_tool_helper():
+    """Switch the camera AI to scene description (NanoVLM)."""
+    return _activate_camera_ai("vlm", announce=True)
+
+def enable_object_search_tool_helper():
+    """Switch the camera AI to open-vocabulary object search (NanoOWL)."""
+    return _activate_camera_ai("owl", announce=True)
+
 # Export dictionary for LangGraph tools
 langgraph_tool_funcs = {
     # Location & Navigation
@@ -5153,6 +5434,10 @@ langgraph_tool_funcs = {
     # Scene description & VLM
     "describe_scene": describe_scene_tool_helper,
     "ask_question_about_scene": ask_question_about_scene_tool_helper,
+
+    # Camera-AI service switching (Jetson supervisor)
+    "enable_scene_description": enable_scene_description_tool_helper,
+    "enable_object_search": enable_object_search_tool_helper,
 
     # Person Detection & Recognition
     "identify_visible_face": identify_visible_face_tool_helper,
@@ -5190,7 +5475,7 @@ langgraph_tool_funcs = {
 def initialize_robot():
     global _moods, _internet, _eyes_flag, _facial_recog
     global _listen_thread, _cmdEmbedMgr, _langgraph, _nano_vlm, _nano_owl, _nano_owl_mgr
-    global _arm_client
+    global _arm_client, _supervisor, _active_camera_ai
 
     _internet = True
 
@@ -5213,46 +5498,31 @@ def initialize_robot():
                     print("WARNING: No Arm connection available after all retries.")
                     _arm_client = None
 
-        # Initialize NanoOwl client with retry logic
-        _nano_owl = NanoOwlClient()
-        for attempt in range(1, max_retries + 1):
-            print(f"Attempting to connect to NanoOwl server (attempt {attempt}/{max_retries})...")
-            if _nano_owl.connect():
-                print("NanoOwl connection established.")
-                break
-            else:
-                if attempt < max_retries:
-                    print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
-                    time.sleep(retry_wait)
-                else:
-                    print("WARNING: No Owl connection available after all retries.")
-                    _nano_owl = None
-
-        # Initialize NanoVLM client with retry logic
-        # _nano_vlm = NanoVlmClient()
-        
-        # for attempt in range(1, max_retries + 1):
-        #     print(f"Attempting to connect to NanoVLM server (attempt {attempt}/{max_retries})...")
-        #     if _nano_vlm.connect():
-        #         print("NanoVLM connection established.")
-        #         break
-        #     else:
-        #         if attempt < max_retries:
-        #             print(f"Connection failed. Waiting {retry_wait} seconds before retry...")
-        #             time.sleep(retry_wait)
-        #         else:
-        #             print("WARNING: No VLM connection available after all retries.")
-        #             _nano_vlm = None
+        # Connect to the service supervisor. The camera-AI layer
+        # (_activate_camera_ai) owns all owl/vlm client lifecycle from here on;
+        # the actual client is brought up below, after _mdai is ready (needed for
+        # the owl manager). Switch progress is tracked by polling (_poll_switch).
+        _supervisor = SupervisorClient()
+        if _supervisor.connect():
+            current = _supervisor.current()
+            _active_camera_ai = current if current in ("owl", "vlm") else "owl"
+            print(f"Supervisor connected; active camera AI reported: {current}")
+        else:
+            print("WARNING: service supervisor not available; camera AI switching disabled.")
+            _supervisor = None
+            _active_camera_ai = "owl"
 
     start_button_pad_thread()
 
     start_depthai_thread()
     #start_blazepose_thread()
 
-    # Create NanoOwlManager after both _nano_owl and _mdai are ready
-    if _nano_owl is not None and _mdai is not None:
-        _nano_owl_mgr = NanoOwlManager(_nano_owl, _mdai)
-        print("NanoOwlManager created.")
+    # Bring up the camera-AI service now that _mdai exists. Boot default is owl;
+    # if the Jetson is already on it this connects synchronously, otherwise a
+    # switch is fired and readiness is announced via the callback.
+    if _jetson_on:
+        target = _active_camera_ai if _active_camera_ai in ("owl", "vlm") else "owl"
+        print(_activate_camera_ai(target, announce=False))
 
     #_cmdEmbedMgr = CmdEmbedMgr()
     #_cmdEmbedMgr.load_cmds_embeddings()
@@ -5331,14 +5601,8 @@ def shutdown_robot():
         print("disconnecting arm client")
         _arm_client.disconnect()
         _arm_client = None
-    if _nano_owl is not None:
-        print("disconnecting nano owl client")
-        _nano_owl.disconnect()
-        _nano_owl = None
-    # if _nano_vlm is not None:
-    #     print("disconnecting nano vlm client")
-    #     _nano_vlm.disconnect()
-    #     _nano_vlm = None
+    print("shutting down camera AI (owl/vlm/supervisor)")
+    _disconnect_camera_ai()
     print("shutting down aws mqtt listener")
     stop_aws_mqtt_listener()
     print("shutting down button pad")
