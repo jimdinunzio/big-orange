@@ -5162,14 +5162,40 @@ def get_yolo_detections_tool_helper(sdp: MyClient):
     except Exception as e:
         return [{'error': f"Error getting YOLO detections: {str(e)}"}]
 
+def _arm_problem(result: dict) -> str:
+    """The readable half of a failed arm result. `output` is the ros2 node's
+    console text, which is where a MoveIt refusal explains itself."""
+    return (result.get('error') or (result.get('output') or '').strip()
+            or "no detail")
+
+
+def _ensure_arm_enabled() -> str:
+    """Bring the ROS arm stack up if it is not already up. Returns "" when the
+    arm is ready, otherwise the reason it is not.
+
+    Motion commands deliberately do not auto-enable, so every path that moves
+    the arm comes through here. Normally a no-op: initialize_robot enables the
+    stack at startup and this only does work if it went away since.
+    """
+    status = _arm_client.get_status()
+    if status is not None and status.get("arm_enabled"):
+        return ""
+    result = _arm_client.enable_arm()
+    return "" if result.get("ok") else _arm_problem(result)
+
+
 def wave_arm_tool_helper():
     """Wave the robot's arm using the arm client."""
     if _arm_client is None or not _arm_client.is_connected():
         return "Error: Arm client not available to wave the arm."
     try:
-        if _arm_client.wave():
+        problem = _ensure_arm_enabled()
+        if problem:
+            return f"Error: the arm could not be enabled to wave: {problem}"
+        result = _arm_client.wave_arm()
+        if result.get("ok"):
             return "Waved the arm."
-        return "Error: the arm failed to wave."
+        return f"Error: the arm failed to wave: {_arm_problem(result)}"
     except Exception as e:
         return f"Error waving the arm: {str(e)}"
 
@@ -5489,6 +5515,14 @@ def initialize_robot():
             print(f"Attempting to connect to Arm server (attempt {attempt}/{max_retries})...")
             if _arm_client.connect():
                 print("Arm connection established.")
+                # Reaching the server does not mean the arm can move: the ROS
+                # stack is started explicitly. Do it now so the first wave is
+                # not also paying for the launch.
+                problem = _ensure_arm_enabled()
+                if problem:
+                    print(f"WARNING: arm reachable but its ROS stack would not start: {problem}")
+                else:
+                    print("Arm stack enabled.")
                 break
             else:
                 if attempt < max_retries:
@@ -5598,6 +5632,10 @@ def shutdown_robot():
         _grasper.shutdown()
         _grasper = None
     if _arm_client is not None:
+        print("parking the arm and stopping its ROS stack")
+        result = _arm_client.disable_arm("init")
+        if not result.get("ok"):
+            print(f"WARNING: the arm did not shut down cleanly: {_arm_problem(result)}")
         print("disconnecting arm client")
         _arm_client.disconnect()
         _arm_client = None

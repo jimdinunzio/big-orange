@@ -1,360 +1,447 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """
-Arm XML-RPC Client
+DOFBOT Arm XML-RPC Client.
 
-Connects to the Arm XML-RPC server to control the serial bus-servo arm.
+Talks to arm_server.py. Import ArmClient to drive the arm from other code, or
+run this file for a command line:
 
-Usage:
-    python3 arm_client.py         # Run demo (wave + read angles)
-    python3 arm_client.py -i      # Interactive mode
+    python3 arm_client.py status
+    python3 arm_client.py enable
+    python3 arm_client.py state ready
+    python3 arm_client.py pick 0.22 0.0 0.033
+    python3 arm_client.py place
+    python3 arm_client.py wave 3
+    python3 arm_client.py reset              # after a pick that failed partway
+    python3 arm_client.py disable --park init
+    python3 arm_client.py -i             # interactive
+
+The server address comes from --url, then $DOFBOT_ARM_URL, then the default
+below (the Jetson over the USB-device network link).
+
+Two proxies, not one: motion calls block for as long as the move takes, while
+ping/status/stop use a short timeout so they still answer -- and can still
+interrupt -- while a pick is in flight.
 """
 
+import argparse
+import http.client
+import os
 import sys
 import xmlrpc.client
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-# Default server address (Jetson over the USB-device network link).
-DEFAULT_SERVER_URL = "http://192.168.55.1:8001/"
+DEFAULT_SERVER_URL = os.environ.get('DOFBOT_ARM_URL',
+                                    'http://192.168.55.1:8001/')
+
+# Seconds. Long enough for a whole pick; short enough that a server which died
+# mid-command does not hang the caller forever.
+MOTION_TIMEOUT = 300
+QUERY_TIMEOUT = 10
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """xmlrpc.client has no timeout knob; this is the documented way in."""
+
+    def __init__(self, timeout):
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        if self._connection and host == self._connection[0]:
+            return self._connection[1]
+        chost, self._extra_headers, _x509 = self.get_host_info(host)
+        self._connection = (host, http.client.HTTPConnection(
+            chost, timeout=self._timeout))
+        return self._connection[1]
+
+
+def _proxy(url, timeout):
+    return xmlrpc.client.ServerProxy(url, allow_none=True,
+                                     transport=_TimeoutTransport(timeout))
+
+
+def _failed(command: str, error: str) -> Dict[str, Any]:
+    """A server-shaped result for something that never reached the server, so
+    callers only ever have one dict shape to handle."""
+    return {'ok': False, 'command': command, 'returncode': -1, 'output': '',
+            'error': error, 'seconds': 0.0}
 
 
 class ArmClient:
-    """
-    Client class for interacting with the Arm XML-RPC server.
+    """Client for the DOFBOT arm server.
 
-    Provides:
-    - Connection management (connect, ping, is_connected, disconnect)
-    - Motion (wave)
-    - State queries (read_angles, get_status)
-    - System control (reboot)
+    Every motion method returns the server's result dict:
+        {'ok', 'command', 'returncode', 'output', 'error', 'seconds'}
+    `ok` is the only field worth branching on; `output` is the ros2 command's
+    console output, which is where a MoveIt failure explains itself.
     """
 
-    def __init__(self, server_url: str = DEFAULT_SERVER_URL):
+    def __init__(self, server_url: str = DEFAULT_SERVER_URL,
+                 motion_timeout: int = MOTION_TIMEOUT,
+                 query_timeout: int = QUERY_TIMEOUT):
         self.server_url = server_url
-        self._proxy: Optional[xmlrpc.client.ServerProxy] = None
+        self._motion = _proxy(server_url, motion_timeout)
+        self._query = _proxy(server_url, query_timeout)
         self._connected = False
+
+    # ------------------------------------------------------------ connection
 
     def connect(self) -> bool:
         try:
-            self._proxy = xmlrpc.client.ServerProxy(self.server_url, allow_none=True)
-            self._proxy.ping()
+            self._query.ping()
             self._connected = True
-            print(f"Connected to Arm server at {self.server_url}")
+            print('Connected to arm server at %s' % self.server_url)
             return True
-        except ConnectionRefusedError:
-            print(f"Error: Could not connect to server at {self.server_url}")
+        except Exception as exc:
             self._connected = False
-            return False
-        except Exception as e:
-            print(f"Error connecting to server: {e}")
-            self._connected = False
+            print('Error: could not reach the arm server at %s: %s'
+                  % (self.server_url, exc))
             return False
 
     def is_connected(self) -> bool:
         return self._connected
 
-    def ping(self) -> Optional[str]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            return str(self._proxy.ping())
-        except Exception as e:
-            print(f"Ping error: {e}")
-            self._connected = False
-            return None
-
-    def get_status(self) -> Optional[dict]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            result = self._proxy.get_status()
-            return dict(result) if result else None
-        except Exception as e:
-            print(f"Get status error: {e}")
-            return None
-
-    def wave(self) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.wave())
-        except Exception as e:
-            print(f"Wave error: {e}")
-            return False
-
-    def read_angles(self) -> Optional[List[Optional[int]]]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            result = self._proxy.read_angles()
-            return list(result) if result is not None else None
-        except Exception as e:
-            print(f"Read angles error: {e}")
-            return None
-
-    def move_to(self, name: str, time_ms: int = 1500) -> bool:
-        """Move to a named full-arm pose (e.g. 'rest', 'raised', 'stowed')."""
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.move_to(name, time_ms))
-        except Exception as e:
-            print(f"Move to pose error: {e}")
-            return False
-
-    def list_poses(self) -> Optional[dict]:
-        """Return the server's named poses as {name: [s1..s6]}."""
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            result = self._proxy.list_poses()
-            return dict(result) if result is not None else None
-        except Exception as e:
-            print(f"List poses error: {e}")
-            return None
-
-    def move_servo(self, id: int, angle: float, time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.move_servo(id, angle, time_ms))
-        except Exception as e:
-            print(f"Move servo error: {e}")
-            return False
-
-    def move_servo_any(self, id: int, angle: float, time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.move_servo_any(id, angle, time_ms))
-        except Exception as e:
-            print(f"Move servo (any) error: {e}")
-            return False
-
-    def move_all(self, s1: float, s2: float, s3: float, s4: float, s5: float, s6: float,
-                 time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.move_all(s1, s2, s3, s4, s5, s6, time_ms))
-        except Exception as e:
-            print(f"Move all error: {e}")
-            return False
-
-    def move_joints(self, joints: List[float], time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.move_joints(list(joints), time_ms))
-        except Exception as e:
-            print(f"Move joints error: {e}")
-            return False
-
-    def read_servo(self, id: int) -> Optional[int]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            return self._proxy.read_servo(id)
-        except Exception as e:
-            print(f"Read servo error: {e}")
-            return None
-
-    def read_servo_any(self, id: int) -> Optional[int]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            return self._proxy.read_servo_any(id)
-        except Exception as e:
-            print(f"Read servo (any) error: {e}")
-            return None
-
-    def ping_servo(self, id: int) -> Optional[int]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            return self._proxy.ping_servo(id)
-        except Exception as e:
-            print(f"Ping servo error: {e}")
-            return None
-
-    def set_torque(self, onoff: int) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.set_torque(onoff))
-        except Exception as e:
-            print(f"Set torque error: {e}")
-            return False
-
-    def servo_control(self, id: int, num: int, time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.servo_control(id, num, time_ms))
-        except Exception as e:
-            print(f"Servo control error: {e}")
-            return False
-
-    def servo_control_array(self, array: List[int], time_ms: int = 1000) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            return bool(self._proxy.servo_control_array(list(array), time_ms))
-        except Exception as e:
-            print(f"Servo control array error: {e}")
-            return False
-
-    def get_serial_port(self) -> Optional[str]:
-        if not self._connected or self._proxy is None:
-            return None
-        try:
-            return str(self._proxy.get_serial_port())
-        except Exception as e:
-            print(f"Get serial port error: {e}")
-            return None
-
-    def reboot(self) -> bool:
-        if not self._connected or self._proxy is None:
-            return False
-        try:
-            self._proxy.reboot()
-            return True
-        except Exception as e:
-            print(f"Reboot error: {e}")
-            return False
-
     def disconnect(self):
-        self._proxy = None
         self._connected = False
 
+    def _call(self, proxy, name: str, *args) -> Dict[str, Any]:
+        try:
+            return dict(getattr(proxy, name)(*args))
+        except Exception as exc:
+            self._connected = False
+            return _failed(name, '%s: %s' % (type(exc).__name__, exc))
 
-SERVER_URL = DEFAULT_SERVER_URL
+    # -------------------------------------------------------------- commands
+
+    def enable_arm(self, timeout: int = 90, bridge: bool = True,
+                   rviz: bool = False, port: str = '') -> Dict[str, Any]:
+        """Start the ROS stack. Blocks until the nodes are up or it gives up."""
+        return self._call(self._motion, 'enable_arm', timeout, bridge, rviz, port)
+
+    def disable_arm(self, park: str = '') -> Dict[str, Any]:
+        """Stop the ROS stack, optionally moving to `park` first."""
+        return self._call(self._motion, 'disable_arm', park)
+
+    def pick_can(self, x: float, y: float, z: float,
+                 object: str = '') -> Dict[str, Any]:
+        """Pick the object whose CENTRE is at (x, y, z) in base_link, and carry
+        it. Does not place -- call place_can() for that."""
+        return self._call(self._motion, 'pick_can', float(x), float(y),
+                          float(z), object)
+
+    def place_can(self) -> Dict[str, Any]:
+        """Place whatever the gripper is carrying."""
+        return self._call(self._motion, 'place_can')
+
+    def move_to_state(self, name: str) -> Dict[str, Any]:
+        """Move to a saved state -- see list_states()."""
+        return self._call(self._motion, 'move_to_state', str(name))
+
+    def reset_arm(self, state: str = 'ready',
+                  force: bool = False) -> Dict[str, Any]:
+        """Recover: clear the planning scene, open the gripper, go to `state`.
+
+        What to reach for when a move fails instantly -- an aborted pick leaves
+        the object in the scene and nothing can be planned out of a start state
+        that is inside it. `force` drives out blind if MoveIt still will not
+        plan; that move is NOT collision checked.
+        """
+        return self._call(self._motion, 'reset_arm', str(state), bool(force))
+
+    def wave_arm(self, waves: int = 1, finish: str = '',
+                 seconds: float = 0.0) -> Dict[str, Any]:
+        """Wave hello, then stow the arm.
+
+        A greeting gesture, planned and collision-checked like any other move,
+        so the stack has to be enabled. `seconds` is how long ONE wave takes
+        (default 3), so the pace holds whatever `waves` says.
+        """
+        return self._call(self._motion, 'wave_arm', int(waves), str(finish),
+                          float(seconds))
+
+    # --------------------------------------------------------------- queries
+
+    def list_states(self) -> List[str]:
+        try:
+            return list(self._query.list_states())
+        except Exception as exc:
+            print('List states error: %s' % exc)
+            return []
+
+    def get_status(self) -> Optional[dict]:
+        try:
+            return dict(self._query.get_status())
+        except Exception as exc:
+            self._connected = False
+            print('Get status error: %s' % exc)
+            return None
+
+    def tail_log(self, lines: int = 40) -> str:
+        try:
+            return str(self._query.tail_log(int(lines)))
+        except Exception as exc:
+            return 'Tail log error: %s' % exc
+
+    def stop(self) -> Dict[str, Any]:
+        """Abort the motion in flight. Safe to call from another thread while a
+        pick is blocking -- that is what the short-timeout proxy is for."""
+        return self._call(self._query, 'stop')
+
+    def ping(self) -> Optional[str]:
+        try:
+            result = str(self._query.ping())
+            self._connected = True
+            return result
+        except Exception as exc:
+            self._connected = False
+            print('Ping error: %s' % exc)
+            return None
 
 
-def main():
-    """Demonstrate basic client usage."""
-    print(f"Connecting to Arm server at {SERVER_URL}")
-
-    client = ArmClient()
-    if not client.connect():
-        print("Make sure arm_server.py is running on the target machine.")
-        sys.exit(1)
-
-    print("\n--- Server Status ---")
-    print(f"Status: {client.get_status()}")
-
-    print("\n--- Current Angles ---")
-    print(f"Angles: {client.read_angles()}")
-
-    print("\n--- Waving ---")
-    print(f"Wave result: {client.wave()}")
-
-    print("\n--- Angles After Wave ---")
-    print(f"Angles: {client.read_angles()}")
-
-    print("\nDone!")
+# ------------------------------------------------------------------ printing
 
 
-def interactive_mode():
-    """Interactive mode for manual testing."""
-    print(f"Arm Interactive Client")
-    print(f"Server: {SERVER_URL}")
-    print("Commands: ping, status, wave, angles, pose <name>, poses, torque <0|1>,")
-    print("          move <id> <angle> [time_ms], moveall <s1..s6> [time_ms],")
-    print("          readservo <id>, pingservo <id>, reboot, quit")
-    print()
+def show(result: Dict[str, Any], verbose: bool = False) -> bool:
+    """Print a result dict the way a person wants to read it."""
+    mark = 'OK ' if result.get('ok') else 'FAIL'
+    line = '%s %s' % (mark, result.get('command') or '?')
+    if result.get('seconds'):
+        line += ' (%.1fs)' % result['seconds']
+    print(line)
+    if result.get('error'):
+        print('     %s' % result['error'])
+    output = result.get('output') or ''
+    if output and (verbose or not result.get('ok')):
+        print('     --- output ---')
+        for out_line in output.strip().splitlines():
+            print('     %s' % out_line)
+    return bool(result.get('ok'))
 
-    client = ArmClient()
-    if not client.connect():
-        print("Could not connect to server.")
+
+def show_status(status: Optional[dict]):
+    if status is None:
         return
+    print('arm enabled : %s%s'
+          % (status['arm_enabled'],
+             ' (pid %d, up %.0fs)' % (status['launch_pid'],
+                                      status['launch_uptime'])
+             if status['arm_enabled'] else ''))
+    print('busy        : %s' % (('%s, %.0fs' % (status['running'],
+                                                status['running_for']))
+                                if status['busy'] else 'no'))
+    print('states      : %s' % ', '.join(status.get('states') or ['(unknown)']))
+    print('workspace   : %s (ROS %s)' % (status['workspace'],
+                                         status['ros_distro']))
+    print('launch log  : %s' % status['launch_log'])
+    last = status.get('last')
+    if last:
+        print('last command: %s %s%s'
+              % (last['command'], 'ok' if last['ok'] else 'FAILED',
+                 '' if last['ok'] else ' -- %s' % last['error']))
+
+
+# ------------------------------------------------------------ interactive CLI
+
+
+INTERACTIVE_HELP = """Commands:
+  enable [--sim]        start the ROS stack (--sim: no servo bridge)
+  disable [state]       stop the stack, optionally parking at `state` first
+  pick X Y Z [object]   pick the object centred at X Y Z and carry it
+  place                 place what the gripper is carrying
+  state NAME            move to a saved state
+  reset [state] [force] clear the scene, let go, go home (after a failed pick)
+  wave [N]              wave hello N times, then stow
+  states                list the saved states
+  status                enabled? busy? what ran last?
+  log [N]               tail the launch log
+  stop                  abort the motion in flight
+  ping                  check the server
+  help, quit"""
+
+
+def interactive(client: ArmClient):
+    print('DOFBOT Arm interactive client')
+    print('Server: %s' % client.server_url)
+    print(INTERACTIVE_HELP)
+    print()
+    if not client.connect():
+        return 1
 
     while True:
         try:
-            cmd = input(">>> ").strip().lower()
-
-            if cmd in ("quit", "exit"):
-                break
-            elif cmd == "ping":
+            parts = input('>>> ').strip().split()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not parts:
+            continue
+        cmd, args = parts[0].lower(), parts[1:]
+        try:
+            if cmd in ('quit', 'exit'):
+                return 0
+            elif cmd == 'help':
+                print(INTERACTIVE_HELP)
+            elif cmd == 'ping':
                 print(client.ping())
-            elif cmd == "status":
-                print(client.get_status())
-            elif cmd == "wave":
-                print(f"Wave result: {client.wave()}")
-            elif cmd == "angles":
-                print(f"Angles: {client.read_angles()}")
-            elif cmd.startswith("torque"):
-                parts = cmd.split()
-                if len(parts) != 2 or parts[1] not in ("0", "1"):
-                    print("Usage: torque <0|1>")
+            elif cmd == 'status':
+                show_status(client.get_status())
+            elif cmd == 'states':
+                print(', '.join(client.list_states()) or '(none)')
+            elif cmd == 'log':
+                print(client.tail_log(int(args[0]) if args else 40))
+            elif cmd == 'stop':
+                show(client.stop())
+            elif cmd == 'enable':
+                print('Starting the stack, this takes a few seconds...')
+                show(client.enable_arm(bridge='--sim' not in args))
+            elif cmd == 'disable':
+                show(client.disable_arm(args[0] if args else ''))
+            elif cmd == 'place':
+                show(client.place_can())
+            elif cmd == 'wave':
+                show(client.wave_arm(int(args[0]) if args else 1))
+            elif cmd == 'reset':
+                state = args[0] if args and args[0] != 'force' else 'ready'
+                show(client.reset_arm(state, 'force' in args))
+            elif cmd == 'state':
+                if len(args) != 1:
+                    print('Usage: state NAME (%s)'
+                          % ', '.join(client.list_states()))
                 else:
-                    print(f"Set torque result: {client.set_torque(int(parts[1]))}")
-            elif cmd.startswith("moveall"):
-                parts = cmd.split()
-                if len(parts) not in (7, 8):
-                    print("Usage: moveall <s1> <s2> <s3> <s4> <s5> <s6> [time_ms]")
+                    show(client.move_to_state(args[0]))
+            elif cmd == 'pick':
+                if len(args) not in (3, 4):
+                    print('Usage: pick X Y Z [object]   '
+                          '(metres, base_link, object CENTRE)')
                 else:
-                    angles = [float(p) for p in parts[1:7]]
-                    time_ms = int(parts[7]) if len(parts) == 8 else 1000
-                    print(f"Move all result: {client.move_all(*angles, time_ms=time_ms)}")
-            elif cmd.startswith("move"):
-                parts = cmd.split()
-                if len(parts) not in (3, 4):
-                    print("Usage: move <id> <angle> [time_ms]")
-                else:
-                    id, angle = int(parts[1]), float(parts[2])
-                    time_ms = int(parts[3]) if len(parts) == 4 else 1000
-                    print(f"Move result: {client.move_servo(id, angle, time_ms=time_ms)}")
-            elif cmd.startswith("readservo"):
-                parts = cmd.split()
-                if len(parts) != 2:
-                    print("Usage: readservo <id>")
-                else:
-                    print(f"Servo {parts[1]} angle: {client.read_servo(int(parts[1]))}")
-            elif cmd.startswith("pingservo"):
-                parts = cmd.split()
-                if len(parts) != 2:
-                    print("Usage: pingservo <id>")
-                else:
-                    print(f"Ping servo {parts[1]}: {client.ping_servo(int(parts[1]))}")
-            elif cmd == "poses":
-                poses = client.list_poses()
-                if poses:
-                    for name, joints in sorted(poses.items()):
-                        print(f"  {name}: {joints}")
-                else:
-                    print("No poses available")
-            elif cmd.startswith("pose"):
-                parts = cmd.split()
-                if len(parts) not in (2, 3):
-                    print("Usage: pose <name> [time_ms]   (names: rest, raised, stowed)")
-                else:
-                    name = parts[1]
-                    time_ms = int(parts[2]) if len(parts) == 3 else 1500
-                    print(f"Move to '{name}': {client.move_to(name, time_ms=time_ms)}")
-            elif cmd == "reboot":
-                confirm = input("Are you sure you want to reboot the Jetson? (yes/no): ").strip().lower()
-                if confirm == "yes":
-                    client.reboot()
-                    print("Reboot command sent. Connection will be lost as system reboots...")
-                    break
-                else:
-                    print("Reboot cancelled")
-            elif cmd == "help":
-                print("Commands: ping, status, wave, angles, pose <name>, poses, torque <0|1>,")
-                print("          move <id> <angle> [time_ms], moveall <s1..s6> [time_ms],")
-                print("          readservo <id>, pingservo <id>, reboot, quit")
+                    show(client.pick_can(float(args[0]), float(args[1]),
+                                         float(args[2]),
+                                         args[3] if len(args) == 4 else ''))
             else:
-                print(f"Unknown command: {cmd}")
-
+                print('Unknown command: %s' % cmd)
         except KeyboardInterrupt:
-            print("\nExiting...")
-            break
-        except Exception as e:
-            print(f"Error: {e}")
+            # Ctrl-C during a blocking move: tell the server to abort, so the
+            # arm does not carry on executing a command nobody is waiting for.
+            print('\nInterrupted -- asking the server to stop...')
+            show(client.stop())
+        except ValueError as exc:
+            print('Bad argument: %s' % exc)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "-i":
-        interactive_mode()
-    else:
-        main()
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog='arm_client', description=__doc__.split('\n\n')[0])
+    parser.add_argument('--url', default=DEFAULT_SERVER_URL,
+                        help='server address (default: %(default)s)')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='print command output even when it succeeds')
+    parser.add_argument('-i', '--interactive', action='store_true',
+                        help='interactive prompt')
+    sub = parser.add_subparsers(dest='cmd')
+
+    enable = sub.add_parser('enable', help='start the ROS stack')
+    enable.add_argument('--sim', action='store_true',
+                        help='simulation only -- no moveit_bridge, no servos')
+    enable.add_argument('--rviz', action='store_true',
+                        help='also start RViz on the robot')
+    enable.add_argument('--timeout', type=int, default=90)
+
+    disable = sub.add_parser('disable', help='stop the ROS stack')
+    disable.add_argument('--park', default='',
+                         help='move to this state before shutting down')
+
+    pick = sub.add_parser('pick', help='pick an object and carry it')
+    pick.add_argument('x', type=float, help='object CENTRE x in base_link, m')
+    pick.add_argument('y', type=float)
+    pick.add_argument('z', type=float)
+    pick.add_argument('--object', default='', help='catalogue entry')
+
+    sub.add_parser('place', help='place what the gripper is carrying')
+
+    state = sub.add_parser('state', help='move to a saved state')
+    state.add_argument('name')
+
+    reset = sub.add_parser('reset', help='recover after a failed pick')
+    reset.add_argument('state', nargs='?', default='ready',
+                       help='where to leave the arm (default: %(default)s)')
+    reset.add_argument('--force', action='store_true',
+                       help='drive out blind if MoveIt will not plan from '
+                            'where the arm is -- NOT collision checked')
+
+    wave = sub.add_parser('wave', help='wave hello, then stow')
+    wave.add_argument('waves', nargs='?', type=int, default=1,
+                      help='back-and-forth swings (default: %(default)s)')
+    wave.add_argument('--finish', default='',
+                      help='state to stow at afterwards (default: init)')
+    wave.add_argument('--seconds', type=float, default=0.0,
+                      help='how long ONE wave takes (default: 3)')
+
+    sub.add_parser('states', help='list the saved states')
+    sub.add_parser('status', help='server and stack status')
+    sub.add_parser('stop', help='abort the motion in flight')
+    sub.add_parser('ping', help='check the server')
+
+    log = sub.add_parser('log', help='tail the launch log')
+    log.add_argument('lines', nargs='?', type=int, default=40)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    cli = parser.parse_args(argv)
+    client = ArmClient(cli.url)
+
+    if cli.interactive:
+        return interactive(client)
+    if cli.cmd is None:
+        if not client.connect():
+            return 1
+        show_status(client.get_status())
+        return 0
+
+    if cli.cmd == 'enable':
+        return 0 if show(client.enable_arm(timeout=cli.timeout,
+                                           bridge=not cli.sim,
+                                           rviz=cli.rviz), cli.verbose) else 1
+    if cli.cmd == 'disable':
+        return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
+    if cli.cmd == 'pick':
+        return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object),
+                         cli.verbose) else 1
+    if cli.cmd == 'place':
+        return 0 if show(client.place_can(), cli.verbose) else 1
+    if cli.cmd == 'state':
+        return 0 if show(client.move_to_state(cli.name), cli.verbose) else 1
+    if cli.cmd == 'reset':
+        return 0 if show(client.reset_arm(cli.state, cli.force),
+                         cli.verbose) else 1
+    if cli.cmd == 'wave':
+        return 0 if show(client.wave_arm(cli.waves, cli.finish, cli.seconds),
+                         cli.verbose) else 1
+    if cli.cmd == 'stop':
+        return 0 if show(client.stop(), cli.verbose) else 1
+    if cli.cmd == 'states':
+        states = client.list_states()
+        print('\n'.join(states) if states else '(none)')
+        return 0 if states else 1
+    if cli.cmd == 'log':
+        print(client.tail_log(cli.lines))
+        return 0
+    if cli.cmd == 'ping':
+        reply = client.ping()
+        print(reply or 'no reply')
+        return 0 if reply == 'pong' else 1
+
+    status = client.get_status()
+    show_status(status)
+    return 0 if status else 1
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print('\nInterrupted. The server may still be running the command; '
+              '`arm_client.py stop` aborts it.')
+        sys.exit(130)
