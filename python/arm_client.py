@@ -9,8 +9,9 @@ run this file for a command line:
     python3 arm_client.py status
     python3 arm_client.py enable
     python3 arm_client.py state ready
-    python3 arm_client.py pick 0.22 0.0 0.033
+    python3 arm_client.py pick 0.30 0.0 0.039
     python3 arm_client.py place
+    python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
     python3 arm_client.py reset              # after a pick that failed partway
     python3 arm_client.py disable --park init
@@ -134,6 +135,19 @@ class ArmClient:
         """Place whatever the gripper is carrying."""
         return self._call(self._motion, 'place_can')
 
+    def is_holding(self, object: str = '') -> Dict[str, Any]:
+        """Look through the wrist camera: is the object still in the jaws?
+
+        Read `held`, and read it as THREE states -- True seen, False looked and
+        it was not there, None the question could not be asked (no detector, a
+        dark frame, an uncalibrated view). `ok` says only that the question got
+        asked, so `ok` with `held` False is a working camera reporting an empty
+        gripper.
+
+        Means what it says at 'carry', which is where a pick leaves the arm.
+        """
+        return self._call(self._motion, 'is_holding', object)
+
     def move_to_state(self, name: str) -> Dict[str, Any]:
         """Move to a saved state -- see list_states()."""
         return self._call(self._motion, 'move_to_state', str(name))
@@ -219,6 +233,17 @@ def show(result: Dict[str, Any], verbose: bool = False) -> bool:
     return bool(result.get('ok'))
 
 
+def show_held(result: Dict[str, Any]) -> bool:
+    """Print an is_holding() result. Three answers, printed as three."""
+    held = result.get('held')
+    word = {True: 'HELD', False: 'EMPTY'}.get(held, 'UNKNOWN')
+    print('%-8s %s' % (word, result.get('reason') or result.get('error') or ''))
+    # Only the unknowns need explaining further; held and empty have said it.
+    if held is None and not result.get('ok'):
+        show(result)
+    return bool(result.get('ok'))
+
+
 def show_status(status: Optional[dict]):
     if status is None:
         return
@@ -252,6 +277,7 @@ INTERACTIVE_HELP = """Commands:
   state NAME            move to a saved state
   reset [state] [force] clear the scene, let go, go home (after a failed pick)
   wave [N]              wave hello N times, then stow
+  held [object]         look: is the object still in the jaws?
   states                list the saved states
   status                enabled? busy? what ran last?
   log [N]               tail the launch log
@@ -292,6 +318,8 @@ def interactive(client: ArmClient):
                 print(client.tail_log(int(args[0]) if args else 40))
             elif cmd == 'stop':
                 show(client.stop())
+            elif cmd == 'held':
+                show_held(client.is_holding(args[0] if args else ''))
             elif cmd == 'enable':
                 print('Starting the stack, this takes a few seconds...')
                 show(client.enable_arm(bridge='--sim' not in args))
@@ -377,6 +405,11 @@ def build_parser():
     wave.add_argument('--seconds', type=float, default=0.0,
                       help='how long ONE wave takes (default: 3)')
 
+    held = sub.add_parser('held',
+                          help='look: is the object still in the jaws?')
+    held.add_argument('object', nargs='?', default='',
+                      help='catalogue entry to look for')
+
     sub.add_parser('states', help='list the saved states')
     sub.add_parser('status', help='server and stack status')
     sub.add_parser('stop', help='abort the motion in flight')
@@ -419,6 +452,8 @@ def main(argv=None):
     if cli.cmd == 'wave':
         return 0 if show(client.wave_arm(cli.waves, cli.finish, cli.seconds),
                          cli.verbose) else 1
+    if cli.cmd == 'held':
+        return 0 if show_held(client.is_holding(cli.object)) else 1
     if cli.cmd == 'stop':
         return 0 if show(client.stop(), cli.verbose) else 1
     if cli.cmd == 'states':
