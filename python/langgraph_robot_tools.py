@@ -133,6 +133,7 @@ class RobotTools:
         sim: bool = False
     ):
         self.sim = sim
+        self._sim_held = None  # what the simulated gripper is carrying
         # langgraph_tool_funcs maps tool names directly to helper callables in main.py
         if not self.sim and langgraph_tool_funcs is None:
             raise ValueError("langgraph_tool_funcs must be provided when sim=False")
@@ -764,6 +765,41 @@ class RobotTools:
         if self.sim:
             return "Waved the arm (simulated)."
         return self.call_tool_helper("wave_arm")
+
+    def pick_up(self, object_name: str) -> str:
+        """Grasp an object off the floor in front of the robot and hold it."""
+        if self.sim:
+            if self._sim_held is not None:
+                return f"I am already holding a {self._sim_held} (simulated)."
+            if object_name not in ("soda can",):
+                return f"I cannot pick up a {object_name} (simulated)."
+            self._sim_held = object_name
+            return f"I picked up the {object_name} and am holding it (simulated)."
+        return self.call_tool_helper("pick_up", self._sdp, object_name)
+
+    def put_down(self, destination: str) -> str:
+        """Release the held object into the bin the robot is parked at."""
+        if self.sim:
+            if self._sim_held is None:
+                return "I am not holding anything (simulated)."
+            held, self._sim_held = self._sim_held, None
+            return f"I put the {held} in the {destination} (simulated)."
+        return self.call_tool_helper("put_down", self._sdp, destination)
+
+    def get_held_object(self) -> str:
+        """Report what the gripper is carrying, if anything."""
+        if self.sim:
+            if self._sim_held is None:
+                return "I am not holding anything (simulated)."
+            return f"I am holding a {self._sim_held} (simulated)."
+        return self.call_tool_helper("get_held_object")
+
+    def reset_arm(self) -> str:
+        """Recover the arm after a failed pick or place."""
+        if self.sim:
+            self._sim_held = None
+            return "The arm is reset and back at rest (simulated)."
+        return self.call_tool_helper("reset_arm")
     
     # Tool definitions for LangGraph
 
@@ -860,6 +896,12 @@ class RobotTools:
         direction: str = Field(..., description="Direction: forward, backward, left, right")
         distance: float = Field(..., description="Distance to move", gt=0)
         unit: str = Field(default="meters", description="Unit: meters, cm, in, ft")
+
+    class PickUpInput(BaseModel):
+        object_name: str = Field(..., description="Object to grasp off the floor. Only 'soda can' is supported.")
+
+    class PutDownInput(BaseModel):
+        destination: str = Field(..., description="Where to release the held object: 'recycle bin' or 'trash bin'.")
 
     class AimCameraInput(BaseModel):
         yaw: Optional[int] = Field(None, description="Yaw angle for camera. 90 is straight ahead, 100 aims left side of tray, 80 right side of tray.")
@@ -1159,6 +1201,43 @@ class RobotTools:
                 func=self.wave_arm,
                 name="wave_arm",
                 description="Wave the robot's arm to greet someone."
+            ),
+
+            # Pick and place. pick_up locates the object itself from where the
+            # robot stands, so the planner never passes it coordinates -- it
+            # only has to get the robot to the spot pick_up asks for.
+            StructuredTool.from_function(
+                func=self.pick_up,
+                args_schema=self.PickUpInput,
+                name="pick_up",
+                description="Grasp an object off the floor and hold it. It never drives or turns -- it "
+                            "looks only where the robot already stands, so aim the robot at the object "
+                            "first. Carries one object at a time."
+            ),
+
+            StructuredTool.from_function(
+                func=self.put_down,
+                args_schema=self.PutDownInput,
+                name="put_down",
+                description="Release the held object into the bin the robot is parked at. It does not "
+                            "drive, so go to the bin first or it refuses rather than dropping the object "
+                            "on the floor."
+            ),
+
+            StructuredTool.from_function(
+                func=self.get_held_object,
+                name="get_held_object",
+                description="Report what the arm is carrying, or that it is empty. Moves nothing, and "
+                            "looks through the wrist camera, so it catches an object that has slipped out "
+                            "since it was picked up."
+            ),
+
+            StructuredTool.from_function(
+                func=self.reset_arm,
+                name="reset_arm",
+                description="Recover the arm after pick_up or put_down reports a failure. Opens the "
+                            "gripper, dropping anything held, and returns the arm to rest. No further arm "
+                            "motion is possible until this runs."
             ),
 
             self.get_move_by_deltas_tool(),

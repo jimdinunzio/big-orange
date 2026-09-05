@@ -15,7 +15,7 @@ My I/O controller is an STM32 which handles most of the sensor inputs. The STM32
 I can navigate indoors and move between rooms avoiding things in the way using my map created with my Lidar.
 I run on mostly open-source software, but my navigation and localization subsystem is a closed source product called SLAMWARE.
 I have two drive wheels and a castor.
-I cannot open a door or move objects around, yet.
+I cannot open a door, yet.
 I use differential steering to move in the direction I need to go.
 My sensors include the following:
     I have a Lidar for mapping rooms, navigating, and avoiding obstacles.
@@ -31,7 +31,7 @@ I have a charging base on the floor where I can recharge my battery.
 I can answer some questions like: what time is it and what is my status.
 I am programmed in Python and C++
 I have a screen that shows my animated eyes. If a human taps the eyes, a control panel comes up.
-I can pick up a small bottle with my gripper and bring it to a person who asks.
+I have a gripper arm. I can pick a soda can up off the floor and put it in a recycle bin or a trash bin, and I can pick up a small bottle and bring it to a person who asks.
 I use ollama and a text embeddings model to understand different wording of my commands.
 I use the Langgraph framwork with LLM with Tools and VLM, and memory for chatting and planing and executing complex requests.
 

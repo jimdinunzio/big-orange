@@ -27,6 +27,7 @@ from nano_owl_client import NanoOwlClient
 from nano_owl_manager import NanoOwlManager
 from jetson_supervisor_client import SupervisorClient
 from arm_client import ArmClient
+import robot_frames
 import pyautogui
 from my_langgraph import RobotPlannerGraph
 import traceback
@@ -141,6 +142,10 @@ _nano_vlm : NanoVlmClient = None
 _nano_owl : NanoOwlClient = None
 _nano_owl_mgr : NanoOwlManager = None
 _arm_client : ArmClient = None
+# What the gripper is carrying, None when empty. The arm server has no such
+# query -- pick_can/place_can are two processes with the object living in the
+# planning scene between them -- so the one record of it is here.
+_held_object = None
 
 # --- Camera-AI service switching (Jetson supervisor) -------------------------
 # The Jetson runs two GPU services that cannot run at once: NanoOWL (object
@@ -5188,6 +5193,12 @@ def wave_arm_tool_helper():
     """Wave the robot's arm using the arm client."""
     if _arm_client is None or not _arm_client.is_connected():
         return "Error: Arm client not available to wave the arm."
+    if _held_object is not None:
+        # The swings run well above picking speed and stow at `init`, so this
+        # would both fling the can and leave the arm where the wrist camera
+        # cannot be trusted about whether it is still there.
+        return (f"I am holding a {_held_object}, so I will not wave -- I would "
+                f"fling it.")
     try:
         problem = _ensure_arm_enabled()
         if problem:
@@ -5198,6 +5209,305 @@ def wave_arm_tool_helper():
         return f"Error: the arm failed to wave: {_arm_problem(result)}"
     except Exception as e:
         return f"Error waving the arm: {str(e)}"
+
+
+# --- Pick and place ----------------------------------------------------------
+# What the arm can actually do today. Both lists are short on purpose: a tool
+# that claims more than pick_can/place_can support would have the planner build
+# a plan the arm then refuses halfway through.
+
+# Objects pick_up knows the size of (robot_frames.OBJECT_SIZES) AND the arm has
+# a grasp for. Anything else is refused before the robot moves.
+PICKABLE_OBJECTS = ("soda can",)
+
+# Where put_down can be asked to deposit. The arm's release motion is the same
+# for both -- place_can() drops at a fixed state in front of the robot -- so the
+# destination is really a statement about which bin the robot must be parked at,
+# and that is what put_down checks.
+PLACE_DESTINATIONS = ("recycle bin", "trash bin")
+
+# How close the robot has to be to a bin before dropping something is a place
+# and not littering. Roughly the arm's forward span plus nav slop.
+PLACE_ARRIVAL_DIST = 1.0
+
+# Head tilt for looking at the floor close in. 145 is the pitch servo's limit;
+# at that tilt the frame covers from about 0.4 m in front of the lens outwards,
+# so both a can at arm's length and one across the room stay in view.
+PICK_PITCH = 145
+
+# Frames to sample before committing a grasp coordinate. One frame's depth ROI
+# is noisy enough to miss a 66 mm can; the median of several is not.
+PICK_SAMPLES = 7
+
+
+def _normalize_place_name(name: str) -> str:
+    return " ".join(str(name).replace("_", " ").lower().split())
+
+
+def _find_location_key(name: str):
+    """The key in _locations that the agent means by `name`, or None.
+
+    Locations get named by a human ("recycle bin") and referred to by an LLM
+    ("recycle_bin", "Recycle Bin"), so match on the normalized form.
+    """
+    wanted = _normalize_place_name(name)
+    for key in _locations:
+        if _normalize_place_name(key) == wanted:
+            return key
+    return None
+
+
+def _look_for_floor_object(obj: str):
+    """Find `obj` on the floor from where the robot stands, without moving.
+
+    Returns (detection, cam_yaw, cam_pitch) for the NEAREST instance, or
+    (None, 0, 0). The head is left tilted down; the caller homes it.
+
+    Unlike search_for_object this never rotates the base: pick_up is called
+    when the robot is already pointed at the thing, and a base rotation here
+    would invalidate the coordinate it is about to hand the arm.
+    """
+    global _interrupt_action, _keep_camera_orientation
+
+    aim_oakd(pitch=PICK_PITCH)
+    eyes.setTargetPitchYaw(-50, 0)
+
+    _nano_owl_mgr.set_prompt(f"[{obj}]")
+    _nano_owl_mgr.start_streaming(fps=16)
+    _mdai.show_yolo_boxes = False
+    _nano_owl_mgr.get_detections_nms()  # wakeup call
+
+    samples = []
+    try:
+        _keep_camera_orientation = True
+        for _ in range(PICK_SAMPLES):
+            if _interrupt_action:
+                break
+            found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
+            valid = [s for s in (spatials or []) if s.z > 0]
+            if found and valid:
+                # Nearest first: collecting cans means collecting this one.
+                samples.append(min(valid, key=lambda s: s.z))
+            time.sleep(1.0 / 16)
+    finally:
+        _keep_camera_orientation = False
+        _mdai.show_yolo_boxes = True
+        _nano_owl_mgr.stop_streaming()
+        _nano_owl_mgr.clear_prompt()
+
+    if not samples:
+        return None, 0, 0
+
+    # The median SAMPLE, not the median of each axis: with two cans in view the
+    # nearest can flip between frames, and averaging would aim between them.
+    samples.sort(key=lambda s: s.z)
+    return (samples[len(samples) // 2],
+            _move_oak_d.getYaw(), _move_oak_d.getPitch())
+
+
+def _gripper_sees(obj: str):
+    """Ask the wrist camera whether `obj` is actually in the jaws.
+
+    Returns (held, why) with held True / False / None. None means the
+    question could not be asked -- no detector, a dark frame, a view nobody
+    calibrated -- and must NEVER be folded into False: that turns "the
+    detector is busy elsewhere" into "you dropped it".
+
+    ONLY ASK THIS WITH THE ARM AT `carry`. It classifies the whole frame as
+    empty-gripper or holding-a-can rather than detecting the can, so from any
+    pose that can see the floor a can lying there reads as held with high
+    confidence -- a confident wrong answer, not a weak one. Carry points the
+    tool up and shows no floor, which is what makes the question honest.
+
+    `_held_object is not None` is exactly the window where the arm is at
+    carry: it is set only by a completed pick and cleared by every place and
+    reset. Every caller here is gated on it, and wave_arm refuses while it is
+    set rather than stowing at `init` and quietly breaking that.
+
+    It also goes to the same NanoOWL the scene-description skill takes the
+    GPU from, so with the VLM active this answers None rather than lying.
+    """
+    if _arm_client is None or not _arm_client.is_connected():
+        return None, "the arm is not reachable"
+    try:
+        result = _arm_client.is_holding(obj or "")
+    except Exception as e:
+        return None, "the look failed: %s" % e
+    held = result.get("held")
+    why = result.get("reason") or _arm_problem(result)
+    if held not in (True, False):
+        return None, why
+    return held, why
+
+
+def pick_up_tool_helper(sdp, object_name: str):
+    """Look at the floor, and if the object is within reach, grasp and hold it."""
+    global _held_object, _interrupt_action
+
+    obj = _normalize_place_name(object_name)
+    if obj not in PICKABLE_OBJECTS:
+        return (f"I cannot pick up a {object_name}. I can only pick up: "
+                f"{', '.join(PICKABLE_OBJECTS)}.")
+    if _held_object is not None:
+        return (f"I am already holding a {_held_object}, and I can only carry "
+                f"one thing at a time.")
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to pick anything up."
+    if _nano_owl_mgr is None:
+        return f"Error: NanoOWL not available to locate the {obj}."
+
+    guard = _require_camera_ai("owl")
+    if guard:
+        return guard
+
+    problem = _ensure_arm_enabled()
+    if problem:
+        return f"Error: the arm could not be enabled to pick up the {obj}: {problem}"
+
+    try:
+        pose = sdp.pose()
+        det, cam_yaw, cam_pitch = _look_for_floor_object(obj)
+
+        if _interrupt_action:
+            _interrupt_action = False
+            return f"Stopped before picking up the {obj}."
+        if det is None:
+            return f"I do not see a {obj} on the floor in front of me."
+
+        # The depth point is on the near face of the can partway up it; the
+        # centre the arm wants comes from the can's own size and the floor.
+        target = robot_frames.floor_object_to_arm(
+            det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
+        rng, arm_yaw, height = robot_frames.arm_reach(target)
+        print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg"
+              % (obj, target[0], target[1], target[2], rng, arm_yaw))
+
+        ok, reason = robot_frames.arm_can_reach(target)
+        if not ok:
+            gx, gy, gyaw = robot_frames.approach_pose(
+                robot_frames.arm_to_robot(target), pose)
+            return (f"The {obj} is out of reach: {reason}. Squared up on it at "
+                    f"a comfortable distance, I would be standing at map "
+                    f"x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
+
+        # No is_holding() here: pick_can asks it itself, on approach and again
+        # at carry, and aborts on a definite no. So an ok result has already
+        # been confirmed through the same camera, and a failure after the
+        # grasp is one of the things that check caught -- which is why the
+        # failure below reports the arm as stuck rather than inviting a retry.
+        result = _arm_client.pick_can(target[0], target[1], target[2], obj)
+        if result.get("ok"):
+            _held_object = obj
+            return f"I picked up the {obj} and am holding it."
+        return (f"The arm failed to pick up the {obj}: {_arm_problem(result)}. "
+                f"It cannot plan another move until it is reset.")
+    except Exception as e:
+        return f"Error picking up the {object_name}: {str(e)}"
+    finally:
+        _move_oak_d.allHome()
+        eyes.setHome()
+
+
+def put_down_tool_helper(sdp, destination: str):
+    """Release the held object into the bin the robot is parked at."""
+    global _held_object
+
+    if _held_object is None:
+        return "I am not holding anything, so there is nothing to put down."
+
+    dest = _normalize_place_name(destination)
+    if dest not in PLACE_DESTINATIONS:
+        return (f"I cannot put things in a {destination}. I can only put them "
+                f"in: {', '.join(PLACE_DESTINATIONS)}.")
+    if _arm_client is None or not _arm_client.is_connected():
+        return f"Error: the arm is not available to put down the {_held_object}."
+
+    key = _find_location_key(dest)
+    if key is None:
+        return (f"I have no saved location called '{dest}', so I do not know "
+                f"where to take the {_held_object}.")
+
+    # Release drops the object in front of the robot, so being at the bin is
+    # the whole of "placing it in the bin" -- check it rather than litter.
+    try:
+        pose = sdp.pose()
+        dist = distance_A_to_B(pose.x, pose.y, _locations[key][0], _locations[key][1])
+    except Exception as e:
+        return f"Error checking whether I am at the {dest}: {str(e)}"
+    if dist > PLACE_ARRIVAL_DIST:
+        return (f"I am {dist:.1f} m from the {dest}, too far to drop the "
+                f"{_held_object} into it. I have to be within "
+                f"{PLACE_ARRIVAL_DIST:.1f} m of it.")
+
+    # A can can shake loose on the drive over, and the planning scene would
+    # be none the wiser -- the wrist camera is the only thing that knows.
+    # Ask before going through the motions of a place. Only a definite no
+    # stops it; an unknown answer is not evidence of a drop.
+    seen, why = _gripper_sees(_held_object)
+    if seen is False:
+        lost = _held_object
+        _held_object = None
+        return (f"The {lost} is not in the gripper any more -- {why}. It must "
+                f"have come loose on the way to the {dest}, so there is "
+                f"nothing to put down.")
+
+    problem = _ensure_arm_enabled()
+    if problem:
+        return (f"Error: the arm could not be enabled to put down the "
+                f"{_held_object}: {problem}")
+
+    try:
+        held = _held_object
+        result = _arm_client.place_can()
+        if result.get("ok"):
+            _held_object = None
+            return f"I put the {held} in the {dest}."
+        return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
+                f"I am still holding it, and the arm cannot plan another move "
+                f"until it is reset.")
+    except Exception as e:
+        return f"Error putting down the {_held_object}: {str(e)}"
+
+
+def get_held_object_tool_helper():
+    """What the gripper is carrying, confirmed by looking at it."""
+    global _held_object
+
+    if _held_object is None:
+        return "I am not holding anything."
+    seen, why = _gripper_sees(_held_object)
+    if seen is False:
+        lost = _held_object
+        _held_object = None
+        return (f"I thought I was holding a {lost}, but the gripper is "
+                f"empty -- {why}.")
+    if seen is None:
+        return (f"I am holding a {_held_object}, though I could not confirm "
+                f"it by looking ({why}).")
+    return f"I am holding a {_held_object}, and I can see it in the gripper."
+
+
+def reset_arm_tool_helper():
+    """Recover the arm after a failed pick or place."""
+    global _held_object
+
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to reset."
+    problem = _ensure_arm_enabled()
+    if problem:
+        return f"Error: the arm could not be enabled to reset: {problem}"
+    try:
+        held = _held_object
+        result = _arm_client.reset_arm()
+        # reset_arm opens the gripper before it moves, so whatever was carried
+        # is on the floor now whether or not the move that followed succeeded.
+        _held_object = None
+        if result.get("ok"):
+            return ("The arm is reset and back at rest."
+                    + (f" It dropped the {held} where it was standing." if held else ""))
+        return f"The arm could not be reset: {_arm_problem(result)}"
+    except Exception as e:
+        return f"Error resetting the arm: {str(e)}"
 
 # --- Camera-AI service switching layer --------------------------------------
 # The ONLY code that constructs/connects/disconnects the OWL/VLM clients. All of
@@ -5492,7 +5802,11 @@ langgraph_tool_funcs = {
     "turn": turn,
 
     # Arm control
-    "wave_arm": wave_arm_tool_helper
+    "wave_arm": wave_arm_tool_helper,
+    "pick_up": pick_up_tool_helper,
+    "put_down": put_down_tool_helper,
+    "get_held_object": get_held_object_tool_helper,
+    "reset_arm": reset_arm_tool_helper
 }
 
 ################################################################   
