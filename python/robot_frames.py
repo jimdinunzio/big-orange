@@ -89,10 +89,11 @@ OBJECT_SIZES = {
 # --- What the arm can reach --------------------------------------------------
 #
 # Swept offline against the same pitch/standoff/height search pick_place runs
-# -- see README_arm_client.md, "Where to put the robot", for the band, the
-# sweet spot and how each edge fails.  MoveIt is still the authority on what
-# plans; these exist so the robot repositions instead of asking for a pick
-# that cannot solve, and so a caller can say where to reposition TO.
+# -- see "Where to put the robot" in the arm_service README, which lives with
+# the server in the arm-service under the jetson-nano-services repo, for the band,
+# the sweet spot and how each edge fails.  MoveIt is still the authority on what
+# plans; these exist so the robot repositions instead of asking for a pick that
+# cannot solve, and so a caller can say where to reposition TO.
 #
 # Test the RADIUS, hypot(x, y) -- which is what arm_reach returns and what
 # arm_can_reach compares.  Never x alone: the arm is symmetric about its base
@@ -109,12 +110,12 @@ OBJECT_SIZES = {
 
 _GRIPPER_REACH = {
     #             standoff,  min,   max, max yaw, sweet spot
-    # Extended fingers: the swept table in the README.  min/max trim the
+    # Extended fingers: the swept table in that README.  min/max trim the
     # marginal rows off each end of the band, keeping what "works"; the sweet
     # spot is the row with full standoff, the proven grip height and the most
     # joint margin, and is what a measured bias should be judged against.
     "extended":   (0.30,    0.24,  0.36,  100.0, (0.28, 0.32)),
-    # Stock jaws with the 30 mm test block.  The README gives this variant's
+    # Stock jaws with the 30 mm test block.  That README gives this variant's
     # band (0.13-0.31) and sweet spot (0.20-0.29) but not the row-by-row
     # sweep, so these stay inside the sweet spot rather than extrapolating
     # into rows nobody measured.

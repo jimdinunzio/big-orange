@@ -396,7 +396,7 @@ Commands:
                 math.hypot(tx, ty), math.hypot(centre[0], centre[1]))
 
     def judge(mag, radial):
-        """Say what a miss of this size does to the pick, in the README's own
+        """Say what a miss of this size does to the pick, in the reach sweep's
         terms: the near edge allows about 25 mm either side of the standoff."""
         band = "%.2f-%.2f" % (robot_frames.ARM_SWEET_MIN, robot_frames.ARM_SWEET_MAX)
         aimed = robot_frames.GRASP_STANDOFF + radial
