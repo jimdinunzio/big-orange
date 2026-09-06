@@ -3,6 +3,10 @@
 """
 DOFBOT Arm XML-RPC Client.
 
+A COPY. This file belongs to the jetson-nano-services repo, at arm-service/,
+beside the server it talks to. Edit it there, not here -- but diff before
+copying a new version down, since this copy can carry local fixes.
+
 Talks to arm_server.py. Import ArmClient to drive the arm from other code, or
 run this file for a command line:
 

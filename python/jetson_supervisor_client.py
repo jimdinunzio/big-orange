@@ -2,6 +2,10 @@
 """
 Service Supervisor XML-RPC Client
 
+A COPY. This file belongs to the jetson-nano-services repo, at supervisor-service/,
+beside the server it talks to. Edit it there, not here -- but diff before
+copying a new version down, since this copy can carry local fixes.
+
 Talks to service_supervisor.py to switch the Jetson between its two GPU services,
 NanoOWL and Live-VLM (only one can run at a time; both serve on port 8000).
 

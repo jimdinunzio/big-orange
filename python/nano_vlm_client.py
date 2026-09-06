@@ -2,6 +2,10 @@
 """
 NanoVlm XML-RPC Client
 
+A COPY. This file belongs to the jetson-nano-services repo, at live-vlm-service/,
+beside the server it talks to. Edit it there, not here -- but diff before
+copying a new version down, since this copy can carry local fixes.
+
 This module provides a client class for connecting to and interacting with
 the NanoVlm XML-RPC server running on 192.168.55.1:8000.
 

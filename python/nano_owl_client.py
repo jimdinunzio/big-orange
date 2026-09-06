@@ -2,6 +2,10 @@
 """
 NanoOwl XML-RPC Client Example
 
+A COPY. This file belongs to the jetson-nano-services repo, at nano-owl-service/,
+beside the server it talks to. Edit it there, not here -- but diff before
+copying a new version down, since this copy can carry local fixes.
+
 Connects to the NanoOwl XML-RPC server for open-vocabulary object detection.
 
 The server starts in disabled (low power) mode. Call enable() to start processing.
