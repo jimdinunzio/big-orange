@@ -6025,6 +6025,11 @@ class MicArray(object):
     simulation mode with default values.
     """
     
+    # DOA reading of a source straight ahead of the robot.  The front of the
+    # array faces robot left, and DOA increases counter-clockwise, the same
+    # sense as robot yaw.
+    _DOA_FORWARD = 0
+
     def __init__(self):
         self._sim_mode = False
         self.dev = usb.core.find(idVendor=0x2886, idProduct=0x0018)
@@ -6042,10 +6047,10 @@ class MicArray(object):
     def getDoa(self) -> int:
         """Get direction of arrival in degrees (0-359).
         
-        In sim mode, returns 90 (straight ahead).
+        In sim mode, returns the reading for straight ahead.
         """
         if self._sim_mode:
-            return 90
+            return self._DOA_FORWARD
         return self.tuning.direction
     
     def getIsSpeech(self) -> bool:
@@ -6058,8 +6063,8 @@ class MicArray(object):
         return self.tuning.is_speech()
 
     def doa2YawDelta(self, doa) -> int:
-        """Convert DOA to yaw delta from forward direction."""
-        yawDelta = doa - 90
+        """Convert DOA to yaw delta from forward direction, positive to the left."""
+        yawDelta = (doa - self._DOA_FORWARD) % 360
         if yawDelta >= 180:
             yawDelta = yawDelta - 360
         return yawDelta
