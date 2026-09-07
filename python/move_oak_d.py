@@ -10,6 +10,8 @@ import my_sdp_client
 import sdp_comm
 from sdp_client_manager import manager
 from pyFirmata.pyfirmata import INPUT, Board
+from head_servos import (YAW_HOME_DEG, PITCH_HOME_DEG,
+                         YAW_LIMITS_DEG, PITCH_LIMITS_DEG)
 
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""
@@ -46,34 +48,28 @@ def clamp(num, min_value, max_value):
         num = max(min(num, max_value), min_value)
         return num
 
-_YAW_LIMITS = [0, 180]
-_PITCH_LIMITS = [0, 145]
-
-_YAW_HOME_ = 90
-_PITCH_HOME_ = 115
-
 def servoToEyeYaw(yaw):
-    return (yaw - 90) * (7.0 / 9.0)
+    return (yaw - YAW_HOME_DEG) * (7.0 / 9.0)
 
 def servoToEyePitch(pitch):
-    return pitch - 100
+    return pitch - PITCH_HOME_DEG
 
 class OakDServo(object):
     """OakD Servo Class for Pitch and Yaw """
     def __init__(self, axis:ServoAxis, board :Board):
         self.axis = axis
         if axis == ServoAxis.Pitch:
-            self.min_angle = _PITCH_LIMITS[0]
-            self.max_angle = _PITCH_LIMITS[1]
+            self.min_angle = PITCH_LIMITS_DEG[0]
+            self.max_angle = PITCH_LIMITS_DEG[1]
             self.servo = board.get_pin('d:11:s')
             self.angle = 0
-            self.home_angle = _PITCH_HOME_
+            self.home_angle = PITCH_HOME_DEG
         elif axis == ServoAxis.Yaw:
-            self.min_angle = _YAW_LIMITS[0]
-            self.max_angle = _YAW_LIMITS[1]
+            self.min_angle = YAW_LIMITS_DEG[0]
+            self.max_angle = YAW_LIMITS_DEG[1]
             self.servo = board.get_pin('d:5:s')
             self.angle = 0
-            self.home_angle = _YAW_HOME_
+            self.home_angle = YAW_HOME_DEG
 
         self.lastBaseYaw = -1
         self.auto_center_time = 0.0
@@ -269,10 +265,10 @@ class MoveOakD(object):
         sweep_max = max
         eyes.setHome()
         while self.sweeping and (count == 0 or sweep_count < count):
-            self.sweepYaw(_YAW_HOME_, sweep_max, speed)
-            self.sweepYaw(sweep_max, _YAW_HOME_, speed)
-            self.sweepYaw(_YAW_HOME_, sweep_min, speed)
-            self.sweepYaw(sweep_min, _YAW_HOME_, speed)
+            self.sweepYaw(YAW_HOME_DEG, sweep_max, speed)
+            self.sweepYaw(sweep_max, YAW_HOME_DEG, speed)
+            self.sweepYaw(YAW_HOME_DEG, sweep_min, speed)
+            self.sweepYaw(sweep_min, YAW_HOME_DEG, speed)
             sweep_count += 1
         self.sweeping = False
 
@@ -466,21 +462,21 @@ if __name__ == '__main__':
     m.yawServo.setAngle(15)
     try:
         while(1):
-            m.yawServo.setAngle(_YAW_LIMITS[0])
+            m.yawServo.setAngle(YAW_LIMITS_DEG[0])
             time.sleep(.5)
-            m.yawServo.setAngle(_YAW_LIMITS[1])
+            m.yawServo.setAngle(YAW_LIMITS_DEG[1])
             time.sleep(.5)
-            m.yawServo.setAngle(_YAW_LIMITS[0])
+            m.yawServo.setAngle(YAW_LIMITS_DEG[0])
             time.sleep(.5)
             m.yawServo.setHome()
             time.sleep(.5)
             m.pitchServo.setAngle(0)
             time.sleep(.5)
-            m.pitchServo.setAngle(_PITCH_LIMITS[0])              # tell servo to go to position in variable 'pos'
+            m.pitchServo.setAngle(PITCH_LIMITS_DEG[0])              # tell servo to go to position in variable 'pos'
             time.sleep(.5)
-            m.pitchServo.setAngle(_PITCH_LIMITS[1])              # tell servo to go to position in variable 'pos'
+            m.pitchServo.setAngle(PITCH_LIMITS_DEG[1])              # tell servo to go to position in variable 'pos'
             time.sleep(.5)
-            m.pitchServo.setAngle(_PITCH_LIMITS[0])              # tell servo to go to position in variable 'pos'
+            m.pitchServo.setAngle(PITCH_LIMITS_DEG[0])              # tell servo to go to position in variable 'pos'
             time.sleep(.5)
             m.pitchServo.setHome()
             time.sleep(.5)

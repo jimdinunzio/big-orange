@@ -184,6 +184,7 @@ import cv2
 from enum import Enum
 from latte_panda_arduino import LattePandaArduino
 import move_oak_d
+import head_servos
 import eyes
 import pickle
 import speech_recognition as sr
@@ -2112,7 +2113,7 @@ def waitForObjectToBeTaken(obj):
     a = 0
     mult_objs = obj.endswith("s")
 
-    aim_oakd(yaw=79, pitch=move_oak_d._PITCH_LIMITS[1])
+    aim_oakd(yaw=head_servos.YAW_HOME_DEG - 11, pitch=head_servos.PITCH_LIMITS_DEG[1])
     eyes.setTargetPitchYaw(70, -40)
 
     if mult_objs: # for multiple objects use voice command to indicate when taken
@@ -2246,7 +2247,7 @@ def deliverToPersonInRoom(person, package, room):
     time.sleep(2)
 
     # Look at right side of tray
-    aim_oakd(yaw=79, pitch=move_oak_d._PITCH_LIMITS[1])
+    aim_oakd(yaw=head_servos.YAW_HOME_DEG - 11, pitch=head_servos.PITCH_LIMITS_DEG[1])
     eyes.setTargetPitchYaw(70, -40)
     _deliveree = person
     _package = package
@@ -2272,7 +2273,7 @@ def deliverToPersonInRoom(person, package, room):
             _package = objLabel
     
     # aim oakd up to for detecting a person
-    aim_oakd(yaw=move_oak_d._YAW_HOME_, pitch=75)
+    aim_oakd(yaw=head_servos.YAW_HOME_DEG, pitch=75)
     eyes.setTargetPitchYaw(-70,0)
     print("delivering ", _package, " to ", _deliveree, " in the ", room)
     if mult_objs:

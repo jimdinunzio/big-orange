@@ -12,6 +12,7 @@ from PIL import Image
 from io import BytesIO
 from move_by_deltas_alert import post_alert
 import math
+from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG
 import time
 
 class Pose:
@@ -904,8 +905,8 @@ class RobotTools:
         destination: str = Field(..., description="Where to release the held object: 'recycle bin' or 'trash bin'.")
 
     class AimCameraInput(BaseModel):
-        yaw: Optional[int] = Field(None, description="Yaw angle for camera. 90 is straight ahead, 100 aims left side of tray, 80 right side of tray.")
-        pitch: Optional[int] = Field(None, description="Pitch angle for camera. 115 is straight ahead, 75 aims up for seeing faces, 135 down for objects on floor.")
+        yaw: Optional[int] = Field(None, description=f"Yaw angle for camera. {YAW_HOME_DEG} is straight ahead, {YAW_HOME_DEG + 11} aims left side of tray, {YAW_HOME_DEG - 11} right side of tray.")
+        pitch: Optional[int] = Field(None, description=f"Pitch angle for camera. {PITCH_HOME_DEG} is straight ahead, 75 aims up for seeing faces, 135 down for objects on floor.")
 
     def get_all_tools(self):
         """Get all available LangGraph tools."""

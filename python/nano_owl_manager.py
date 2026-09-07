@@ -19,6 +19,7 @@ import math
 import time
 from threading import Thread
 from move_oak_d import MoveOakD
+from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG, PITCH_LIMITS_DEG
 from latte_panda_arduino import LattePandaArduino
 
 # OAK-D color camera horizontal field of view (degrees)
@@ -284,7 +285,7 @@ if __name__ == "__main__":
     _lpArduino.initialize()
     m = MoveOakD()
     m.initialize(_lpArduino.board)
-    m.pitchServo.setAngle(145)
+    m.pitchServo.setAngle(PITCH_LIMITS_DEG[1])
 
     client.enable()
     time.sleep(0.5)
@@ -305,7 +306,7 @@ if __name__ == "__main__":
     _input_q = _queue.Queue()
     _stop = [False]
 
-    HELP = """
+    HELP = f"""
 Commands:
   <text>          set the OWL prompt and track it (e.g. soda can)
   truth F [L]     tell it where the can REALLY is: tape-measured from the ARM
@@ -320,8 +321,8 @@ Commands:
                   head angles must read the same.  Catches only the lens
                   offsets -- see sweep.__doc__ for what a flat sweep does NOT
                   prove, and prefer `check` for a real answer
-  pitch N         aim the head, servo degrees (115 level, 145 full down)
-  yaw N           pan the head, servo degrees (90 straight ahead)
+  pitch N         aim the head, servo degrees ({PITCH_HOME_DEG} level, {PITCH_LIMITS_DEG[1]} full down)
+  yaw N           pan the head, servo degrees ({YAW_HOME_DEG} straight ahead)
   floor carpet|hard   which surface the robot is standing on (sets FLOOR_Z)
   help, quit
 """
@@ -436,7 +437,8 @@ Commands:
         for line in judge(mag, sr - tr):
             print("%s  %s" % (indent, line))
 
-    def check(obj, pitches=(125, 130, 135, 140, 145), yaws=(80, 90, 100)):
+    def check(obj, pitches=(125, 130, 135, 140, 145, 150),
+              yaws=tuple(YAW_HOME_DEG + d for d in (-10, 0, 10))):
         """Is the real can where the numbers say it is?
 
         The system-level test, and the one that catches everything: OWL's
@@ -474,7 +476,7 @@ Commands:
                     ("yaw", m.setYaw, yaws, None)):
                 for a in angles:
                     setter(a)
-                    time.sleep(1.0)
+                    time.sleep(1.5)
                     det, hits, tries = read_object(obj)
                     if det is None:
                         print("  %-16s %8s   (not seen)" % ("%s %.0f" % (label, a), "-"))
@@ -595,7 +597,8 @@ Commands:
               % robot_frames.OBJECT_SIZES[obj][0])
         return centre
 
-    def sweep(obj, pitches=(125, 130, 135, 140, 145), yaws=(75, 85, 95, 105)):
+    def sweep(obj, pitches=(125, 130, 135, 140, 145, 150),
+              yaws=tuple(YAW_HOME_DEG + d for d in (-15, -5, 5, 15))):
         """Read one stationary object from several head angles.
 
         A NARROW test, so be clear about what it can and cannot catch.
@@ -635,7 +638,7 @@ Commands:
             print("  %-14s %8s %8s %8s %8s" % (label, "oakd z", "arm x", "arm y", "arm z"))
             for a in angles:
                 setter(a)
-                time.sleep(1.0)  # let the servo settle and the pipeline catch up
+                time.sleep(1.5)  # let the servo settle and the pipeline catch up
                 det, hits, tries = read_object(obj)
                 if det is None:
                     print("  %-14s %8s   (not seen)" % ("%.0f" % a, "-"))

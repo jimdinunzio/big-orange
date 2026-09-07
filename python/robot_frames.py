@@ -48,6 +48,8 @@ import math
 import os
 import sys
 
+from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG
+
 # --- Mount geometry, all in the robot frame, metres --------------------------
 #
 # Chassis-fixed, so none of these depend on the floor surface.
@@ -74,11 +76,6 @@ PITCH_PIVOT_Z = 0.59
 LENS_FORWARD = 0.055
 LENS_LEFT = 0.0
 LENS_UP = 0.02
-
-# Servo home angles, mirrored from move_oak_d so this module can be
-# imported without pulling in pyFirmata and the board.
-YAW_HOME_DEG = 90.0
-PITCH_HOME_DEG = 115.0
 
 # Grasp targets, metres: (height, radius).  A 12 oz soda can measures
 # 0.122 m tall by 0.066 m across.
@@ -369,8 +366,11 @@ if __name__ == '__main__':
     show("  robot frame", oakd_to_robot(0.0, 0.0, 1.0, yaw_deg=30.0))
 
     print()
-    print("Raw servo angles (yaw 90, pitch 115) must match home:")
-    show("  robot frame", oakd_to_robot(0.0, 0.0, 1.0, 90.0, 115.0, absolute=True))
+    print("Raw servo angles (yaw %g, pitch %g) must match home:"
+          % (YAW_HOME_DEG, PITCH_HOME_DEG))
+    show("  robot frame", oakd_to_robot(0.0, 0.0, 1.0,
+                                        YAW_HOME_DEG, PITCH_HOME_DEG,
+                                        absolute=True))
 
     print()
     print("Round trip through the arm frame:")
