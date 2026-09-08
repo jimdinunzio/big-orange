@@ -10,7 +10,7 @@ Usage from main.py:
     ...
     found, det = mgr.check_for_object("lamp")
     if found:
-        loc = getLocationOfObj(sdp, "lamp", det, cam_yaw=...)
+        loc = getLocationOfObj(sdp, "lamp", det)
     ...
     mgr.stop_streaming()
 """
@@ -29,7 +29,7 @@ OAKD_HFOV_DEG = 69.0
 class OwlSpatialDetection:
     """Detection with spatial info, compatible with MyDetection for use with getLocationOfObj."""
 
-    def __init__(self, label, bbox_norm, x_m, y_m, z_m, theta_deg):
+    def __init__(self, label, bbox_norm, x_m, y_m, z_m, theta_bbox_deg=0.0):
         """
         Args:
             label: detected object label string
@@ -37,19 +37,22 @@ class OwlSpatialDetection:
             x_m: lateral offset in meters (from VPU)
             y_m: vertical offset in meters (from VPU)
             z_m: depth in meters (from VPU)
-            theta_deg: horizontal angle in degrees (positive = right of center)
+            theta_bbox_deg: bearing from the bbox centre alone, degrees,
+                positive left, used when the VPU returned no depth
         """
         self.label = label
         self.bboxCtr = bbox_norm
         self.x = x_m
         self.y = y_m
         self.z = z_m
-        self.theta = theta_deg
+        self.theta_bbox = theta_bbox_deg
         self.confidence = 0.0  # set by caller from detection scores
 
     def __repr__(self):
-        return (f"OwlSpatialDetection(label={self.label!r}, z={self.z:.2f}m, "
-                f"theta={self.theta:.1f}deg, confidence={self.confidence:.3f})")
+        return (f"OwlSpatialDetection(label={self.label!r}, x={self.x:.2f} "
+                f"y={self.y:.2f} z={self.z:.2f}m, "
+                f"theta_bbox={self.theta_bbox:.1f}deg, "
+                f"confidence={self.confidence:.3f})")
 
 
 class NanoOwlManager:
@@ -247,9 +250,12 @@ class NanoOwlManager:
         cx = (xmin + xmax) / 2.0
         cy = (ymin + ymax) / 2.0
 
-        # Horizontal angle from center of frame
+        # Bearing from the bbox centre alone, for when the VPU has no depth.
+        # Positive left, to match the robot frame.  The pixel offset from
+        # centre is the tangent of the angle.
         nx = (cx - 0.5) * 2.0  # -1 (left) to +1 (right)
-        theta = nx * (OAKD_HFOV_DEG / 2.0)
+        theta_bbox = -math.degrees(
+            math.atan(nx * math.tan(math.radians(OAKD_HFOV_DEG / 2.0))))
 
         # Query VPU for spatial coordinates at this ROI
         spatial_coords = self._mdai.getSpatialForROI(xmin, ymin, xmax, ymax, draw=True, confidence=confidence)
@@ -257,14 +263,10 @@ class NanoOwlManager:
             # No depth data — still draw the detection bbox so the overlay updates
             conf_str = f"{confidence:.2f}" if confidence > 0 else ""
             self._mdai.drawROIRect(xmin, ymin, xmax, ymax, text=conf_str)
-            return OwlSpatialDetection("", [cx, cy], 0.0, 0.0, 0.0, theta)
+            return OwlSpatialDetection("", [cx, cy], 0.0, 0.0, 0.0, theta_bbox)
 
         x_m, y_m, z_m = spatial_coords
-        # Use theta from VPU's x/z if depth is valid, otherwise use FOV-based
-        if z_m > 0:
-            theta = math.degrees(-math.asin(x_m / z_m)) if z_m != 0 else 0.0
-
-        return OwlSpatialDetection("", [cx, cy], x_m, y_m, z_m, theta)
+        return OwlSpatialDetection("", [cx, cy], x_m, y_m, z_m, theta_bbox)
 
 
 if __name__ == "__main__":

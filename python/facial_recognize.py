@@ -11,7 +11,6 @@ import depthai
 import numpy as np
 from imutils.video import FPS
 from threading import Lock
-from math import asin, degrees
 
 TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
 
@@ -467,9 +466,9 @@ class FaceDetection:
         self.x = coords_3d[0] / 1000.0
         self.y = coords_3d[1] / 1000.0
         self.z = coords_3d[2] / 1000.0
-        self.theta = degrees(-asin(self.x/self.z) if self.z != 0.0 else 0)
+
     def __repr__(self):
-        return "{{name = {}, x = {}, y = {}, z = {}, theta = {}}}".format(self.name, self.x, self.y, self.z, self.theta)
+        return "{{name = {}, x = {}, y = {}, z = {}}}".format(self.name, self.x, self.y, self.z)
 
 class FacialRecognize(DepthAI):
     def __init__(self, getPitch=None, offsetPitch=None, getYaw=None, offsetYaw=None, compute_spatial=False,

@@ -231,6 +231,24 @@ def lens_position(yaw_deg=0.0, pitch_deg=0.0, absolute=False):
     return oakd_to_robot(0.0, 0.0, 0.0, yaw_deg, pitch_deg, absolute)
 
 
+def oakd_to_bearing_range(x, y, z, yaw_deg=0.0, pitch_deg=0.0, absolute=False):
+    """
+    Horizontal bearing and ground range from the robot origin to a detection.
+
+    Takes the same Oak-D coordinates and head angles as oakd_to_robot.
+    Returns (bearing_deg, range_m): bearing measured from the robot's
+    forward axis, positive to the left, and range measured in the floor
+    plane.  That is the pair a base move needs.
+
+    The head angles are folded in, so a caller adds only the base yaw:
+
+        theta, rng = oakd_to_bearing_range(d.x, d.y, d.z, cam_yaw, cam_pitch)
+        xt = pose.x + rng * math.cos(math.radians(pose.yaw + theta))
+    """
+    fx, fy, _ = oakd_to_robot(x, y, z, yaw_deg, pitch_deg, absolute)
+    return math.degrees(math.atan2(fy, fx)), math.hypot(fx, fy)
+
+
 def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
                         obj=None, half_height=None, radius=None,
                         absolute=False):

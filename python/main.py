@@ -685,8 +685,8 @@ def captureObject(obj, sdp):
                 break
             if found:
                 #input("press a key to try moving close to object")
-                yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=od)
-                shortest_dist, closest_angle = moveToFloatWithYawCapt(sdp, xt, yt, math.radians(yaw + p.theta))
+                yaw, xt, yt, heading = getLocationNearObj(sdp, obj, p, offset_dist=od)
+                shortest_dist, closest_angle = moveToFloatWithYawCapt(sdp, xt, yt, math.radians(heading))
                 print("finished moving closer to object")
                 if shortest_dist <= 0.25:
                     print("distance <= 0.25, moving to final capture.")
@@ -962,7 +962,7 @@ def handleGotoLocation():
                 _move_oak_d.startSweepingBackAndForth(0)                
 
         if _sub_goal != "":
-            if setFoundObjAsGoal(_sub_goal, cam_yaw=0, offset_dist = getOffsetDist(op), sdp=sdp):
+            if setFoundObjAsGoal(_sub_goal, offset_dist = getOffsetDist(op), sdp=sdp):
                 gotLock()
                 sub_goal_just_found = True
                 sub_goal_cleanup = _sub_goal
@@ -981,7 +981,7 @@ def handleGotoLocation():
                         sdp.cancelMoveAction()
                         _move_oak_d.stopSweepingBackAndForth()
                         time.sleep(2)
-                        ret = setFoundFaceAsGoal(_deliveree, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.0, sdp=sdp)
+                        ret = setFoundFaceAsGoal(_deliveree, offset_dist=1.0, sdp=sdp)
                         if ret == True:
                             gotFace()
                             face_just_found = True
@@ -990,7 +990,7 @@ def handleGotoLocation():
                             print("saw the face but I lost track of it")
                             _move_oak_d.startSweepingBackAndForth(1)
                             while _move_oak_d.isSweeping():
-                                ret = setFoundFaceAsGoal(_deliveree, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.0, sdp=sdp)
+                                ret = setFoundFaceAsGoal(_deliveree, offset_dist=1.0, sdp=sdp)
                                 if ret == True:
                                     gotFace()
                                     face_just_found = True
@@ -1026,7 +1026,7 @@ def handleGotoLocation():
                     sdp.cancelMoveAction()
                     _move_oak_d.stopSweepingBackAndForth()
                     time.sleep(2)
-                    if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op), sdp=sdp):
+                    if setFoundObjAsGoal(_sub_goal, offset_dist = getOffsetDist(op), sdp=sdp):
                         gotLock() 
                         sub_goal_just_found = True
                         sub_goal_cleanup = _sub_goal
@@ -1036,7 +1036,7 @@ def handleGotoLocation():
                         #speak("I thought I saw a " + _sub_goal + ". I'll look again.")
                         _move_oak_d.startSweepingBackAndForth(1)
                         while _move_oak_d.isSweeping():
-                            if setFoundObjAsGoal(_sub_goal, cam_yaw=_move_oak_d.getYaw(), offset_dist = getOffsetDist(op), sdp=sdp):
+                            if setFoundObjAsGoal(_sub_goal, offset_dist = getOffsetDist(op), sdp=sdp):
                                 gotLock()
                                 sub_goal_just_found = True
                                 sub_goal_cleanup = _sub_goal
@@ -1155,7 +1155,7 @@ def handleGotoLocation():
             #     if _interrupt_action:
             #         _interrupt_action = False
             #     if p is not None:
-            #         setLocationOfObj(sdp, _deliveree, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25)
+            #         setLocationOfObj(sdp, _deliveree, p, offset_dist=1.25)
             #         gotFace()
             #         face_just_found = True
             #     else:
@@ -1265,7 +1265,7 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
             found, spatial = _nano_owl_mgr.check_for_object(obj_name)
             if found:
                 _mdai.drawText(obj_name, 1, 14)
-                print(f"OWL spotted {obj_name}, stopping to get a lock: z={spatial.z:.2f}m theta={spatial.theta:.1f}deg")
+                print(f"OWL spotted {obj_name}, stopping to get a lock: {objBearingRangeStr(spatial)}")
                 sdp.cancelMoveAction()
                 _move_oak_d.stopSweepingBackAndForth()
                 time.sleep(2)
@@ -1275,7 +1275,7 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
                     recheck_found, recheck_spatial = _nano_owl_mgr.check_for_object(obj_name)
                     if recheck_found:
                         spatial_det = recheck_spatial
-                        print(f"OWL confirmed {obj_name} (frame {attempt+1}): z={recheck_spatial.z:.2f}m theta={recheck_spatial.theta:.1f}deg")
+                        print(f"OWL confirmed {obj_name} (frame {attempt+1}): {objBearingRangeStr(recheck_spatial)}")
                         obj_confirmed = True
                         break
                     time.sleep(poll_interval)
@@ -1291,7 +1291,7 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
                     recheck_found, recheck_spatial = _nano_owl_mgr.check_for_object(obj_name)
                     if recheck_found:
                         spatial_det = recheck_spatial
-                        print(f"OWL reacquired {obj_name}: z={recheck_spatial.z:.2f}m theta={recheck_spatial.theta:.1f}deg")
+                        print(f"OWL reacquired {obj_name}: {objBearingRangeStr(recheck_spatial)}")
                         obj_confirmed = True
                         break
                     time.sleep(poll_interval)
@@ -1882,37 +1882,73 @@ def checkForPerson():
         None
     return False, ps
 
-def getLocationNearObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
-    p.z -= offset_dist # come up to the object within certain distance
-    if p.z < 0.0:
-        p.z = 0.0
+def headAngles():
+    """Head pan and tilt in degrees, relative to home, as MoveOakD reports them."""
+    if _move_oak_d is None:
+        return 0.0, 0.0
+    return _move_oak_d.getYaw(), _move_oak_d.getPitch()
+
+def objBearingRange(p, offset_dist=0.0):
+    """
+    Bearing and ground range from the robot origin to a spatial detection.
+
+    p is anything carrying Oak-D .x/.y/.z in metres -- MyDetection,
+    FaceDetection, OwlSpatialDetection.  Returns (bearing_deg, range_m)
+    with bearing positive left of the robot forward axis and the current
+    head pan and tilt already folded in, so a caller adds only the base
+    yaw.  offset_dist is trimmed off the range to stop short of the
+    object.
+    """
+    cam_yaw, cam_pitch = headAngles()
+    theta, rng = robot_frames.oakd_to_bearing_range(
+        p.x, p.y, p.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch)
+    return theta, max(0.0, rng - offset_dist)
+
+def objBearingRangeStr(p):
+    """
+    Bearing and ground range of a detection as printable text.
+
+    Both need depth, so says "no depth" when there is none.  A NanoOWL
+    detection still knows the bearing of its bounding box, which is
+    worth showing on its own.
+    """
+    if p.z <= 0.0:
+        bearing = getattr(p, "theta_bbox", None)
+        if bearing is None:
+            return "no depth"
+        return "no depth, bbox bearing %.1fdeg" % bearing
+    theta, rng = objBearingRange(p)
+    return "rng=%.2fm theta=%.1fdeg" % (rng, theta)
+
+def getLocationNearObj(sdp, obj, p, offset_dist=0.75):
+    theta, rng = objBearingRange(p, offset_dist)
     pose = sdp.pose()
-    xt = pose.x + p.z * math.cos(math.radians(pose.yaw + cam_yaw + p.theta))
-    yt = pose.y + p.z * math.sin(math.radians(pose.yaw + cam_yaw + p.theta))
-    print("location near ", obj, " is at distance ", p.z, " meters at ", cam_yaw + p.theta, "degrees")
-    return pose.yaw, xt, yt
+    heading = pose.yaw + theta
+    xt = pose.x + rng * math.cos(math.radians(heading))
+    yt = pose.y + rng * math.sin(math.radians(heading))
+    print("location near ", obj, " is at distance ", rng, " meters at ", theta, "degrees")
+    return pose.yaw, xt, yt, heading
 
-def getLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75, radians=True):
-    yaw, xt, yt = getLocationNearObj(sdp, obj, p, cam_yaw, offset_dist)
-    angle = yaw + cam_yaw + p.theta
-    return (xt, yt, math.radians(angle) if radians else angle)
+def getLocationOfObj(sdp, obj, p, offset_dist=0.75, radians=True):
+    _, xt, yt, heading = getLocationNearObj(sdp, obj, p, offset_dist)
+    return (xt, yt, math.radians(heading) if radians else heading)
 
-def setLocationOfObj(sdp, obj, p, cam_yaw=0, offset_dist=0.75):
-    _locations[obj] = getLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
+def setLocationOfObj(sdp, obj, p, offset_dist=0.75):
+    _locations[obj] = getLocationOfObj(sdp, obj, p, offset_dist)
 
-def setFoundObjAsGoal(obj, cam_yaw=0, offset_dist=0.75, sdp=None):
+def setFoundObjAsGoal(obj, offset_dist=0.75, sdp=None):
     if sdp is None:
         sdp = manager.reader()  # only reads pose (setLocationOfObj); safe shared
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(sdp, obj, p, cam_yaw, offset_dist)
+        setLocationOfObj(sdp, obj, p, offset_dist)
         return True
     return False
 
-def findObjAndSetGoal(sdp, obj, goal, cam_yaw=0):
+def findObjAndSetGoal(sdp, obj, goal):
     found, p = checkForObject(obj)
     if found:
-        setLocationOfObj(sdp, goal, p, cam_yaw)
+        setLocationOfObj(sdp, goal, p)
         return True
     return False
 
@@ -2078,12 +2114,12 @@ def checkForFaces(faceDict, numChecks, needCentered=False,
             time.sleep(_dai_fps_recip)
     return spatial_dict
 
-def setFoundFaceAsGoal(name, cam_yaw=0, offset_dist=1, sdp=None):
+def setFoundFaceAsGoal(name, offset_dist=1, sdp=None):
     if sdp is None:
         sdp = manager.reader()  # only reads pose (setLocationOfObj); safe shared
     p = findFace(name, 1)
     if p is not None and p is not False:
-        setLocationOfObj(sdp, name, p, cam_yaw, offset_dist)
+        setLocationOfObj(sdp, name, p, offset_dist)
         return True
     else:
         if p is False:
@@ -2197,7 +2233,7 @@ def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
             print("spotted", obj, ", stopping to get a look")
             _move_oak_d.stopSweepingBackAndForth()
             time.sleep(2) 
-            if setFoundObjAsGoal(obj, cam_yaw=_move_oak_d.getYaw()):
+            if setFoundObjAsGoal(obj):
                 print("got a lock on ", obj)
                 _goal = goal
                 _move_oak_d.yawHome()
@@ -2321,7 +2357,7 @@ def getLocOfPersonFromSound(doa, sdp):
     yawDelta = _mic_array.rotateToDoa(doa, sdp)
     p = findPersonWithRotate(sdp, yawDelta)
     if p is not None:
-        return getLocationOfObj(sdp, "person", p, cam_yaw=0, offset_dist=1.0)
+        return getLocationOfObj(sdp, "person", p, offset_dist=1.0)
     else:
         return None
 
@@ -2335,7 +2371,7 @@ def findAndSetLocOfPersonFromSound(person, doa, sdp):
 
     p = findPersonWithRotate(sdp, yawDelta)
     if p is not None:
-        setLocationOfObj(sdp, person, p, cam_yaw=0, offset_dist=1.0)
+        setLocationOfObj(sdp, person, p, offset_dist=1.0)
     else:
         return None
     return person
@@ -3265,15 +3301,15 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                     start_depthai_thread()
                     return HandleResponseResult.Handled                
 
-                def safe_asin(x):
-                    return math.asin(max(-1.0, min(1.0, x)))
+                def bearing(x_c, z_c):
+                    return -math.atan2(x_c, z_c)
             
                 person = _hp.get_person_loc()
                 x_cam = loc[0]
                 z_cam = loc[2]
                 print("x_cam = {}, z_cam = {}".format(x_cam, z_cam))
 
-                theta = -safe_asin(x_cam/z_cam) if z_cam != 0.0 else 0
+                theta = bearing(x_cam, z_cam)
                 cam_yaw = _move_oak_d.getYaw()
                 xt_w = pose.x + z_cam * math.cos(math.radians(pose.yaw + cam_yaw) + theta)
                 yt_w = pose.y + z_cam * math.sin(math.radians(pose.yaw + cam_yaw) + theta)
@@ -3282,7 +3318,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                 pz_cam = person[2]
                 print("px_cam = {}, pz_cam = {}".format(px_cam, pz_cam))
 
-                pTheta = -safe_asin(px_cam/pz_cam) if pz_cam != 0.0 else 0
+                pTheta = bearing(px_cam, pz_cam)
                 px_w = pose.x + pz_cam * math.cos(math.radians(pose.yaw + cam_yaw) + pTheta)
                 py_w = pose.y + pz_cam * math.sin(math.radians(pose.yaw + cam_yaw) + pTheta)
 
@@ -4266,18 +4302,20 @@ def follow_me():
         if time.monotonic() - last_track_update > 3.0:
             ts = _move_oak_d.get_track_status()
             if ts.tracking == move_oak_d.TrackingResult.Tracked:
-                ts.object.z -= 1.2 # come up to the object within certain distance
+                # come up to the person within certain distance
+                theta, rng = objBearingRange(ts.object)
+                rng -= 1.2
                 robot_pose = sdp.pose()
-                heading = math.radians(robot_pose.yaw + _move_oak_d.getYaw() + ts.object.theta)
-                xt = robot_pose.x + ts.object.z * math.cos(heading)
-                yt = robot_pose.y + ts.object.z * math.sin(heading)
-                if ts.object.z > 0.25 or distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
-                    #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (ts.object.z, robot_pose.yaw + _move_oak_d.getYaw() + ts.object.theta))
+                heading = math.radians(robot_pose.yaw + theta)
+                xt = robot_pose.x + rng * math.cos(heading)
+                yt = robot_pose.y + rng * math.sin(heading)
+                if rng > 0.25 or distance_A_to_B(_last_goal_pos[0], _last_goal_pos[1], xt, yt) > 0.25:
+                    #print("follow person moved, now: %2.2f meters at %3.0f degrees." % (rng, robot_pose.yaw + theta))
                     # disallow base turning when setting a nav target
                     _move_oak_d.set_track_turn_base(False)
-                    if ts.object.z > 0:
+                    if rng > 0:
                         sdp.moveToFloatWithYaw(xt, yt, heading)
-                    elif ts.object.z < 0: # too close, back up
+                    elif rng < 0: # too close, back up
                         sdp.cancelMoveAction()
                         #print("too close, backing up")
                         backup = 5
@@ -4515,7 +4553,7 @@ def search_for_face_tool_helper(sdp, name: str, rot_clockwise: bool = True):
         if _interrupt_action:
             _interrupt_action = False
         if p is not None:
-            loc = getLocationOfObj(sdp, name, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1.25, radians=False)
+            loc = getLocationOfObj(sdp, name, p, offset_dist=1.25, radians=False)
 
         shutdown_facial_recog()
         start_depthai_thread()
@@ -4713,7 +4751,7 @@ def search_for_person_tool_helper(sdp):
         if ps and len(ps) > 0:
             # find closest person
             p = min(ps, key=lambda person: person.z)
-            closest_person_loc = getLocationOfObj(sdp, "closest person", p, cam_yaw=_move_oak_d.getYaw(), offset_dist=1, radians=False)
+            closest_person_loc = getLocationOfObj(sdp, "closest person", p, offset_dist=1, radians=False)
 
             return f"Found {len(ps)} person(s), the closest one is at {closest_person_loc}."
         return "No person found."
@@ -4873,7 +4911,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
             if _interrupt_action:
                 _interrupt_action = False
             if p is not None:
-                obj_loc = getLocationOfObj(sdp, yolo_obj, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                obj_loc = getLocationOfObj(sdp, yolo_obj, p, offset_dist=0.75, radians=False)
 
             return f"{obj} "+ (f"was found at {obj_loc}." if p else "was not found.")
 
@@ -4900,7 +4938,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
                 if found:
                     last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
-                    print(f"OWL found {obj_name}: z={spatial.z:.2f}m theta={spatial.theta:.1f}deg")
+                    print(f"OWL found {obj_name}: {objBearingRangeStr(spatial)}")
                     return True, spatial
             except Exception as e:
                 print(f"Error during OWL object found check: {str(e)}")
@@ -4915,10 +4953,10 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 
             if p is None and not _interrupt_action and last_spatial[0] is not None and last_spatial[0].z > 0:
                 # Recheck failed but we saw it earlier — move halfway toward last known location and retry
-                half_dist = last_spatial[0].z * 0.5
+                theta, rng = objBearingRange(last_spatial[0])
+                half_dist = rng * 0.5
                 pose = sdp.pose()
-                cam_yaw = _move_oak_d.getYaw()
-                angle = math.radians(pose.yaw + cam_yaw + last_spatial[0].theta)
+                angle = math.radians(pose.yaw + theta)
                 xt = pose.x + half_dist * math.cos(angle)
                 yt = pose.y + half_dist * math.sin(angle)
                 print(f"recheck failed, moving halfway ({half_dist:.2f}m) toward last known {obj} location")
@@ -4934,7 +4972,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 
             obj_loc = None
             if p is not None and p.z > 0:
-                obj_loc = getLocationOfObj(sdp, obj, p, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                obj_loc = getLocationOfObj(sdp, obj, p, offset_dist=0.75, radians=False)
 
             if obj_loc:
                 return f"{obj} was found at {obj_loc}."
@@ -5013,7 +5051,7 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
             _langgraph_initiated_move = False
 
             if spatial_det is not None and spatial_det.z > 0:
-                obj_loc = getLocationOfObj(sdp, obj, spatial_det, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                obj_loc = getLocationOfObj(sdp, obj, spatial_det, offset_dist=0.75, radians=False)
                 if obj_loc:
                     return result + f", {obj} is at {obj_loc}. I am not at {loc} or near the {obj}"
                 return result + f", {obj} was found but depth unavailable, cannot determine location."
@@ -5162,7 +5200,7 @@ def get_yolo_detections_tool_helper(sdp: MyClient):
             for det in detections:
                 results.append({
                     'label': det.label,
-                    'coords': getLocationOfObj(sdp, det.label, det, cam_yaw=_move_oak_d.getYaw(), offset_dist=0.75, radians=False)
+                    'coords': getLocationOfObj(sdp, det.label, det, offset_dist=0.75, radians=False)
                 })
         return results 
     except Exception as e:

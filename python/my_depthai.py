@@ -44,7 +44,6 @@ class MyDetection(object):
         self.y = det.spatialCoordinates.y / 1000.0
         self.z = det.spatialCoordinates.z / 1000.0
 
-        self.theta = math.degrees(-math.asin(self.x/self.z) if self.z != 0.0 else 0)
         self.bboxCtr = [ (self.xmin + self.xmax) / 2.0, (self.ymin + self.ymax) / 2.0]
         
 class MyDepthAI:
@@ -547,9 +546,6 @@ class MyDepthAI:
                                     str_label = str(label)
                                     if str_label == "person":
                                         self.personDetections.append(MyDetection(str_label, self.use_tracker, detection))
-                                        #if self._showRgbWindow:
-                                            #theta = -math.degrees(math.asin(detection.spatialCoordinates.x/detection.spatialCoordinates.z))
-                                            #cv2.putText(frame, "theta = {:.2f}".format(theta), (2, frame.shape[0] - 15), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
                 
                                     else:
                                         self.objectDetections.append(MyDetection(str_label, self.use_tracker, detection))
