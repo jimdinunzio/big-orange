@@ -3284,11 +3284,12 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                 time.sleep(0.050)            
             time.sleep(0.5)
             
-            if timed_out:
+            person = None if timed_out else _hp.get_person_loc()
+            if timed_out or person is None:
                 speak("Sorry I don't know where you want me to go.")
             else:
                 print("GOT a detection")
-                if loc[1] == -1: # pointing up too high
+                if loc is hp.POINTING_TOO_HIGH: # pointing up too high
                     rnd = random.randint(0,2)
                     if rnd == 0:
                         speak("Uh, I'll need a pair of wings to go there.")
@@ -3301,26 +3302,17 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
                     start_depthai_thread()
                     return HandleResponseResult.Handled                
 
-                def bearing(x_c, z_c):
-                    return -math.atan2(x_c, z_c)
-            
-                person = _hp.get_person_loc()
-                x_cam = loc[0]
-                z_cam = loc[2]
-                print("x_cam = {}, z_cam = {}".format(x_cam, z_cam))
+                print("target (robot frame) = {}".format(loc))
+                print("person (robot frame) = {}".format(person))
 
-                theta = bearing(x_cam, z_cam)
-                cam_yaw = _move_oak_d.getYaw()
-                xt_w = pose.x + z_cam * math.cos(math.radians(pose.yaw + cam_yaw) + theta)
-                yt_w = pose.y + z_cam * math.sin(math.radians(pose.yaw + cam_yaw) + theta)
-
-                px_cam = person[0]
-                pz_cam = person[2]
-                print("px_cam = {}, pz_cam = {}".format(px_cam, pz_cam))
-
-                pTheta = bearing(px_cam, pz_cam)
-                px_w = pose.x + pz_cam * math.cos(math.radians(pose.yaw + cam_yaw) + pTheta)
-                py_w = pose.y + pz_cam * math.sin(math.radians(pose.yaw + cam_yaw) + pTheta)
+                # Robot frame to world: turn by the base yaw, then offset by
+                # the base position.
+                yaw_rad = math.radians(pose.yaw)
+                c, s = math.cos(yaw_rad), math.sin(yaw_rad)
+                xt_w = pose.x + c * loc[0] - s * loc[1]
+                yt_w = pose.y + s * loc[0] + c * loc[1]
+                px_w = pose.x + c * person[0] - s * person[1]
+                py_w = pose.y + s * person[0] + c * person[1]
 
                 look_at_v = np.array([px_w - xt_w, py_w - yt_w])
                 look_at_v = look_at_v / np.linalg.norm(look_at_v)
@@ -4218,7 +4210,8 @@ def start_blazepose_thread():
     if _blazepose_thread is not None:
         return
 
-    _hp = hp.MyBlazePose(device_id=my_depthai.TOP_MOUNTED_OAK_D_ID)
+    _hp = hp.MyBlazePose(device_id=my_depthai.TOP_MOUNTED_OAK_D_ID,
+                         get_head_angles=headAngles)
 
     _blazepose_thread = Thread(target = _hp.run, name="hp", daemon=False)
     _blazepose_thread.start()

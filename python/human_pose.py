@@ -14,6 +14,8 @@ import numpy as np
 import sys
 import os
 
+import robot_frames
+
 epsilon=1e-6
 
 def rayPlaneIntersect(planeNormal, planePoint, rayDirection, rayPoint):
@@ -34,11 +36,25 @@ def rayPlaneIntersect(planeNormal, planePoint, rayDirection, rayPoint):
 
     return Pt
 
-floorNormal = np.array([0, -1, 0])   # z up direction
-floorPoint = np.array([0, 0.635, 0]) # camera space is 63.5cm above floor, the height of the camera
+FLOOR_NORMAL = np.array([0.0, 0.0, 1.0])  # robot frame, z up
+
+# get_target returns this when the arm ray never meets the floor.
+POINTING_TOO_HIGH = "pointing too high"
+
+
+def _to_robot(p, yaw_deg, pitch_deg):
+    """
+    Convert a camera-frame landmark point to the robot frame.
+
+    landmarks_world and the depth translation share the camera's axes with
+    y down; oakd_to_robot takes the Oak-D convention with y up.
+    """
+    return np.array(robot_frames.oakd_to_robot(
+        p[0], -p[1], p[2], yaw_deg=yaw_deg, pitch_deg=pitch_deg))
+
 
 #_next_print_time = 0
-def recognize_gesture(body):  
+def recognize_gesture(body, head_angles=(0.0, 0.0)):
 #    global _next_print_time
 
     if body.xyz_ref:
@@ -61,25 +77,24 @@ def recognize_gesture(body):
     else: # no gesture
         return None
 
-    rw = body.landmarks_world[KEYPOINT_DICT['right_wrist']] + final_trans
-#    lw = body.landmarks_world[KEYPOINT_DICT['left_wrist']] + final_trans
-    re = body.landmarks_world[KEYPOINT_DICT['right_shoulder']] + final_trans
-#    le = body.landmarks_world[KEYPOINT_DICT['left_shoulder']] + final_trans
+    yaw_deg, pitch_deg = head_angles
+
+    # Rotate the arm into the robot frame before meeting the floor: the
+    # landmarks turn with the head, the floor does not.
+    rw = _to_robot(body.landmarks_world[KEYPOINT_DICT['right_wrist']] + final_trans,
+                   yaw_deg, pitch_deg)
+    re = _to_robot(body.landmarks_world[KEYPOINT_DICT['right_shoulder']] + final_trans,
+                   yaw_deg, pitch_deg)
     
     right_arm_dir = rw - re
-#    left_arm_dir  = lw - le
 
-    r_res = rayPlaneIntersect(floorNormal, floorPoint, right_arm_dir, rw)
-#    l_res = rayPlaneIntersect(floorNormal, floorPoint, left_arm_dir, lw)
+    floor_point = np.array([0.0, 0.0, robot_frames.FLOOR_Z])
+    r_res = rayPlaneIntersect(FLOOR_NORMAL, floor_point, right_arm_dir, rw)
 
     if r_res is not None:
-#        arm = 0
         result = r_res
-    # elif l_res is not None:
-    #     arm = 1
-    #     result = l_res
     else:
-        result = [0, -1, 0] # pointing up to high
+        result = POINTING_TOO_HIGH
 
     # if time.monotonic() > _next_print_time:
     #     if result is not None:
@@ -105,14 +120,16 @@ def recognize_gesture(body):
     return result
 
 class MyBlazePose:
-    def __init__(self, device_id=None):
+    def __init__(self, device_id=None, get_head_angles=None):
         self.run_flag = False
         self.device_id_ = device_id
+        # Returns (yaw_deg, pitch_deg) of the head, relative to home.
+        self.get_head_angles_ = get_head_angles or (lambda: (0.0, 0.0))
         self.reset()
-        
+
     def reset(self):
         self.target = None
-        self.person_loc = [0,0]
+        self.person_loc = None
         self.lm_score = 0.0
         self.rect_points = [[0,0],[0,0]]
 
@@ -132,7 +149,8 @@ class MyBlazePose:
         return self.run_flag
         
     def get_person_loc(self):
-        return self.person_loc / 1000.0
+        """Robot-frame position of the person, metres, or None."""
+        return self.person_loc
 
     def run(self):
         pose = BlazeposeDepthai(input_src='rgb', lm_model='lite', xyz=True, internal_frame_height=432, internal_fps=15, device_id=self.device_id_)
@@ -150,11 +168,14 @@ class MyBlazePose:
             frame = renderer.draw(frame, body, self.target)
             
             # Gesture recognition
-            if body: 
-                result = recognize_gesture(body)
-                self.target = result
+            if body:
+                head_angles = self.get_head_angles_()
+                self.target = recognize_gesture(body, head_angles)
                 self.lm_score = body.lm_score
-                self.person_loc = body.xyz
+                # body.xyz is already the Oak-D convention, y up.
+                self.person_loc = np.array(robot_frames.oakd_to_robot(
+                    body.xyz[0] / 1000.0, body.xyz[1] / 1000.0, body.xyz[2] / 1000.0,
+                    yaw_deg=head_angles[0], pitch_deg=head_angles[1]))
                 self.rect_points = body.rect_points[1:3]
         #        if letter:
         #            cv2.putText(frame, letter, (frame.shape[1] // 2, 100), cv2.FONT_HERSHEY_PLAIN, 5, (0,190,255), 3)
