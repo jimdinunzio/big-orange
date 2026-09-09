@@ -14,7 +14,7 @@ The homes are trimmed against the mount, not the servo's own 90: measure
 them on the robot and set them here, and everything downstream follows.
 """
 
-YAW_HOME_DEG = 84
+YAW_HOME_DEG = 85
 PITCH_HOME_DEG = 115
 
 YAW_LIMITS_DEG = (0, 180)
