@@ -768,7 +768,7 @@ class RobotTools:
         return self.call_tool_helper("wave_arm")
 
     def pick_up(self, object_name: str) -> str:
-        """Grasp an object off the floor in front of the robot and hold it."""
+        """Use Oak-D camera to locate object on floor in front of robot and use arm to pick it up and hold it."""
         if self.sim:
             if self._sim_held is not None:
                 return f"I am already holding a {self._sim_held} (simulated)."
@@ -1211,9 +1211,7 @@ class RobotTools:
                 func=self.pick_up,
                 args_schema=self.PickUpInput,
                 name="pick_up",
-                description="Grasp an object off the floor and hold it. It never drives or turns -- it "
-                            "looks only where the robot already stands, so aim the robot at the object "
-                            "first. Carries one object at a time."
+                description="Uses oak-d camera to look down on floor in front of robot and acquire an object's loc, then uses the arm to pick it up off the floor and hold it."
             ),
 
             StructuredTool.from_function(

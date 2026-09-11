@@ -159,6 +159,14 @@ _active_camera_ai = "owl"                 # "owl" | "vlm" | None (connected + re
 _pending_camera_ai = None                 # target of an in-flight switch, else None
 _SWITCH_SECONDS = {"owl": 40, "vlm": 50}  # approx model-load wall-clock, voiced to user
 _CAMERA_AI_FRIENDLY = {"owl": "object search", "vlm": "scene description"}
+# The tools each skill serves, named so a refusal can say what still works --
+# the planner otherwise reads one skill being off as having no eyes at all.
+_CAMERA_AI_TOOLS = {
+    "owl": ("pick_up", "track_object", "search_for_object",
+            "while_go_to_loc_find_object"),
+    "vlm": ("describe_scene", "ask_question_about_scene",
+            "go_to_location_with_narration"),
+}
 _awaiting_user_response = False           # True only during an interactive user-speech capture window
 
 # Async operation callback globals
@@ -5200,8 +5208,10 @@ def get_yolo_detections_tool_helper(sdp: MyClient):
         return [{'error': f"Error getting YOLO detections: {str(e)}"}]
 
 def _arm_problem(result: dict) -> str:
-    """The readable half of a failed arm result. `output` is the ros2 node's
-    console text, which is where a MoveIt refusal explains itself."""
+    """The readable half of a failed arm result. `error` carries the exit
+    status with the server's one-line `reason` appended, so it says why on its
+    own; `output` is the whole ros2 console text, for a failure that logged
+    nothing the server could lift a reason out of."""
     return (result.get('error') or (result.get('output') or '').strip()
             or "no detail")
 
@@ -5251,6 +5261,19 @@ def wave_arm_tool_helper():
 # Objects pick_up knows the size of (robot_frames.OBJECT_SIZES) AND the arm has
 # a grasp for. Anything else is refused before the robot moves.
 PICKABLE_OBJECTS = ("soda can",)
+
+# The arm server's object catalogue is keyed by identifier; the spoken form used
+# here, in the OWL prompt and in robot_frames.OBJECT_SIZES is not a key it knows,
+# and handing it one exits the ros2 node. Names differing only in the separator
+# fall out of the default, so the map holds only the ones that do not.
+_ARM_OBJECT_KEYS = {}
+
+
+def _arm_object(obj: str) -> str:
+    """The arm catalogue key for an object named the way the rest of this file
+    names it. Only for arguments crossing to the arm server."""
+    name = str(obj).strip()
+    return _ARM_OBJECT_KEYS.get(name, "_".join(name.split()))
 
 # Where put_down can be asked to deposit. The arm's release motion is the same
 # for both -- place_can() drops at a fixed state in front of the robot -- so the
@@ -5416,7 +5439,7 @@ def _gripper_sees(obj: str):
     if _arm_client is None or not _arm_client.is_connected():
         return None, "the arm is not reachable"
     try:
-        result = _arm_client.is_holding(obj or "")
+        result = _arm_client.is_holding(_arm_object(obj) if obj else "")
     except Exception as e:
         return None, "the look failed: %s" % e
     held = result.get("held")
@@ -5481,7 +5504,8 @@ def pick_up_tool_helper(sdp, object_name: str):
         # been confirmed through the same camera, and a failure after the
         # grasp is one of the things that check caught -- which is why the
         # failure below reports the arm as stuck rather than inviting a retry.
-        result = _arm_client.pick_can(target[0], target[1], target[2], obj)
+        result = _arm_client.pick_can(target[0], target[1], target[2],
+                                      _arm_object(obj))
         if result.get("ok"):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
@@ -5782,7 +5806,13 @@ def _poll_switch(target: str):
 
 def _require_camera_ai(target: str):
     """Return None if `target` is the active camera AI, else a message telling
-    the agent to ask the user to switch (same switch the enable_* tools run)."""
+    the agent to ask the user to switch (same switch the enable_* tools run).
+
+    The message names the skill that IS up and the tools it still serves. Only
+    one of the two can hold the Jetson GPU, so a refusal here means one set of
+    eyes is busy, never that the robot cannot see -- and the planner will say
+    it cannot see, and pick blind, if the refusal does not say otherwise.
+    """
     if _active_camera_ai == target:
         return None
     friendly = _CAMERA_AI_FRIENDLY[target]
@@ -5793,10 +5823,16 @@ def _require_camera_ai(target: str):
     if _supervisor is None or not _supervisor.is_connected():
         return (f"The {friendly} skill is not active and the camera AI cannot be "
                 f"switched right now (supervisor unavailable).")
-    return (f"The {friendly} skill is not active right now. Switching to it takes "
-            f"about {secs} seconds, during which the other camera skill is "
-            f"unavailable. Ask the user whether to switch; if they agree, call "
-            f"{enable_tool} and then retry this request.")
+
+    up = _CAMERA_AI_FRIENDLY.get(_active_camera_ai)
+    tools = _CAMERA_AI_TOOLS.get(_active_camera_ai)
+    instead = (f"; the {up} skill is active instead, so {', '.join(tools)} "
+               f"still see normally" if up and tools else "")
+    msg = (f"The {friendly} skill is not active right now{instead}. Switching "
+           f"to it takes about {secs} seconds, during which the other camera "
+           f"skill is unavailable. Ask the user whether to switch; if they "
+           f"agree, call {enable_tool} and then retry this request.")
+    return msg
 
 def _disconnect_camera_ai():
     """Tear down all camera-AI resources. Used by shutdown_robot."""
