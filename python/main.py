@@ -5262,14 +5262,34 @@ PLACE_DESTINATIONS = ("recycle bin", "trash bin")
 # and not littering. Roughly the arm's forward span plus nav slop.
 PLACE_ARRIVAL_DIST = 1.0
 
-# Head tilt for looking at the floor close in. 145 is the pitch servo's limit;
-# at that tilt the frame covers from about 0.4 m in front of the lens outwards,
-# so both a can at arm's length and one across the room stay in view.
-PICK_PITCH = 145
+# Head tilts for looking at the floor close in, in servo degrees. No single
+# tilt both finds the can and reads it well, so _look_for_floor_object uses
+# each for what it is good at:
+#
+#   acquire   the frame covers from about 0.4 m in front of the lens
+#             outwards, so both a can at arm's length and one across the room
+#             stay in view, and a can at the grasp standoff is reliably seen
+#   sample    the depth patch is all can rather than part floor, worth some
+#             20 mm of the shortfall, but the can falls out of frame about
+#             half the time at the 0.28-0.30 m standoff
+#
+# robot_frames.DEPTH_BIAS_BY_TILT is taped at these two tilts and no others,
+# so those and this pair move together.
+PICK_ACQUIRE_PITCH = 145
+PICK_SAMPLE_PITCH = 140
+
+# Seconds to let the head stop moving between the two tilts. Long enough that
+# no frame from during the tilt reaches the median.
+PICK_SETTLE = 0.25
 
 # Frames to sample before committing a grasp coordinate. One frame's depth ROI
 # is noisy enough to miss a 66 mm can; the median of several is not.
 PICK_SAMPLES = 7
+
+# Frames the sample tilt has to land before its median is worth preferring to
+# the acquire tilt's. Below this the truer bias is riding on one or two
+# readings, and more readings of a worse bias beats that.
+PICK_MIN_SAMPLES = 3
 
 
 def _normalize_place_name(name: str) -> str:
@@ -5289,11 +5309,43 @@ def _find_location_key(name: str):
     return None
 
 
+def _sample_floor_object(obj: str):
+    """Watch for `obj` at the head's current aim for PICK_SAMPLES frames.
+
+    Returns (samples, cam_yaw, cam_pitch): the nearest valid spatial from
+    each frame that had one, sorted by range, and the head angles they were
+    taken at. Streaming and the prompt are the caller's to set up.
+    """
+    cam_yaw, cam_pitch = _move_oak_d.getYaw(), _move_oak_d.getPitch()
+
+    samples = []
+    for _ in range(PICK_SAMPLES):
+        if _interrupt_action:
+            break
+        found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
+        valid = [s for s in (spatials or []) if s.z > 0]
+        if found and valid:
+            # Nearest first: collecting cans means collecting this one.
+            samples.append(min(valid, key=lambda s: s.z))
+        time.sleep(1.0 / 16)
+
+    samples.sort(key=lambda s: s.z)
+    return samples, cam_yaw, cam_pitch
+
+
 def _look_for_floor_object(obj: str):
     """Find `obj` on the floor from where the robot stands, without moving.
 
     Returns (detection, cam_yaw, cam_pitch) for the NEAREST instance, or
-    (None, 0, 0). The head is left tilted down; the caller homes it.
+    (None, 0, 0). The angles are the ones that detection was seen at, which
+    is not necessarily the tilt the head ends up at; the caller homes it
+    either way.
+
+    Looks twice, at PICK_ACQUIRE_PITCH and then PICK_SAMPLE_PITCH, because
+    the tilt that reliably has the can in frame is not the one that reads its
+    depth truest. The sample tilt wins whenever it saw the can in enough
+    frames to take a median from, and the acquire tilt carries the pick when
+    it did not.
 
     Unlike search_for_object this never rotates the base: pick_up is called
     when the robot is already pointed at the thing, and a base rotation here
@@ -5301,7 +5353,7 @@ def _look_for_floor_object(obj: str):
     """
     global _interrupt_action, _keep_camera_orientation
 
-    aim_oakd(pitch=PICK_PITCH)
+    aim_oakd(pitch=PICK_ACQUIRE_PITCH)
     eyes.setTargetPitchYaw(-50, 0)
 
     _nano_owl_mgr.set_prompt(f"[{obj}]")
@@ -5309,32 +5361,34 @@ def _look_for_floor_object(obj: str):
     _mdai.show_yolo_boxes = False
     _nano_owl_mgr.get_detections_nms()  # wakeup call
 
-    samples = []
+    wide = ([], 0, 0)
+    tight = ([], 0, 0)
     try:
         _keep_camera_orientation = True
-        for _ in range(PICK_SAMPLES):
-            if _interrupt_action:
-                break
-            found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
-            valid = [s for s in (spatials or []) if s.z > 0]
-            if found and valid:
-                # Nearest first: collecting cans means collecting this one.
-                samples.append(min(valid, key=lambda s: s.z))
-            time.sleep(1.0 / 16)
+        wide = _sample_floor_object(obj)
+        if not _interrupt_action:
+            aim_oakd(pitch=PICK_SAMPLE_PITCH)
+            time.sleep(PICK_SETTLE)
+            tight = _sample_floor_object(obj)
     finally:
         _keep_camera_orientation = False
         _mdai.show_yolo_boxes = True
         _nano_owl_mgr.stop_streaming()
         _nano_owl_mgr.clear_prompt()
 
+    use_tight = len(tight[0]) >= PICK_MIN_SAMPLES or not wide[0]
+    print("pick_up: %s in %d of %d frames at tilt %d, %d of %d at %d; using %d"
+          % (obj, len(wide[0]), PICK_SAMPLES, PICK_ACQUIRE_PITCH,
+             len(tight[0]), PICK_SAMPLES, PICK_SAMPLE_PITCH,
+             PICK_SAMPLE_PITCH if use_tight else PICK_ACQUIRE_PITCH))
+
+    samples, cam_yaw, cam_pitch = tight if use_tight else wide
     if not samples:
         return None, 0, 0
 
     # The median SAMPLE, not the median of each axis: with two cans in view the
     # nearest can flip between frames, and averaging would aim between them.
-    samples.sort(key=lambda s: s.z)
-    return (samples[len(samples) // 2],
-            _move_oak_d.getYaw(), _move_oak_d.getPitch())
+    return samples[len(samples) // 2], cam_yaw, cam_pitch
 
 
 def _gripper_sees(obj: str):

@@ -77,6 +77,48 @@ LENS_FORWARD = 0.055
 LENS_LEFT = 0.0
 LENS_UP = 0.02
 
+# Shortfall in the depth reading, metres, added along the same lens-to-object
+# bearing as the radius correction below.  Keyed by head tilt in servo
+# degrees, because how much the reading is off depends on how much floor the
+# sampled patch takes in beside the can, and that is set by the tilt.
+#
+# Taped with a can at 0.28, 0.30 and 0.32 m -- yaw home, subpixel on, the
+# median of the middle half of the box:
+#
+#   145   short by 35, 40, 40 mm; the patch takes in the floor ahead of the
+#         can, but the can is reliably in frame at the grasp standoff
+#   140   short by 21, 22 mm and the patch is all can, though the can drops
+#         out of frame about half the time at the 0.30 m standoff
+#
+# Only taped tilts belong here, and main's PICK_ACQUIRE_PITCH and
+# PICK_SAMPLE_PITCH are the two that are: those constants and this table move
+# together.  Deeper tilts do not extrapolate -- at 150 the patch spans 90 mm
+# of depth against a 66 mm can, so it is averaging floor in front of the can
+# with the can.
+DEPTH_BIAS_BY_TILT = {
+    145: 0.038,
+    140: 0.021,
+}
+
+
+def depth_bias(pitch_deg=0.0, absolute=False):
+    """
+    The depth shortfall to add at this head tilt, metres.
+
+    Takes the tilt the way oakd_to_robot does -- relative to home by
+    default, raw servo degrees with absolute=True.
+
+    Answers with the nearest taped tilt in DEPTH_BIAS_BY_TILT rather than
+    interpolating between them: every entry is a measurement, and what
+    happens between them is set by how much floor the patch takes in,
+    which no straight line through two points describes.
+    """
+    if not absolute:
+        pitch_deg += PITCH_HOME_DEG
+    return DEPTH_BIAS_BY_TILT[min(DEPTH_BIAS_BY_TILT,
+                                  key=lambda tilt: abs(tilt - pitch_deg))]
+
+
 # Grasp targets, metres: (height, radius).  A 12 oz soda can measures
 # 0.122 m tall by 0.066 m across.
 OBJECT_SIZES = {
@@ -264,11 +306,14 @@ def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
         centre wanders with framing and occlusion;
       * the depth point lies on the near surface facing the camera, so
         the centre is one radius further along the horizontal bearing
-        from lens to object.
+        from lens to object;
+      * the tilt's depth_bias() goes the same way, since the camera
+        reads short.
 
     Give either `obj` (a key in OBJECT_SIZES) or explicit `half_height` /
     `radius`; explicit values win where both are given.  Omitting all of
-    them returns the raw surface point at floor height.
+    them returns the surface point at floor height, the depth bias still
+    applied -- that one is the camera's error, not the object's size.
 
     The returned z is NOT half_height: the floor is below the robot
     origin and the arm plate below that, so it works out to about
@@ -287,11 +332,12 @@ def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
 
     p = oakd_to_robot(x, y, z, yaw_deg, pitch_deg, absolute)
 
-    if radius:
+    reach = radius + depth_bias(pitch_deg, absolute)
+    if reach:
         lens = lens_position(yaw_deg, pitch_deg, absolute)
         bearing = math.atan2(p[1] - lens[1], p[0] - lens[0])
-        p = (p[0] + radius * math.cos(bearing),
-             p[1] + radius * math.sin(bearing),
+        p = (p[0] + reach * math.cos(bearing),
+             p[1] + reach * math.sin(bearing),
              p[2])
 
     return robot_to_arm((p[0], p[1], FLOOR_Z + half_height))
