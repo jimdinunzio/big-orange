@@ -15,6 +15,24 @@ MAX_ATTEMPTS = 3
 TOP_MOUNTED_OAK_D_ID = "14442C103147C2D200"
 BOTTOM_MOUNTED_OAK_D_ID = "14442C10E18CC0D200";
 
+# Fraction of a detection box kept when asking for its depth.  The ROI is
+# shrunk about its centre so the patch averaged is the object rather than
+# the floor around it -- the same 0.5 the spatial detection network used by
+# Oak-D on camera algs applies to its own boxes (setBoundingBoxScaleFactor below).
+#
+# It assumes the middle of the box IS the object, which holds for a can, a
+# person's torso, a lamp -- and not for something you can see through, like a
+# chair or a doorway, where the middle is the wall behind.  A caller with a
+# hollow object should pass a shrink nearer 1.0 and let the median sort it.
+ROI_SHRINK = 0.5
+
+# Smallest patch worth asking about, in depth pixels per axis.  A distant
+# object's box can be only a few pixels across before any shrink.
+ROI_MIN_PIXELS = 6
+
+# The depth window opens at this fraction of the depth frame's own size.
+DEPTH_WINDOW_SCALE = 0.5
+
 '''
 Spatial Tiny-yolo example
   Performs inference on RGB camera and retrieves spatial location coordinates: x,y,z relative to the center of depth map.
@@ -52,10 +70,17 @@ class MyDepthAI:
         model = "yolo8nano",
         use_tracker = False,
         syncNN = True,
+        subpixel = True,
     ):
         self.model = model
         self.use_tracker = use_tracker
         self.syncNN = syncNN
+        # Fractional disparity, which is what resolves depth finer than one
+        # whole disparity step -- about 17 mm at 0.75 m, growing as the square
+        # of range.  Fixed when the pipeline is built: the firmware refuses to
+        # switch it on a running device, and refuses a config message at all
+        # while depth is aligned to a camera.
+        self.subpixel = subpixel
         self.detection_lock = Lock()
 
         self.detection_lock.acquire()
@@ -84,6 +109,17 @@ class MyDepthAI:
         # ROI overlay: list of ((x1,y1,x2,y2), text) entries
         self._roi_rects = []
         self._roi_last_draw_time = 0
+
+        # The same ROIs as handed to the spatial calculator, normalized on the
+        # depth frame, so the depth window shows the pixels actually averaged
+        self._depth_roi_rects = []
+        self._depth_size = None
+
+        # Preview-to-depth geometry, measured off the camera in createPipeline
+        self._isp_size = None
+        self._preview_crop = (1.0, 1.0)
+
+        self._depth_win_sized = False
 
         # Latest frame storage for external consumers (e.g. NanoOwlManager)
         self._frame_lock = Lock()
@@ -161,6 +197,8 @@ class MyDepthAI:
         stereo.setConfidenceThreshold(255)
         # Align depth map to the perspective of RGB camera, on which inference is done
         stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+        if self.subpixel:
+            stereo.setSubpixel(True)
 
         #stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
@@ -190,6 +228,27 @@ class MyDepthAI:
         elif self.model == "mobileNet":
             colorCam.setPreviewSize(300, 300)
             self.window_size = [832, 832]
+
+        # How much of the colour frame the preview actually shows.  With
+        # keepAspectRatio -- the default -- a preview shaped differently from
+        # the sensor is a centre CROP, so a square preview off a 16:9 sensor
+        # spans only about 56% of its width.  Depth is aligned to the whole
+        # colour frame, so preview coordinates have to be mapped before they
+        # can be used as a depth ROI.  See previewRoiToDepth.
+        isp_w, isp_h = colorCam.getIspSize()
+        if not isp_w or not isp_h:
+            isp_w, isp_h = colorCam.getResolutionSize()
+        prev_w, prev_h = colorCam.getPreviewSize()
+        self._isp_size = (isp_w, isp_h)
+        if colorCam.getPreviewKeepAspectRatio() and prev_w and prev_h:
+            isp_ar = isp_w / float(isp_h)
+            prev_ar = prev_w / float(prev_h)
+            if prev_ar < isp_ar:        # narrower than the sensor: sides cut
+                self._preview_crop = (prev_ar / isp_ar, 1.0)
+            else:                       # wider: top and bottom cut
+                self._preview_crop = (1.0, isp_ar / prev_ar)
+        else:
+            self._preview_crop = (1.0, 1.0)
 
         # Create outputs
 
@@ -295,6 +354,7 @@ class MyDepthAI:
     def showDepthWindow(self, value):
         if value != self._showDepthWindow:
             self._showDepthWindow = value
+            self._depth_win_sized = False
             self.inner_run_flag = False
 
     @property
@@ -335,30 +395,95 @@ class MyDepthAI:
                 return w, h
         return None
 
-    def getSpatialForROI(self, xmin, ymin, xmax, ymax, draw=False, confidence=0.0):
+    def previewRoiToDepth(self, xmin, ymin, xmax, ymax):
+        """
+        Map a preview-normalized rect onto the aligned depth frame.
+
+        The preview is a centre crop of the colour frame and the depth is
+        aligned to the whole of it, so 0-1 spans a different slice on each.
+        How different depends on the model's preview shape: a hair in y for
+        the 640x352 yolo8nano preview, nearly 2x in x for a square one.
+
+        Args:
+            xmin, ymin, xmax, ymax: normalized 0-1 in the preview frame.
+
+        Returns:
+            (xmin, ymin, xmax, ymax) normalized 0-1 on the depth frame.
+        """
+        fx, fy = self._preview_crop
+        return (0.5 + (xmin - 0.5) * fx, 0.5 + (ymin - 0.5) * fy,
+                0.5 + (xmax - 0.5) * fx, 0.5 + (ymax - 0.5) * fy)
+
+    def getSpatialForROI(self, xmin, ymin, xmax, ymax, draw=False, confidence=0.0,
+                         shrink=ROI_SHRINK, stats=False):
         """
         Query the VPU SpatialLocationCalculator for depth at a normalized ROI.
 
         Args:
             xmin, ymin, xmax, ymax: normalized coordinates (0.0 - 1.0) in the
-                preview/color camera frame.
-            draw: if True, draw the ROI rectangle and x,y,z on the RGB preview.
+                preview frame.  Mapped onto the depth frame here.
+            draw: if True, draw the sampled patch and x,y,z on the RGB preview,
+                and the same patch on the depth window.
             confidence: detection confidence 0-1 to show in the overlay (optional).
+            shrink: fraction of the box to keep, about its centre.  Sampling
+                the whole box averages the floor in front of an object with
+                the object, which reads short.
+            stats: if True, also return what the depth patch looked like.
 
         Returns:
-            (x, y, z) in meters, or None if unavailable.
+            (x, y, z) in meters, or None if unavailable.  With stats,
+            (x, y, z, (min_mm, max_mm, pixels)) -- a depth range far wider
+            than the object means the patch caught floor or background.
             x = lateral (positive right), y = vertical, z = depth (forward).
         """
         if not hasattr(self, '_spatialCalcConfigQueue') or self._spatialCalcConfigQueue is None:
             return None
 
+        box = (xmin, ymin, xmax, ymax)
+        if shrink and shrink < 1.0:
+            cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+            hw, hh = (xmax - xmin) * shrink / 2.0, (ymax - ymin) * shrink / 2.0
+            xmin, xmax = cx - hw, cx + hw
+            ymin, ymax = cy - hh, cy + hh
+
+        dxmin, dymin, dxmax, dymax = self.previewRoiToDepth(xmin, ymin, xmax, ymax)
+        bxmin, bymin, bxmax, bymax = self.previewRoiToDepth(*box)
+
+        # A patch of a couple of pixels comes back empty or all noise, so give
+        # back some of the shrink on a small detection rather than all of it.
+        # Never past the detection itself: outside that box is not the object.
+        dw, dh = self._depth_size or (640, 400)
+        if dxmax - dxmin < ROI_MIN_PIXELS / dw:
+            c, half = (dxmin + dxmax) / 2.0, ROI_MIN_PIXELS / dw / 2.0
+            dxmin, dxmax = max(bxmin, c - half), min(bxmax, c + half)
+        if dymax - dymin < ROI_MIN_PIXELS / dh:
+            c, half = (dymin + dymax) / 2.0, ROI_MIN_PIXELS / dh / 2.0
+            dymin, dymax = max(bymin, c - half), min(bymax, c + half)
+        dxmin, dymin = max(0.0, dxmin), max(0.0, dymin)
+        dxmax, dymax = min(1.0, dxmax), min(1.0, dymax)
+
         cfg = dai.SpatialLocationCalculatorConfigData()
         cfg.depthThresholds.lowerThreshold = 100
         cfg.depthThresholds.upperThreshold = 10000
-        cfg.roi = dai.Rect(dai.Point2f(xmin, ymin), dai.Point2f(xmax, ymax))
+        # MEDIAN rather than the default average: pitched down at the floor
+        # the patch spans a real range of depths, and one corner of floor or
+        # background drags a mean where a median shrugs it off.
+        cfg.calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MEDIAN
+        cfg.roi = dai.Rect(dai.Point2f(dxmin, dymin), dai.Point2f(dxmax, dymax))
 
         spatialCfg = dai.SpatialLocationCalculatorConfig()
         spatialCfg.addROI(cfg)
+        if stats:
+            # MEDIAN leaves depthMin and depthMax unset, so ask for the same
+            # patch a second way in the same message: the median answers, the
+            # average alongside it says what the patch was made of.  Both come
+            # back in one round trip.
+            statCfg = dai.SpatialLocationCalculatorConfigData()
+            statCfg.depthThresholds.lowerThreshold = 100
+            statCfg.depthThresholds.upperThreshold = 10000
+            statCfg.calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.AVERAGE
+            statCfg.roi = cfg.roi
+            spatialCfg.addROI(statCfg)
         self._spatialCalcConfigQueue.send(spatialCfg)
 
         spatialData = self._spatialCalcQueue.get()
@@ -369,7 +494,8 @@ class MyDepthAI:
         if len(locations) == 0:
             return None
 
-        coords = locations[0].spatialCoordinates
+        loc = locations[0]
+        coords = loc.spatialCoordinates
         result = (coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0)
 
         if draw:
@@ -383,8 +509,31 @@ class MyDepthAI:
                 lines += [f"X:{coords.x:.0f}", f"Y:{coords.y:.0f}", f"Z:{coords.z:.0f}mm"]
                 self._roi_rects.append((rect, lines))
                 self._roi_last_draw_time = time.monotonic()
+            self._depth_roi_rects.append((dxmin, dymin, dxmax, dymax))
 
+        if stats:
+            s = locations[1] if len(locations) > 1 else loc
+            dmin, dmax = s.depthMin, s.depthMax
+            if dmax <= dmin:
+                # Left at their sentinels, so this algorithm did not fill them
+                dmin = dmax = 0
+            return result + ((dmin, dmax, s.depthAveragePixelCount),)
         return result
+
+    def depthResolutionAt(self, z_m):
+        """
+        How coarsely depth is quantized at this range, in metres.
+
+        One whole disparity step, or a fraction of one with subpixel on.
+        The error grows as the square of range, so a reading good to a
+        centimetre up close is good to nothing like that across a room.
+        """
+        # 400p mono, 75 mm baseline.  Focal length in pixels from the 71.9
+        # degree horizontal field the OAK-D's mono cameras see.
+        f_px = 640 / (2 * math.tan(math.radians(71.9 / 2)))
+        step = (z_m * z_m) / (f_px * 0.075)
+        # Subpixel splits each step into 2^3 with the default fractional bits
+        return step / 8.0 if self.subpixel else step
 
     def drawROIRect(self, xmin, ymin, xmax, ymax, text=""):
         """Draw the ROI rectangle overlay directly from normalized coordinates.
@@ -406,10 +555,12 @@ class MyDepthAI:
     def clear_roi_rects(self):
         """Clear all ROI overlays (call before processing a new detection batch)."""
         self._roi_rects = []
+        self._depth_roi_rects = []
 
     def stopSpatialForROIDraw(self):
         """Clear the ROI overlay drawn by getSpatialForROI(draw=True)."""
         self._roi_rects = []
+        self._depth_roi_rects = []
 
     def safe_startUp(self, *args, **kwargs):
         try:
@@ -454,6 +605,7 @@ class MyDepthAI:
             self.run_flag = True
             while self.run_flag:
                 try:
+                    self._depth_win_sized = False
                     if self._showRgbWindow:
                         cv2.namedWindow(rgb_win_name, cv2.WINDOW_NORMAL)
                         cv2.resizeWindow(rgb_win_name,self.window_size[0], self.window_size[1])
@@ -481,6 +633,10 @@ class MyDepthAI:
                             inNN = detectionNNQueue.get()
                             depth = depthQueue.get()
 
+                            # Depth ROIs are normalized against this, and it is
+                            # not the preview's shape -- see previewRoiToDepth
+                            self._depth_size = (depth.getWidth(), depth.getHeight())
+
                             # Store latest frames for external consumers
                             with self._frame_lock:
                                 self._latest_preview = inPreview.getCvFrame()
@@ -500,6 +656,20 @@ class MyDepthAI:
                                 depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
                                 depthFrameColor = cv2.equalizeHist(depthFrameColor)
                                 depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+
+                                # The patches actually averaged.  Drawn here
+                                # rather than on the preview because this is
+                                # the frame the ROI coordinates belong to, so
+                                # a mapping that is off shows up as a box off
+                                # the object.
+                                if self._depth_roi_rects and (current_time - self._roi_last_draw_time) > 0.35:
+                                    self._depth_roi_rects = []
+                                dh_px, dw_px = depthFrameColor.shape[:2]
+                                for dx1, dy1, dx2, dy2 in self._depth_roi_rects:
+                                    cv2.rectangle(depthFrameColor,
+                                                  (int(dx1 * dw_px), int(dy1 * dh_px)),
+                                                  (int(dx2 * dw_px), int(dy2 * dh_px)),
+                                                  (255, 255, 255), 1)
                                 #if len(detections) != 0:
                                     #boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
                                     #roiDatas = boundingBoxMapping.getConfigData()            
@@ -624,6 +794,13 @@ class MyDepthAI:
                                 cv2.imshow(rgb_win_name, frame)
 
                             if self._showDepthWindow:
+                                if not self._depth_win_sized:
+                                    dh_win, dw_win = depthFrameColor.shape[:2]
+                                    cv2.namedWindow(depth_win_name, cv2.WINDOW_NORMAL)
+                                    cv2.resizeWindow(depth_win_name,
+                                                     int(dw_win * DEPTH_WINDOW_SCALE),
+                                                     int(dh_win * DEPTH_WINDOW_SCALE))
+                                    self._depth_win_sized = True
                                 cv2.imshow(depth_win_name, depthFrameColor)
                             
                             if self._closePictures:

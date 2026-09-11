@@ -18,6 +18,7 @@ Usage from main.py:
 import math
 import time
 from threading import Thread
+import my_depthai
 from move_oak_d import MoveOakD
 from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG, PITCH_LIMITS_DEG
 from latte_panda_arduino import LattePandaArduino
@@ -29,7 +30,8 @@ OAKD_HFOV_DEG = 69.0
 class OwlSpatialDetection:
     """Detection with spatial info, compatible with MyDetection for use with getLocationOfObj."""
 
-    def __init__(self, label, bbox_norm, x_m, y_m, z_m, theta_bbox_deg=0.0):
+    def __init__(self, label, bbox_norm, x_m, y_m, z_m, theta_bbox_deg=0.0,
+                 depth_stats=None):
         """
         Args:
             label: detected object label string
@@ -39,6 +41,9 @@ class OwlSpatialDetection:
             z_m: depth in meters (from VPU)
             theta_bbox_deg: bearing from the bbox centre alone, degrees,
                 positive left, used when the VPU returned no depth
+            depth_stats: (min_mm, max_mm, pixels) of the patch the depth came
+                from, or None.  A range far wider than the object says the
+                patch caught floor or background as well
         """
         self.label = label
         self.bboxCtr = bbox_norm
@@ -46,6 +51,7 @@ class OwlSpatialDetection:
         self.y = y_m
         self.z = z_m
         self.theta_bbox = theta_bbox_deg
+        self.depth_stats = depth_stats
         self.confidence = 0.0  # set by caller from detection scores
 
     def __repr__(self):
@@ -66,6 +72,13 @@ class NanoOwlManager:
         """
         self._owl = owl_client
         self._mdai = mdai
+
+        # How much of a detection box to sample for depth.  The default suits
+        # a solid object; raise it towards 1.0 for something you can see
+        # through, whose box centre is whatever stands behind it.  A pick
+        # wants the default -- robot_frames.DEPTH_BIAS_BY_TILT was measured
+        # with it.
+        self.roi_shrink = my_depthai.ROI_SHRINK
 
         # Streaming state
         self._streaming = False
@@ -257,16 +270,19 @@ class NanoOwlManager:
         theta_bbox = -math.degrees(
             math.atan(nx * math.tan(math.radians(OAKD_HFOV_DEG / 2.0))))
 
-        # Query VPU for spatial coordinates at this ROI
-        spatial_coords = self._mdai.getSpatialForROI(xmin, ymin, xmax, ymax, draw=True, confidence=confidence)
+        # Query VPU for spatial coordinates at this ROI.  getSpatialForROI
+        # shrinks the box and maps it onto the depth frame itself.
+        spatial_coords = self._mdai.getSpatialForROI(xmin, ymin, xmax, ymax, draw=True,
+                                                     confidence=confidence,
+                                                     shrink=self.roi_shrink, stats=True)
         if spatial_coords is None:
             # No depth data — still draw the detection bbox so the overlay updates
             conf_str = f"{confidence:.2f}" if confidence > 0 else ""
             self._mdai.drawROIRect(xmin, ymin, xmax, ymax, text=conf_str)
             return OwlSpatialDetection("", [cx, cy], 0.0, 0.0, 0.0, theta_bbox)
 
-        x_m, y_m, z_m = spatial_coords
-        return OwlSpatialDetection("", [cx, cy], x_m, y_m, z_m, theta_bbox)
+        x_m, y_m, z_m, depth_stats = spatial_coords
+        return OwlSpatialDetection("", [cx, cy], x_m, y_m, z_m, theta_bbox, depth_stats)
 
 
 if __name__ == "__main__":
@@ -293,11 +309,17 @@ if __name__ == "__main__":
     time.sleep(0.5)
     print(f"After enable: is_enabled={client.is_enabled()}  is_running={client.is_running()}")
 
-    # Create and start MyDepthAI in a background thread
-    mdai = MyDepthAI()
-    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, False), daemon=True)
+    # Create and start MyDepthAI in a background thread.  Subpixel is a
+    # build-time choice, so it is a flag here rather than a command.
+    subpixel = "--subpixel" in sys.argv
+    mdai = MyDepthAI(subpixel=subpixel)
+    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, True), daemon=True)
     mdai_thread.start()
     time.sleep(2)  # Wait for camera to initialize
+
+    print("subpixel %s -- depth steps %.0f mm at 0.75 m"
+          % ("ON" if subpixel else "off (pass --subpixel for eighths)",
+             mdai.depthResolutionAt(0.75) * 1000))
 
     mgr = NanoOwlManager(client, mdai)
     mgr.start_streaming(fps=16)
@@ -327,6 +349,12 @@ Commands:
   yaw N           pan the head, servo degrees ({YAW_HOME_DEG} straight ahead)
   floor carpet|hard   which surface the robot is standing on (sets FLOOR_Z)
   help, quit
+
+Depth quantizes in whole disparity steps -- about 17 mm at 0.75 m, growing
+as the square of range -- so a reading can only be as good as one step.
+Start with --subpixel to split each step into eighths; it cannot be turned
+on later, the firmware refuses to switch it on a running device.
+
 """
 
     # Input thread — uses readline so we control when "prompt> " appears,
@@ -439,7 +467,7 @@ Commands:
         for line in judge(mag, sr - tr):
             print("%s  %s" % (indent, line))
 
-    def check(obj, pitches=(125, 130, 135, 140, 145, 150),
+    def check(obj, pitches=(135, 140, 145, 150),
               yaws=tuple(YAW_HOME_DEG + d for d in (-10, 0, 10))):
         """Is the real can where the numbers say it is?
 
@@ -471,7 +499,8 @@ Commands:
         print("  truth (tape)   arm x %+.3f  y %+.3f   radius %.3f"
               % (tx, ty, math.hypot(tx, ty)))
         print()
-        print("  %-16s %8s %8s %8s %8s %7s" % ("head", "sys x", "sys y", "err x", "err y", "miss"))
+        print("  %-16s %8s %8s %8s %8s %7s %6s"
+              % ("head", "sys x", "sys y", "err x", "err y", "miss", "span"))
         try:
             for label, setter, angles, other in (
                     ("pitch", m.setPitch, pitches, None),
@@ -486,8 +515,10 @@ Commands:
                     centre, _ = arm_point(det, obj)
                     ex, ey, mag, _, _ = error_vs_truth(centre)
                     rows.append((centre, ex, ey, mag))
-                    print("  %-16s %8.3f %8.3f %+8.3f %+8.3f %7.0f"
-                          % ("%s %.0f" % (label, a), centre[0], centre[1], ex, ey, mag * 1000))
+                    span = patch_span(det)
+                    print("  %-16s %8.3f %8.3f %+8.3f %+8.3f %7.0f %6s"
+                          % ("%s %.0f" % (label, a), centre[0], centre[1], ex, ey,
+                             mag * 1000, "-" if span is None else "%.0f" % span))
                 setter(start_pitch if label == "pitch" else start_yaw)
                 time.sleep(0.5)
         finally:
@@ -549,6 +580,35 @@ Commands:
                                        yaw_deg=yaw, pitch_deg=pitch)
         return centre, raw
 
+    def patch_span(det):
+        """Depth range of the sampled patch in mm, or None if unknown."""
+        if not det.depth_stats or det.depth_stats[1] <= det.depth_stats[0]:
+            return None
+        return det.depth_stats[1] - det.depth_stats[0]
+
+    def describe_patch(det, obj):
+        """What the depth came from, and whether it was all object.
+
+        The patch should be no deeper than the object itself.  Much more
+        than that and it took in the floor in front or the background
+        behind, which is what pulls a reading off an otherwise clean box.
+        """
+        span = patch_span(det)
+        if span is None:
+            return ("%d px, depth range not reported"
+                    % (det.depth_stats[2] if det.depth_stats else 0))
+        dmin, dmax, npix = det.depth_stats
+        line = ("%d px, depth %.3f to %.3f m, span %.0f mm"
+                % (npix, dmin / 1000.0, dmax / 1000.0, span))
+        if obj in robot_frames.OBJECT_SIZES:
+            depth_of_obj = robot_frames.OBJECT_SIZES[obj][1] * 2000.0
+            if span > 3 * depth_of_obj:
+                line += ("  -- POLLUTED, %.0f mm across a %.0f mm object"
+                         % (span, depth_of_obj))
+            else:
+                line += "  -- clean for a %.0f mm object" % depth_of_obj
+        return line
+
     def show_reading(obj):
         det, hits, tries = read_object(obj)
         if det is None:
@@ -566,6 +626,16 @@ Commands:
               % (yaw, pitch, syaw, spitch))
         print("  oakd    x %+.3f  y %+.3f  z %+.3f   (right / up / forward)"
               % (det.x, det.y, det.z))
+        # Direction only, so a depth that reads short cancels out and the
+        # mounts do not enter: tilt the head N degrees and this must move N.
+        print("  bearing %+.1f deg below the optical axis, %+.1f deg to its %s"
+              % (math.degrees(math.atan2(det.y, det.z)),
+                 abs(math.degrees(math.atan2(-det.x, det.z))),
+                 "left" if det.x < 0 else "right"))
+        print("  patch   %s" % describe_patch(det, obj))
+        print("  depth   quantized in %.0f mm steps at %.2f m%s -- no reading "
+              "can beat that" % (mdai.depthResolutionAt(det.z) * 1000, det.z,
+                                 ", subpixel on" if mdai.subpixel else ""))
         rb = robot_frames.oakd_to_robot(det.x, det.y, det.z, yaw, pitch)
         print("  robot   x %+.3f  y %+.3f  z %+.3f   depth point, from the chassis axis"
               % rb)
@@ -599,7 +669,7 @@ Commands:
               % robot_frames.OBJECT_SIZES[obj][0])
         return centre
 
-    def sweep(obj, pitches=(125, 130, 135, 140, 145, 150),
+    def sweep(obj, pitches=(135, 140, 145, 150),
               yaws=tuple(YAW_HOME_DEG + d for d in (-15, -5, 5, 15))):
         """Read one stationary object from several head angles.
 
@@ -637,7 +707,8 @@ Commands:
         def run(label, setter, angles, restore):
             rows = []
             print()
-            print("  %-14s %8s %8s %8s %8s" % (label, "oakd z", "arm x", "arm y", "arm z"))
+            print("  %-14s %8s %8s %8s %8s %6s"
+                  % (label, "oakd z", "arm x", "arm y", "arm z", "span"))
             for a in angles:
                 setter(a)
                 time.sleep(1.5)  # let the servo settle and the pipeline catch up
@@ -647,8 +718,10 @@ Commands:
                     continue
                 centre, _ = arm_point(det, obj)
                 rows.append(centre)
-                print("  %-14s %8.3f %8.3f %8.3f %8.3f"
-                      % ("%.0f" % a, det.z, centre[0], centre[1], centre[2]))
+                span = patch_span(det)
+                print("  %-14s %8.3f %8.3f %8.3f %8.3f %6s"
+                      % ("%.0f" % a, det.z, centre[0], centre[1], centre[2],
+                         "-" if span is None else "%.0f" % span))
             setter(restore)
             time.sleep(0.5)
             if len(rows) < 2:
