@@ -35,7 +35,7 @@ from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple, Optional
 
 # Constants
-_show_rgb_window = False
+_show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _current_map_name = ''
@@ -5848,6 +5848,7 @@ def _require_camera_ai(target: str):
            f"to it takes about {secs} seconds, during which the other camera "
            f"skill is unavailable. Ask the user whether to switch; if they "
            f"agree, call {enable_tool} and then retry this request.")
+    print("camera guard: %r" % (msg,))
     return msg
 
 def _disconnect_camera_ai():
