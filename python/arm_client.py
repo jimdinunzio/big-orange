@@ -13,7 +13,8 @@ run this file for a command line:
     python3 arm_client.py place
     python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
-    python3 arm_client.py reset              # after a pick that failed partway
+    python3 arm_client.py reset              # after a pick that failed partway,
+                                             # parks clear of the OAK-D
     python3 arm_client.py disable --park init
     python3 arm_client.py -i             # interactive
 
@@ -122,7 +123,12 @@ class ArmClient:
         return self._call(self._motion, 'enable_arm', timeout, bridge, rviz, port)
 
     def disable_arm(self, park: str = '') -> Dict[str, Any]:
-        """Stop the ROS stack, optionally moving to `park` first."""
+        """Open the jaws, optionally move to `park`, then stop the ROS stack.
+
+        The jaws are opened whether or not `park` is given, and that DROPS
+        whatever is held, where the arm is standing -- nothing can drive a
+        servo once the stack is down, so a gripper left closed stays clamped.
+        """
         return self._call(self._motion, 'disable_arm', park)
 
     def pick_can(self, x: float, y: float, z: float,
@@ -153,7 +159,7 @@ class ArmClient:
         """Move to a saved state -- see list_states()."""
         return self._call(self._motion, 'move_to_state', str(name))
 
-    def reset_arm(self, state: str = 'ready',
+    def reset_arm(self, state: str = '',
                   force: bool = False) -> Dict[str, Any]:
         """Recover: clear the planning scene, open the gripper, go to `state`.
 
@@ -161,6 +167,11 @@ class ArmClient:
         the object in the scene and nothing can be planned out of a start state
         that is inside it. `force` drives out blind if MoveIt still will not
         plan; that move is NOT collision checked.
+
+        An empty `state` means the server's own reset pose, which is folded
+        low and clear of the OAK-D so whatever looks for the object after a
+        failed pick can still see the floor. This file is copied to whichever
+        machine drives the arm, so it keeps no second copy of that name.
         """
         return self._call(self._motion, 'reset_arm', str(state), bool(force))
 
@@ -272,7 +283,8 @@ def show_status(status: Optional[dict]):
 
 INTERACTIVE_HELP = """Commands:
   enable [--sim]        start the ROS stack (--sim: no servo bridge)
-  disable [state]       stop the stack, optionally parking at `state` first
+  disable [state]       open the jaws and stop the stack, parking first if
+                        a state is given
   pick X Y Z [object]   pick the object centred at X Y Z and carry it
   place                 place what the gripper is carrying
   state NAME            move to a saved state
@@ -331,7 +343,7 @@ def interactive(client: ArmClient):
             elif cmd == 'wave':
                 show(client.wave_arm(int(args[0]) if args else 1))
             elif cmd == 'reset':
-                state = args[0] if args and args[0] != 'force' else 'ready'
+                state = args[0] if args and args[0] != 'force' else ''
                 show(client.reset_arm(state, 'force' in args))
             elif cmd == 'state':
                 if len(args) != 1:
@@ -392,8 +404,9 @@ def build_parser():
     state.add_argument('name')
 
     reset = sub.add_parser('reset', help='recover after a failed pick')
-    reset.add_argument('state', nargs='?', default='ready',
-                       help='where to leave the arm (default: %(default)s)')
+    reset.add_argument('state', nargs='?', default='',
+                       help="where to leave the arm (default: the server's "
+                            "reset pose, folded clear of the OAK-D)")
     reset.add_argument('--force', action='store_true',
                        help='drive out blind if MoveIt will not plan from '
                             'where the arm is -- NOT collision checked')
