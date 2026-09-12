@@ -5786,11 +5786,27 @@ def _poll_switch(target: str):
         if phase == "up":
             _connect_camera_ai_client(target)  # tools usable immediately
             msg = f"Pardon me, the {friendly} skill is now ready."
-        elif phase == "rebooting":
+        elif phase == "timeout":
+            # "Not seen yet", not "failed": the unit is still running and the
+            # marker often lands seconds late. The connect retries on its own,
+            # so let it decide rather than the stale phase.
+            if _connect_camera_ai_client(target):
+                msg = f"Pardon me, the {friendly} skill is now ready."
+            else:
+                _pending_camera_ai = None
+                _active_camera_ai = None
+                msg = (f"Pardon me, the {friendly} skill is taking longer than "
+                       f"expected to load. Please try again shortly.")
+        elif phase == "needs_reboot":
+            # The load failed on the Jetson but the board is up and waiting;
+            # nothing reboots it for us, and a reboot on battery may not come
+            # back, so this is the user's call.
             _pending_camera_ai = None
             _active_camera_ai = None
-            msg = (f"Pardon me, the {friendly} skill failed to load and the Jetson "
-                   f"is restarting. Please try again shortly.")
+            detail = (status or {}).get("error") or "an unknown error"
+            msg = (f"Pardon me, the {friendly} skill failed to load on the Jetson "
+                   f"({detail}). The Jetson has to be rebooted by hand before that "
+                   f"skill will work again.")
         else:
             _pending_camera_ai = None
             _active_camera_ai = None

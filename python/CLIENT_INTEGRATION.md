@@ -22,7 +22,7 @@ is always up (even while neither GPU service is running).
   the USB-device network link; port **8002**).
 - The arm service on `:8001` is independent and unaffected by switching.
 
-## The switch is asynchronous + marker-gated + reboots on failure
+## The switch is asynchronous + marker-gated, and never reboots
 
 `switch_to()` **returns immediately** with `{accepted: True, ...}`. In the
 background the supervisor:
@@ -35,16 +35,25 @@ background the supervisor:
    it can OOM mid-load. Markers:
    - owl → `[NanoOwl] Predictor loaded.`
    - vlm → `[NanoVlm] Model loaded`
-4. On failure (CUDA/OOM in the log, unit exit, or timeout) the supervisor
-   **REBOOTS the Jetson automatically** (`phase: "rebooting"`). It does **not**
-   retry — the model is loaded exactly once per boot, because repeated
-   back-to-back loads brown out the board. After the reboot, boot-restore brings
-   the **last-requested** service back up (a reboot clears GPU/memory state, so
-   the load usually succeeds the next time).
+4. On failure it **stops and reports**. It does **not** retry — the model is
+   loaded exactly once, because repeated back-to-back loads brown out the board
+   — and it **never reboots the Jetson**:
+   - a CUDA/OOM line, or the unit exiting, gives `phase: "needs_reboot"` with
+     the box **still up** and the reason in `detail`. Rebooting is your call.
+   - a load that has not reached its marker in time gives `phase: "timeout"`
+     with the unit **left running**. A timeout means "not seen yet", not
+     "failed": the marker has arrived seconds after the deadline before now, so
+     re-read `active` / `app_port_ready` rather than trusting a stale `phase`.
+
+> **Why there is no automatic reboot.** It used to reboot on any failure, and
+> that was a trap: boot-restore brought the same service back, it failed the
+> same way, and the box cycled. Worse, a reboot does not reliably return — on
+> 2026-09-10 one left the board dark for 18 hours until wall power was
+> reconnected by hand. Treat `reboot()` as a decision to make knowing whether
+> the robot is on wall power or battery.
 
 Learn the outcome two ways:
-- **Poll** `get_status()` until `phase` is `up` (on failure the box reboots — the
-  connection drops and returns with the service loading again), or
+- **Poll** `get_status()` until `phase` is terminal, or
 - **Register a callback** and receive pushed events.
 
 > Because model load is memory-heavy on the Jetson, you can fire `switch_to()`
@@ -71,10 +80,10 @@ sup.switch_to("vlm")          # -> {'accepted': True, 'desired': 'vlm'}
 |--------|---------|-------|
 | `ping()` | `"pong"` | Supervisor liveness. |
 | `current()` | `"owl"`\|`"vlm"`\|`"none"` | Active GPU service right now. |
-| `switch_to(name, callback_url=None)` | `{accepted, desired}` | **Async.** `name` in `owl`,`vlm`,`none`. A failed load auto-reboots the Jetson. A new call preempts an in-progress switch. |
+| `switch_to(name, callback_url=None)` | `{accepted, desired}` | **Async.** `name` in `owl`,`vlm`,`none`. A failed load reports and stops; it never reboots. A new call preempts an in-progress switch. |
 | `stop_all()` | same as above (`none`) | Stops both GPU services. |
 | `get_status()` | status dict (below) | Progress + outcome of the current/last switch. |
-| `reboot()` | ack string | Reboots the Jetson on demand (also happens automatically on a failed load). |
+| `reboot()` | ack string | Reboots the Jetson on demand. **Nothing calls this for you.** On battery it may not come back — see the warning above. |
 
 ### `get_status()` dict
 ```json
@@ -84,20 +93,24 @@ sup.switch_to("vlm")          # -> {'accepted': True, 'desired': 'vlm'}
   "owl": "inactive",          // raw systemctl is-active
   "vlm": "inactive",
   "app_port_ready": false,    // does :8000 answer ping() (informational)
-  "phase": "rebooting",       // idle | switching | up | rebooting | cancelled | failed
-  "attempt": 1,               // always 1 (single load per boot)
+  "phase": "needs_reboot",    // idle | switching | up | timeout | needs_reboot
+                              //   | cancelled | failed
+  "attempt": 1,               // always 1 (single load, never retried)
   "error": "cuda_oom",        // cuda_oom | timeout | start_failed | exception | null
   "detail": "RuntimeError: ...CUDACachingAllocator...",
-  "needs_reboot": true,       // set when the load failed (box is rebooting)
+  "needs_reboot": true,       // the load failed; the box is UP and waiting for you
   "last_error": { "service": "vlm", "error": "cuda_oom",
                   "detail": "...", "needs_reboot": true, "when": 1782... }
 }
 ```
-`phase == "up"` means the requested service is loaded and serving on `:8000`.
-`phase == "rebooting"` means the load failed and the Jetson is restarting; the
-connection will drop and come back with the last-requested service loading.
-(`failed` only appears if the switch hit an internal supervisor exception rather
-than a model-load failure.)
+- `up` — the requested service is loaded and serving on `:8000`.
+- `needs_reboot` — the load failed on a CUDA error. **The box is still up.**
+  Read `detail`, then decide whether to `reboot()`.
+- `timeout` — the marker was not seen in time. The unit was **left running** and
+  may still come up; trust `active` / `app_port_ready` over this.
+- `failed` — an internal supervisor exception, not a model-load failure.
+- `rebooting` — no longer emitted. Kept in the client's settled list so an older
+  supervisor still settles.
 
 ## Recommended flow
 
@@ -108,10 +121,14 @@ sup.switch_to("vlm")
 status = sup.wait_until_settled(on_update=print)   # polls get_status()
 if status["phase"] == "up":
     ...  # talk to the service on :8000
-elif status["phase"] == "rebooting":
-    # Load failed; the Jetson is rebooting on its own. Wait for it to come
-    # back, reconnect, and poll again — boot-restore reloads the last-requested
-    # service. You do NOT need to call reboot() yourself.
+elif status["phase"] == "timeout":
+    # Not seen yet, NOT failed. The unit is still running — re-read the status
+    # in a while, or check active / app_port_ready directly.
+    ...
+elif status["phase"] == "needs_reboot":
+    # The load failed and the box is still up, waiting for you. Read
+    # status["detail"], and reboot only if you know the robot's power source —
+    # a reboot on battery may not come back.
     ...
 ```
 `wait_until_settled()` keeps the client running; on the memory-constrained Jetson
@@ -127,8 +144,10 @@ sup.switch_to("vlm", callback_url=cb.url_for("192.168.55.100"))  # this host's I
 # events arrive at your handler:
 #   {'event':'attempt','service':'vlm','attempt':1}
 #   {'event':'up','service':'vlm','attempt':1}
-#     ...or, on a failed load (the box then reboots)...
-#   {'event':'rebooting','service':'vlm','error':'cuda_oom','detail':'...'}
+#     ...or, when the marker did not arrive in time (unit left running)...
+#   {'event':'timeout','service':'vlm','error':'timeout','detail':'...'}
+#     ...or, on a real load failure (the box stays up)...
+#   {'event':'needs_reboot','service':'vlm','error':'cuda_oom','detail':'...'}
 cb.stop()
 ```
 The supervisor pushes to `callback_url`'s `switch_progress(event)` XML-RPC method.

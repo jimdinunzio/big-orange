@@ -2,25 +2,26 @@
 """
 Service Supervisor XML-RPC Client
 
-A COPY. This file belongs to the jetson-nano-services repo, at supervisor-service/,
-beside the server it talks to. Edit it there, not here -- but diff before
-copying a new version down, since this copy can carry local fixes.
-
 Talks to service_supervisor.py to switch the Jetson between its two GPU services,
 NanoOWL and Live-VLM (only one can run at a time; both serve on port 8000).
 
 Switching is ASYNCHRONOUS. switch_to() returns immediately ({accepted: True});
 the supervisor then stops the other service, starts the requested one, and waits
 for its READY MARKER in the log before declaring it "up". The model is loaded
-ONCE -- if it fails to load, the supervisor REBOOTS the Jetson automatically
-(it does not retry, because repeated back-to-back loads brown out the board).
-After the reboot, boot-restore brings the last-requested service back up. Learn
-the outcome one of two ways:
+ONCE and never retried, because repeated back-to-back loads brown out the board.
 
-  1. Poll get_status() until phase is "up" (or the box reboots on failure; the
-     connection drops and comes back with the service loading again).
+THE SUPERVISOR NEVER REBOOTS THE JETSON. A load that fails on a CUDA error ends
+at phase "needs_reboot" with the box still up and the reason in `detail`; you
+decide whether to reboot, knowing whether the robot is on wall power or battery.
+A load that merely has not finished in time ends at phase "timeout" with the
+unit LEFT RUNNING -- it may still come up, so `active` and `app_port_ready` are
+the live truth after that, not `phase`.
+
+Learn the outcome one of two ways:
+
+  1. Poll get_status() until phase is terminal (see SETTLED_PHASES).
   2. Register a callback: run a CallbackServer on this host and pass its URL to
-     switch_to(); the supervisor pushes attempt/up/rebooting events to it.
+     switch_to(); the supervisor pushes attempt/up/timeout/needs_reboot events.
 
 Because model load is memory-heavy on the Jetson, you can fire switch_to() and
 then DISCONNECT/quit this client to free memory, reconnecting later to poll
@@ -44,9 +45,16 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 DEFAULT_SERVER_URL = "http://192.168.55.1:8002/"
 
 # Terminal phases: the switch has settled and no more progress will happen.
-# "rebooting" is terminal too -- the box is going down and will come back up
-# loading the last-requested service.
-SETTLED_PHASES = ("up", "failed", "idle", "cancelled", "rebooting")
+#
+# "needs_reboot" and "timeout" are terminal in the sense that the supervisor has
+# stopped working on the switch -- NOT that the box is fixed. After "timeout"
+# the unit is still running and may yet come up, so re-read `active` /
+# `app_port_ready` rather than trusting a stale `phase`.
+#
+# "rebooting" is kept only so an older supervisor still settles against this
+# client. Nothing emits it any more.
+SETTLED_PHASES = ("up", "failed", "idle", "cancelled", "rebooting",
+                  "needs_reboot", "timeout")
 
 
 class SupervisorClient:
@@ -268,10 +276,8 @@ def interactive_mode(watch: bool = False):
         print(client.switch_to(name))
         if watch:
             print("Watching progress (Ctrl-C to stop watching)...")
-            start = time.time()
             final = client.wait_until_settled(on_update=_print_update)
             print(f"Settled: {final}")
-            print(f"Elapsed: {time.time() - start:.1f}s")
         else:
             print("Switch running in background. Use 'status' to check, or "
                   "quit to free memory and reconnect later.")
@@ -293,7 +299,9 @@ def interactive_mode(watch: bool = False):
             elif cmd in ("owl", "vlm", "none"):
                 do_switch(cmd)
             elif cmd == "reboot":
-                confirm = input("Reboot the Jetson? (yes/no): ").strip().lower()
+                confirm = input("Reboot the Jetson? On battery it may not "
+                                "come back without wall power. "
+                                "(yes/no): ").strip().lower()
                 if confirm == "yes":
                     client.reboot()
                     print("Reboot sent. Connection will drop...")
