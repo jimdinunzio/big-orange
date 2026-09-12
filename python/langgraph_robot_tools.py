@@ -779,7 +779,7 @@ class RobotTools:
         return self.call_tool_helper("pick_up", self._sdp, object_name)
 
     def put_down(self, destination: str) -> str:
-        """Release the held object into the bin the robot is parked at."""
+        """Release the held object into the bin the robot is parked at or onto the floor."""
         if self.sim:
             if self._sim_held is None:
                 return "I am not holding anything (simulated)."
@@ -1192,8 +1192,8 @@ class RobotTools:
             StructuredTool.from_function(
                 func=self.enable_object_search_skill,
                 name="enable_object_search_skill",
-                description="Activate the open-vocabulary object-search skill (OWL), needed by track_object, "
-                            "search_for_object, and while_go_to_loc_find_object. Switching takes about 40 "
+                description="Activate the vision open-vocabulary object-search skill (OWL), needed by track_object, "
+                            "search_for_object, pick up object, place object, and while_go_to_loc_find_object. Switching takes about 40 "
                             "seconds; warn the user of the delay first. Use for requests like "
                             "'enable object search skill'."
             ),
@@ -1218,9 +1218,8 @@ class RobotTools:
                 func=self.put_down,
                 args_schema=self.PutDownInput,
                 name="put_down",
-                description="Release the held object into the bin the robot is parked at. It does not "
-                            "drive, so go to the bin first or it refuses rather than dropping the object "
-                            "on the floor."
+                description="Release the held object into the bin the robot is parked at or just on the floor anywhere based on user command. It does not "
+                            "drive, so must be at the bin if user asked to place it there."
             ),
 
             StructuredTool.from_function(
