@@ -1748,10 +1748,10 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
     _interrupt_action = False
     if height=="floor":
         aim_oakd(pitch=135) # aim down to see floor objects better
-        eyes.setTargetPitchYaw(-50, 0)
+        eyes.setTargetPitchYaw(50, 0)
     elif height == "up high":
         aim_oakd(pitch=85) # aim up to see high objects better
-        eyes.setTargetPitchYaw(50, 0)
+        eyes.setTargetPitchYaw(-50, 0)
     else: # eye level
         _move_oak_d.allHome()
         eyes.setHome()
@@ -2250,7 +2250,7 @@ def sweepToFindObjAndSetGoal(obj, goal, sweepCount):
                 _goal = goal
                 _move_oak_d.yawHome()
                 # eyes looking to obj or person
-                eyes.setTargetPitchYaw(50 if checkPersons else -50)
+                eyes.setTargetPitchYaw(-50 if checkPersons else 50)
                 return True
             else: # obj not found after stopping
                 if lookingAgain:
@@ -4847,10 +4847,10 @@ def track_object_tool_helper(obj: str, height: str = "eye level", duration: int 
 
     if height == "floor":
         aim_oakd(pitch=135)
-        eyes.setTargetPitchYaw(-50, 0)
+        eyes.setTargetPitchYaw(50, 0)
     elif height == "up high":
         aim_oakd(pitch=85)
-        eyes.setTargetPitchYaw(50, 0)
+        eyes.setTargetPitchYaw(-50, 0)
     else:
         _move_oak_d.allHome()
         eyes.setHome()
@@ -5005,10 +5005,10 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
     # Set camera pitch based on height specification
     if height == "floor":
         aim_oakd(pitch=135)
-        eyes.setTargetPitchYaw(-50, 0)
+        eyes.setTargetPitchYaw(50, 0)
     elif height == "up high":
         aim_oakd(pitch=85)
-        eyes.setTargetPitchYaw(50, 0)
+        eyes.setTargetPitchYaw(-50, 0)
     else:  # eye level
         _move_oak_d.allHome()
         eyes.setHome()
@@ -5401,7 +5401,7 @@ def _look_for_floor_object(obj: str):
 
     base_yaw = _move_oak_d.getYaw()
     aim_oakd(pitch=PICK_ACQUIRE_PITCH)
-    eyes.setTargetPitchYaw(-50, 0)
+    eyes.setTargetPitchYaw(50, 0)
 
     _nano_owl_mgr.set_prompt(f"[{obj}]")
     _nano_owl_mgr.start_streaming(fps=PICK_FPS)
