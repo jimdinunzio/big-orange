@@ -5305,9 +5305,22 @@ PICK_SAMPLE_PITCH = 140
 # no frame from during the tilt reaches the median.
 PICK_SETTLE = 0.25
 
-# Frames to sample before committing a grasp coordinate. One frame's depth ROI
-# is noisy enough to miss a 66 mm can; the median of several is not.
-PICK_SAMPLES = 7
+# Frames per second NanoOWL streams at while a pick is being set up.
+PICK_FPS = 16
+
+# Seconds to watch at each tilt before committing a grasp coordinate. One
+# frame's depth ROI is noisy enough to miss a 66 mm can, and a can near the
+# edge of the frame is in only some of the frames, so the dwell has to be long
+# enough that an intermittent detection still lands several times.
+PICK_DWELL = 1.5
+PICK_SAMPLES = int(PICK_DWELL * PICK_FPS)
+
+# Head yaw offsets, in servo degrees, to run the two-tilt look at in turn. The
+# first is the aim the caller left the head at; the rest are retries for a can
+# sitting just off the frame edge, and are tried only when the pass before
+# them saw nothing at either tilt. Small enough that the base still counts as
+# squared up on whatever they find.
+PICK_YAW_SWEEP = (0, -5, 5)
 
 # Frames the sample tilt has to land before its median is worth preferring to
 # the acquire tilt's. Below this the truer bias is riding on one or two
@@ -5350,7 +5363,7 @@ def _sample_floor_object(obj: str):
         if found and valid:
             # Nearest first: collecting cans means collecting this one.
             samples.append(min(valid, key=lambda s: s.z))
-        time.sleep(1.0 / 16)
+        time.sleep(1.0 / PICK_FPS)
 
     samples.sort(key=lambda s: s.z)
     return samples, cam_yaw, cam_pitch
@@ -5370,40 +5383,57 @@ def _look_for_floor_object(obj: str):
     frames to take a median from, and the acquire tilt carries the pick when
     it did not.
 
+    That pair of looks is run once per PICK_YAW_SWEEP offset, stopping at the
+    first pass that saw the object at either tilt, so a can the robot is only
+    roughly squared up on still gets found.
+
     Unlike search_for_object this never rotates the base: pick_up is called
     when the robot is already pointed at the thing, and a base rotation here
-    would invalidate the coordinate it is about to hand the arm.
+    would invalidate the coordinate it is about to hand the arm. The yaw
+    sweep is the head alone, and _sample_floor_object reports the yaw each
+    detection was seen at so the transform follows it.
     """
     global _interrupt_action, _keep_camera_orientation
 
+    base_yaw = _move_oak_d.getYaw()
     aim_oakd(pitch=PICK_ACQUIRE_PITCH)
     eyes.setTargetPitchYaw(-50, 0)
 
     _nano_owl_mgr.set_prompt(f"[{obj}]")
-    _nano_owl_mgr.start_streaming(fps=16)
+    _nano_owl_mgr.start_streaming(fps=PICK_FPS)
     _mdai.show_yolo_boxes = False
     _nano_owl_mgr.get_detections_nms()  # wakeup call
 
     wide = ([], 0, 0)
     tight = ([], 0, 0)
+    use_tight = False
     try:
         _keep_camera_orientation = True
-        wide = _sample_floor_object(obj)
-        if not _interrupt_action:
+        for offset in PICK_YAW_SWEEP:
+            aim_oakd(yaw=base_yaw + offset, pitch=PICK_ACQUIRE_PITCH)
+            time.sleep(PICK_SETTLE)
+            wide = _sample_floor_object(obj)
+            if _interrupt_action:
+                break
             aim_oakd(pitch=PICK_SAMPLE_PITCH)
             time.sleep(PICK_SETTLE)
             tight = _sample_floor_object(obj)
+
+            use_tight = len(tight[0]) >= PICK_MIN_SAMPLES or not wide[0]
+            print("pick_up: %s at yaw %+d: in %d of %d frames at tilt %d, "
+                  "%d of %d at %d; using %d"
+                  % (obj, offset, len(wide[0]), PICK_SAMPLES,
+                     PICK_ACQUIRE_PITCH, len(tight[0]), PICK_SAMPLES,
+                     PICK_SAMPLE_PITCH,
+                     PICK_SAMPLE_PITCH if use_tight else PICK_ACQUIRE_PITCH))
+
+            if _interrupt_action or wide[0] or tight[0]:
+                break
     finally:
         _keep_camera_orientation = False
         _mdai.show_yolo_boxes = True
         _nano_owl_mgr.stop_streaming()
         _nano_owl_mgr.clear_prompt()
-
-    use_tight = len(tight[0]) >= PICK_MIN_SAMPLES or not wide[0]
-    print("pick_up: %s in %d of %d frames at tilt %d, %d of %d at %d; using %d"
-          % (obj, len(wide[0]), PICK_SAMPLES, PICK_ACQUIRE_PITCH,
-             len(tight[0]), PICK_SAMPLES, PICK_SAMPLE_PITCH,
-             PICK_SAMPLE_PITCH if use_tight else PICK_ACQUIRE_PITCH))
 
     samples, cam_yaw, cam_pitch = tight if use_tight else wide
     if not samples:
