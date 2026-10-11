@@ -40,6 +40,9 @@ _show_rgb_window = True
 _show_depth_window = False
 _default_map_name = 'my house'
 _current_map_name = ''
+# At shows and competitions the venue is not the mapped house, so startup
+# begins with a blank map unless --load-map asks for the default one.
+_load_default_map = False
 _hotword = "orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
@@ -6362,8 +6365,8 @@ def run(no_move=False):
             _sdp.setMapUpdate(True)
             pose = _sdp.pose()
             _locations["home"] = (pose.x, pose.y, math.radians(pose.yaw))
-            loadMap(_default_map_name, _sdp)
-            None
+            if _load_default_map:
+                loadMap(_default_map_name, _sdp)
         else:
             speak("Movement is disabled.")
     
@@ -6379,17 +6382,19 @@ def main(argv):
     import getopt
     no_move = False
     try:
-        opts, args = getopt.getopt(argv, "hnj", ["help", "no-move", "no-jetson"])
+        opts, args = getopt.getopt(argv, "hnjm",
+                                   ["help", "no-move", "no-jetson", "load-map"])
     except getopt.GetoptError:
-        print('Usage: python main.py [-n|--no-move] [-j | --no-jetson]')
+        print('Usage: python main.py [-n|--no-move] [-j | --no-jetson] [-m | --load-map]')
         sys.exit(2)
-        
+
     for opt, arg in opts:
         if opt in ('-h', '--help'):
-            print('Usage: python main.py [-n|--no-move] [-j | --no=jetson]')
+            print('Usage: python main.py [-n|--no-move] [-j | --no=jetson] [-m | --load-map]')
             print('Options:')
             print('  -n, --no-move    Disable actual movement commands')
             print('  -j, --no-jetson  Disable Jetson-related features')
+            print('  -m, --load-map   Load the default map at startup')
             sys.exit()
         elif opt in ("-n", "--no-move"):
             no_move = True
@@ -6398,6 +6403,10 @@ def main(argv):
             global _jetson_on
             _jetson_on = False
             print("Jetson-related features disabled")
+        elif opt in ("-m", "--load-map"):
+            global _load_default_map
+            _load_default_map = True
+            print("Loading default map '" + _default_map_name + "' at startup")
 
     kill_server32.kill_all()
 
