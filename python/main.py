@@ -33,6 +33,7 @@ from my_langgraph import RobotPlannerGraph
 import traceback
 from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple, Optional
+import kill_server32
 
 # Constants
 _show_rgb_window = True
@@ -6397,7 +6398,9 @@ def main(argv):
             global _jetson_on
             _jetson_on = False
             print("Jetson-related features disabled")
-        
+
+    kill_server32.kill_all()
+
     while 1:
         run(no_move=no_move)
         if not _restart_flag:
