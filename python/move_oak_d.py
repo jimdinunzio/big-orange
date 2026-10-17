@@ -79,7 +79,11 @@ class OakDServo(object):
         self.setAngle(self.home_angle, 0)
 
     def __del__(self):
-        self.servo.mode = INPUT
+        # The board may already be closed (e.g. after a restart)
+        try:
+            self.servo.mode = INPUT
+        except Exception:
+            pass
 
     def auto_center(self):
         self.auto_center_time = 0.0

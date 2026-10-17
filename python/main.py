@@ -4180,6 +4180,7 @@ def shutdown_button_pad_thread():
         _button_pad_thread.join()
     except:
         None
+    _button_pad_thread = None
 
 def start_facial_recog(with_spatial=False, with_tracking=True, new_name=""):
     global _facial_recog, _facial_recog_thread

@@ -16,6 +16,8 @@ class Button4Pad(object):
 
     def initialize(self, board: Board, buttonEventCb=None):
       self.board = board
+      self.buttons = []
+      self.btn_state_mask = 0
       self.buttons.append(board.get_pin('d:8:ipu'))
       self.buttons.append(board.get_pin('d:7:ipu'))
       self.buttons.append(board.get_pin('d:2:ipu'))
