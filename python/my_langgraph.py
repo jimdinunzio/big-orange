@@ -44,12 +44,18 @@ class RobotPlannerGraph:
                  wait_until_speech_done=None):
         self.tools = robot_tools
         self.thread_id = thread_id
+        self._base_thread_id = thread_id
         self._has_vision = False
         self.speak_function = speak_function
         self.wait_until_speech_done = wait_until_speech_done
         self._cancel = False
         self._suppress_speech = False
         self._is_processing = False
+        # Bumped on each run and on cancel; a stream thread whose generation is
+        # stale has been abandoned and must not touch the current run's state.
+        self._run_gen = 0
+        self._abandon_count = 0
+        self._run_start_len = 0
 
         prompt_name ="orange_prompt_short"
         init_prompt = ""
@@ -74,6 +80,7 @@ class RobotPlannerGraph:
             self.all_in_one_llm = ChatOpenAI(
                 model="gpt-4.1",
                 max_tokens=200,
+                timeout=30,
                 max_retries=2,
             ).bind_tools(tools)
             self._has_vision = True      
@@ -87,6 +94,7 @@ class RobotPlannerGraph:
                 api_key="YOUR_API_KEY_HERE",
                 temperature=0.0,
                 max_tokens=200,
+                timeout=30,
                 max_retries=2,
             ).bind_tools(tools)
             print("llm_text_tools initialized from onboard Jetson")
@@ -102,6 +110,7 @@ class RobotPlannerGraph:
                     api_key="YOUR_API_KEY_HERE",
                     temperature=0.1,
                     max_tokens=200,
+                    timeout=30,
                     max_retries=2
                 )
                 self._has_vision = True
@@ -323,15 +332,44 @@ class RobotPlannerGraph:
         return self._is_processing
 
     def cancel_stream(self):
-        # Request cancellation of the current run.
-        # Actual stopping is coordinated inside _run_stream so that
-        # we don't break the OpenAI tools protocol.
+        """Cancel the current run, even one stuck inside a node.
+
+        The stream thread cannot be interrupted, so it is abandoned: the agent
+        is freed immediately and moves to a fresh conversation thread holding
+        the history from before the cancelled request. The cancelled request
+        and any late writes from the old run (e.g. dangling tool_calls, which
+        OpenAI rejects) stay behind on the old thread.
+        Returns True if a run was cancelled."""
         self._cancel = True
+        t = self._stream_thread
+        if t is None or not t.is_alive():
+            return False
+
+        self._run_gen += 1
+        try:
+            messages = self.graph.get_state(self.config).values.get("messages", [])
+            messages = messages[:self._run_start_len]
+        except Exception as e:
+            print(f"Could not copy conversation history: {e}")
+            messages = []
+        if not messages:
+            messages = self.init_messages + [AIMessage(content=self._greeting)]
+
+        self._abandon_count += 1
+        self.thread_id = f"{self._base_thread_id}-{self._abandon_count}"
+        self.config = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 100}
+        # Seed the fresh thread directly, without calling the LLM, which may
+        # be what is stuck.
+        self.graph.update_state(self.config, {"messages": messages}, as_node="reporter")
+        self._stream_thread = None
+        self._is_processing = False
+        print("Stream cancelled - abandoned run, kept the earlier conversation.")
+        return True
 
     def shutdown(self):
         """Cancel any in-flight run, wait for the stream thread to finish, then
         release the robot tools' SDP client. Called by main during robot shutdown."""
-        self.cancel_stream()
+        self._cancel = True
         t = self._stream_thread
         if t is not None and t.is_alive():
             t.join(timeout=5)
@@ -437,6 +475,11 @@ class RobotPlannerGraph:
     def send_input(self, user_input: str, image=None):
         self._cancel = False
         self._is_processing = True
+        self._run_gen += 1
+        gen = self._run_gen
+        config = self.config
+        # History length before this request, so a cancel can drop just this run
+        self._run_start_len = len(self.graph.get_state(config).values.get("messages", []))
         if image is None:
             message = HumanMessage(content=user_input)
         else:
@@ -455,20 +498,17 @@ class RobotPlannerGraph:
             try:
                 from langchain_core.messages import AIMessage  # local import to avoid circulars
 
-                for event in self.graph.stream({"messages": [msg]}, config=self.config):
+                for event in self.graph.stream({"messages": [msg]}, config=config):
+                    # Abandoned by cancel_stream; stop before the next node runs
+                    if gen != self._run_gen:
+                        print("Abandoned stream finished its node - stopping.")
+                        break
+
                     if not event:
                         continue
 
                     # Single node per event; get its value
                     node_name, value = next(iter(event.items()))
-
-                    # If cancel is requested, purge history and break immediately
-                    if self._cancel:
-                        print("Stream cancelled - resetting conversation history.")
-                        self._cancel = False
-                        # Reset memory to clear any incomplete tool_calls
-                        self.reset_memory()
-                        break
 
                     # writer-based progress happens inside tools; speech happens in nodes
                     if not value or "messages" not in value:
@@ -480,7 +520,8 @@ class RobotPlannerGraph:
             except Exception as e:
                 print(f"Error in background stream: {e}")
             finally:
-                self._is_processing = False
+                if gen == self._run_gen:
+                    self._is_processing = False
 
         # Launch background streaming so callers (e.g., listen loop) never block
         self._stream_thread = Thread(target=_run_stream, args=(message,), daemon=True)

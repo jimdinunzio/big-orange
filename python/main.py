@@ -2591,7 +2591,11 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
         # convert phrase to lower case for comparison
         phrase = phrase.lower().strip() 
         if phrase == "stop all":
-            _langgraph.cancel_stream()
+            cancelAction(True, sdp)
+            if _langgraph is not None:
+                _langgraph.cancel_stream()
+            speak("Stopping everything.")
+            return HandleResponseResult.Handled
 
         if phrase == "stop" or phrase == "stop moving" or phrase == "stop motors" or phrase == "stop stop":
             retval = cancelAction(True, sdp)
