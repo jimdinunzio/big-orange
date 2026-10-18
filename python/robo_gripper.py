@@ -2,7 +2,7 @@ import time
 from threading import Thread
 from enum import Enum
 from copy import deepcopy
-from pyFirmata.pyfirmata import INPUT, Board
+from pyFirmata.pyfirmata import Board
 
 class ServoAxis(Enum):
     """Enumerated type for Servo Axis"""
@@ -50,7 +50,7 @@ class RoboGripperServo(object):
     def __del__(self):
         # The board may already be closed (e.g. after a restart)
         try:
-            self.servo.mode = INPUT
+            self.servo.release_servo()
         except Exception:
             pass
 

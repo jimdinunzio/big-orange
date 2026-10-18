@@ -9,7 +9,7 @@ from copy import deepcopy
 import my_sdp_client
 import sdp_comm
 from sdp_client_manager import manager
-from pyFirmata.pyfirmata import INPUT, Board
+from pyFirmata.pyfirmata import Board
 from head_servos import (YAW_HOME_DEG, PITCH_HOME_DEG,
                          YAW_LIMITS_DEG, PITCH_LIMITS_DEG)
 
@@ -81,7 +81,7 @@ class OakDServo(object):
     def __del__(self):
         # The board may already be closed (e.g. after a restart)
         try:
-            self.servo.mode = INPUT
+            self.servo.release_servo()
         except Exception:
             pass
 
