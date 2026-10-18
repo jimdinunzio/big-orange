@@ -16,6 +16,7 @@
 [submodule "firmata_arduino"]
 	path = firmata_arduino
 	url = https://github.com/jimdinunzio/arduino/
+	branch = Big_Orange
 [submodule "sdp_mini_reference_code"]
 	path = sdp_mini_reference_code
 	url = https://github.com/jimdinunzio/sdp_mini_reference_code
