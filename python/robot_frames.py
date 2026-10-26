@@ -291,6 +291,17 @@ def oakd_to_bearing_range(x, y, z, yaw_deg=0.0, pitch_deg=0.0, absolute=False):
     return math.degrees(math.atan2(fy, fx)), math.hypot(fx, fy)
 
 
+def height_above_floor(x, y, z, yaw_deg=0.0, pitch_deg=0.0, absolute=False):
+    """
+    Height of a detection's depth point above the floor, in metres.
+
+    Takes the same Oak-D coordinates and head angles as oakd_to_robot.  The
+    point is wherever the depth ROI landed on the object's face, so an object
+    standing on the floor reads anywhere from 0 up to its own height.
+    """
+    return oakd_to_robot(x, y, z, yaw_deg, pitch_deg, absolute)[2] - FLOOR_Z
+
+
 def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
                         obj=None, half_height=None, radius=None,
                         absolute=False):
@@ -398,6 +409,34 @@ def approach_pose(p, pose, standoff=GRASP_STANDOFF):
     d = ARM_ORIGIN[0] + standoff
     h = math.radians(heading)
     return (wx - d * math.cos(h), wy - d * math.sin(h), _wrap180(heading))
+
+
+# Bearing from the robot axis, degrees, past which approach_move turns the base
+# to face the object before driving.  Inside it the arm's base yaw takes up the
+# angle, which beats a turn small enough to be lost in the base's rotate.
+SQUARE_UP_DEG = 10.0
+
+
+def approach_move(p, standoff=GRASP_STANDOFF):
+    """
+    The short base move that puts an arm-frame point `standoff` from the arm.
+
+    Returns (turn_deg, drive_m): turn in place by turn_deg (positive left),
+    then drive straight by drive_m (negative backs up).  None when no base
+    move helps -- the point is too high to grasp.
+
+    Within SQUARE_UP_DEG the base keeps its heading and the drive is solved so
+    the RANGE, not x, comes out at standoff.  Past it, or with the point too
+    far off to the side for any straight drive to reach, the base first turns
+    about its own axis to face the point.
+    """
+    if p[2] > ARM_MAX_GRASP_Z:
+        return None
+    r = arm_to_robot(p)
+    bearing = math.degrees(math.atan2(r[1], r[0]))
+    if abs(bearing) <= SQUARE_UP_DEG and abs(p[1]) < standoff:
+        return 0.0, p[0] - math.sqrt(standoff ** 2 - p[1] ** 2)
+    return bearing, math.hypot(r[0], r[1]) - ARM_ORIGIN[0] - standoff
 
 
 def robot_to_world(p, pose):

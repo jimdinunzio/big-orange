@@ -4902,6 +4902,22 @@ def track_object_tool_helper(obj: str, height: str = "eye level", duration: int 
             f"({hit_rate:.0f}%).")
 
 
+def _search_offset(obj: str, height: str) -> float:
+    """How far short of a found object search_for_object's location stops.
+
+    The range is to the depth point on the object's near face. For something
+    on the floor that pick_up will be asked to grasp, stop with its centre
+    PICK_SEARCH_MARGIN beyond the arm's reach: pick_up closes a gap that is
+    too far itself, but one that is too close puts the object under the
+    camera's view. Anything else keeps a general-purpose 0.75 m.
+    """
+    name = _normalize_place_name(obj)
+    if height == "floor" and name in PICKABLE_OBJECTS:
+        return (robot_frames.ARM_ORIGIN[0] + robot_frames.ARM_MAX_REACH
+                + PICK_SEARCH_MARGIN - robot_frames.OBJECT_SIZES[name][1])
+    return 0.75
+
+
 def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
     """Search for object by rotating in place."""
     global _interrupt_action, _keep_camera_orientation
@@ -4948,7 +4964,15 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
                 _interrupt_action = True  # end the search rather than spin blind
                 return False, None
             try:
-                found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+                if height == "floor":
+                    # The best-scoring can may be on a table; take the best
+                    # one on the floor instead.
+                    _, spatials = _nano_owl_mgr.check_for_all_objects(obj_name)
+                    floor = _floor_detections(spatials)
+                    spatial = max(floor, key=lambda s: s.confidence) if floor else None
+                    found = spatial is not None
+                else:
+                    found, spatial = _nano_owl_mgr.check_for_object(obj_name)
                 if found:
                     last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
@@ -4988,7 +5012,8 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 
             obj_loc = None
             if p is not None and p.z > 0:
-                obj_loc = getLocationOfObj(sdp, obj, p, offset_dist=0.75, radians=False)
+                obj_loc = getLocationOfObj(sdp, obj, p, offset_dist=_search_offset(obj, height),
+                                           radians=False)
 
             if obj_loc:
                 return f"{obj} was found at {obj_loc}."
@@ -5359,8 +5384,8 @@ PICK_FPS = 16
 PICK_DWELL = 1.5
 PICK_SAMPLES = int(PICK_DWELL * PICK_FPS)
 
-# Head yaw offsets, in servo degrees, to run the two-tilt look at in turn. The
-# first is the aim the caller left the head at; the rest are retries for a can
+# Head yaw offsets from straight ahead, in servo degrees, to run the two-tilt
+# look at in turn. The first is dead centre; the rest are retries for a can
 # sitting just off the frame edge, and are tried only when the pass before
 # them saw nothing at either tilt. Small enough that the base still counts as
 # squared up on whatever they find.
@@ -5370,6 +5395,47 @@ PICK_YAW_SWEEP = (0, -5, 5)
 # the acquire tilt's. Below this the truer bias is riding on one or two
 # readings, and more readings of a worse bias beats that.
 PICK_MIN_SAMPLES = 3
+
+# How many times pick_up will move the base itself and look again when the
+# object is out of reach, and the longest single drive it makes. A longer gap
+# is closed in several drives with a look between each, so one bad reading
+# cannot drive the robot into the object.
+PICK_APPROACH_TRIES = 4
+PICK_MAX_NUDGE = 0.3
+
+# Arm range, metres, pick_up's nudge aims the object at. Outside the grasp
+# standoff, at the far end of the reach band, because the camera loses a can
+# behind the gripper closer in: seen at 0.38, barely at 0.357, never at
+# 0.26-0.29.
+PICK_NUDGE_STANDOFF = 0.33
+
+# How far beyond the arm's reach search_for_object stops short of a pickable
+# floor object. A search reading at 1.5 m or more can be 0.3 m off, and only
+# an error that lands too far is one pick_up can recover from by driving.
+PICK_SEARCH_MARGIN = 0.10
+
+# When pick_up sees nothing in front of it, the object may be under the
+# camera's view rather than gone: back up this far and look again, at most
+# PICK_MAX_BACKOFFS times.
+PICK_BACKOFF = 0.20
+PICK_MAX_BACKOFFS = 2
+
+# _nudge_base: move_imm has to be repeated every NUDGE_STEP seconds to keep
+# the base rolling, and fewer than NUDGE_MIN_STEPS in a row do not move it at
+# all. Drives shorter than NUDGE_MIN_DRIVE are skipped; the base coasts about
+# NUDGE_COAST after the last step, so it stops stepping that much early; and
+# it gives up when the pose has not advanced for NUDGE_STALL seconds -- an
+# obstacle, or the base refusing to move.
+NUDGE_STEP = 0.1
+NUDGE_MIN_STEPS = 2
+NUDGE_MIN_DRIVE = 0.02
+NUDGE_COAST = 0.035
+NUDGE_STALL = 1.5
+
+# Metres above the floor a detection's depth point may sit and still count as
+# on the floor. A soda can's face spans 0-0.12 m; the rest is depth noise at a
+# few metres. A table top is 0.4 m or more, so a can there is well clear.
+FLOOR_MAX_HEIGHT = 0.25
 
 
 def _normalize_place_name(name: str) -> str:
@@ -5389,6 +5455,19 @@ def _find_location_key(name: str):
     return None
 
 
+def _floor_detections(spatials):
+    """The detections in `spatials` that are standing on the floor.
+
+    Drops ones with no depth, and ones whose depth point sits higher than
+    FLOOR_MAX_HEIGHT -- a can on a table across the room -- judged at the
+    head's current aim.
+    """
+    yaw, pitch = _move_oak_d.getYaw(), _move_oak_d.getPitch()
+    return [s for s in (spatials or []) if s.z > 0 and
+            robot_frames.height_above_floor(s.x, s.y, s.z, yaw, pitch)
+            <= FLOOR_MAX_HEIGHT]
+
+
 def _sample_floor_object(obj: str):
     """Watch for `obj` at the head's current aim for PICK_SAMPLES frames.
 
@@ -5403,7 +5482,7 @@ def _sample_floor_object(obj: str):
         if _interrupt_action or not _owl_alive():
             break
         found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
-        valid = [s for s in (spatials or []) if s.z > 0]
+        valid = _floor_detections(spatials)
         if found and valid:
             # Nearest first: collecting cans means collecting this one.
             samples.append(min(valid, key=lambda s: s.z))
@@ -5416,10 +5495,10 @@ def _sample_floor_object(obj: str):
 def _look_for_floor_object(obj: str):
     """Find `obj` on the floor from where the robot stands, without moving.
 
-    Returns (detection, cam_yaw, cam_pitch) for the NEAREST instance, or
-    (None, 0, 0). The angles are the ones that detection was seen at, which
-    is not necessarily the tilt the head ends up at; the caller homes it
-    either way.
+    Returns (detection, cam_yaw, cam_pitch, frames) for the NEAREST instance,
+    or (None, 0, 0, 0). The angles are the ones that detection was seen at,
+    which is not necessarily the tilt the head ends up at; the caller homes it
+    either way. `frames` is how many frames at that tilt saw the object.
 
     Looks twice, at PICK_ACQUIRE_PITCH and then PICK_SAMPLE_PITCH, because
     the tilt that reliably has the can in frame is not the one that reads its
@@ -5439,8 +5518,7 @@ def _look_for_floor_object(obj: str):
     """
     global _interrupt_action, _keep_camera_orientation
 
-    base_yaw = _move_oak_d.getYaw()
-    aim_oakd(pitch=PICK_ACQUIRE_PITCH)
+    aim_oakd(yaw=head_servos.YAW_HOME_DEG, pitch=PICK_ACQUIRE_PITCH)
     eyes.setTargetPitchYaw(50, 0)
 
     _nano_owl_mgr.set_prompt(f"[{obj}]")
@@ -5454,7 +5532,8 @@ def _look_for_floor_object(obj: str):
     try:
         _keep_camera_orientation = True
         for offset in PICK_YAW_SWEEP:
-            aim_oakd(yaw=base_yaw + offset, pitch=PICK_ACQUIRE_PITCH)
+            aim_oakd(yaw=head_servos.YAW_HOME_DEG + offset,
+                     pitch=PICK_ACQUIRE_PITCH)
             time.sleep(PICK_SETTLE)
             wide = _sample_floor_object(obj)
             if _interrupt_action:
@@ -5481,11 +5560,13 @@ def _look_for_floor_object(obj: str):
 
     samples, cam_yaw, cam_pitch = tight if use_tight else wide
     if not samples:
-        return None, 0, 0
+        return None, 0, 0, 0
 
     # The median SAMPLE, not the median of each axis: with two cans in view the
     # nearest can flip between frames, and averaging would aim between them.
-    return samples[len(samples) // 2], cam_yaw, cam_pitch
+    # The lower median, so an even count settles on the nearer reading -- the
+    # one that will not drive the base into the object.
+    return samples[(len(samples) - 1) // 2], cam_yaw, cam_pitch, len(samples)
 
 
 def _gripper_sees(obj: str):
@@ -5523,6 +5604,71 @@ def _gripper_sees(obj: str):
     return held, why
 
 
+def _nudge_base(sdp, turn_deg: float, drive_m: float) -> float:
+    """Turn in place, then drive straight, by a measured amount.
+
+    For the last few tens of centimetres before a pick. Given a map goal that
+    close, the navigator turns on the spot and reports done without driving;
+    this steps the base with move_imm instead and watches the pose until it
+    has covered drive_m along its heading.
+
+    Returns the distance actually driven along the heading, metres, signed
+    like drive_m.
+    """
+    global _action_flag
+
+    def along(start, h):
+        p = sdp.pose()
+        return (p.x - start.x) * math.cos(h) + (p.y - start.y) * math.sin(h)
+
+    _action_flag = True  # so a spoken stop cancels the move
+    sdp.setSpeed(1)  # slowest: it is driving up to the object
+    try:
+        if turn_deg:
+            sdp.rotate(math.radians(turn_deg))
+            sdp.waitUntilMoveActionDone()
+        if _interrupt_action or abs(drive_m) < NUDGE_MIN_DRIVE:
+            return 0.0
+
+        start = sdp.pose()
+        h = math.radians(start.yaw)
+        sign = 1 if drive_m > 0 else -1
+        goal = abs(drive_m) - NUDGE_COAST
+        steps = 0
+        best, best_t = 0.0, time.time()
+        while not _interrupt_action:
+            moved = sign * along(start, h)
+            if moved >= goal and steps >= NUDGE_MIN_STEPS:
+                break
+            now = time.time()
+            if moved > best + 0.005:
+                best, best_t = moved, now
+            elif now - best_t > NUDGE_STALL:
+                print("nudge: stalled at %.3f of %.3f m" % (moved, abs(drive_m)))
+                break
+            move_imm(sdp, sign)
+            steps += 1
+            time.sleep(NUDGE_STEP)
+        time.sleep(0.3)  # let it coast to a stop before the pose is final
+        return along(start, h)
+    finally:
+        sdp.setSpeed(_user_set_speed)
+        _action_flag = False
+
+
+def back_up_tool_helper(sdp, distance: float):
+    """Back straight up `distance` metres, facing the same way throughout."""
+    global _interrupt_action
+    try:
+        driven = -_nudge_base(sdp, 0.0, -abs(distance))
+        if _interrupt_action:
+            _interrupt_action = False
+            return f"Stopped after backing up {driven:.2f} m."
+        return f"Backed up {driven:.2f} m."
+    except Exception as e:
+        return f"Error backing up: {str(e)}"
+
+
 def pick_up_tool_helper(sdp, object_name: str):
     """Look at the floor, and if the object is within reach, grasp and hold it."""
     global _held_object, _interrupt_action
@@ -5548,30 +5694,80 @@ def pick_up_tool_helper(sdp, object_name: str):
         return f"Error: the arm could not be enabled to pick up the {obj}: {problem}"
 
     try:
-        pose = sdp.pose()
-        det, cam_yaw, cam_pitch = _look_for_floor_object(obj)
+        # Out of reach by a little, the base closes the gap itself and looks
+        # again: the planner cannot judge a drive that short, and the
+        # navigator will not make one.
+        backoffs = 0
+        # Where the last confident sighting (PICK_MIN_SAMPLES frames or more)
+        # puts the object after the straight nudges since, arm frame; None
+        # when that sighting was weak or a turn came after it.
+        expected = None
+        for attempt in range(PICK_APPROACH_TRIES + 1):
+            pose = sdp.pose()
+            det, cam_yaw, cam_pitch, frames = _look_for_floor_object(obj)
 
-        if _interrupt_action:
-            _interrupt_action = False
-            return f"Stopped before picking up the {obj}."
-        if det is None:
-            return f"I do not see a {obj} on the floor in front of me."
+            if _interrupt_action:
+                _interrupt_action = False
+                return f"Stopped before picking up the {obj}."
+            if not _owl_alive():
+                return _OWL_DOWN
+            weak = det is not None and frames < PICK_MIN_SAMPLES
+            if ((det is None or weak) and expected is not None
+                    and robot_frames.arm_can_reach(expected)[0]):
+                # Inside the reach band the gripper hides much of the floor
+                # from the camera, so a nudge that worked loses sight of the
+                # object, or catches its edge in a frame or two with a depth
+                # reading well off. Trust the sighting it was planned from.
+                target = expected
+                print("pick_up: %s %s after the nudge; grasping where the last "
+                      "confident sighting puts it, arm (%.3f, %.3f, %.3f)"
+                      % (obj, "in only %d frames" % frames if weak else "out of view",
+                         target[0], target[1], target[2]))
+                break
+            if det is None:
+                if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
+                    backoffs += 1
+                    print("pick_up: no %s in view; backing up %.2f m to look again"
+                          % (obj, PICK_BACKOFF))
+                    _nudge_base(sdp, 0.0, -PICK_BACKOFF)
+                    expected = None
+                    continue
+                where = "after moving the base" if attempt else "on the floor in front of me"
+                return f"I do not see a {obj} {where}."
 
-        # The depth point is on the near face of the can partway up it; the
-        # centre the arm wants comes from the can's own size and the floor.
-        target = robot_frames.floor_object_to_arm(
-            det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
-        rng, arm_yaw, height = robot_frames.arm_reach(target)
-        print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg"
-              % (obj, target[0], target[1], target[2], rng, arm_yaw))
+            # The depth point is on the near face of the can partway up it; the
+            # centre the arm wants comes from the can's own size and the floor.
+            target = robot_frames.floor_object_to_arm(
+                det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
+            rng, arm_yaw, height = robot_frames.arm_reach(target)
+            print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg"
+                  % (obj, target[0], target[1], target[2], rng, arm_yaw))
 
-        ok, reason = robot_frames.arm_can_reach(target)
-        if not ok:
-            gx, gy, gyaw = robot_frames.approach_pose(
-                robot_frames.arm_to_robot(target), pose)
-            return (f"The {obj} is out of reach: {reason}. Squared up on it at "
-                    f"a comfortable distance, I would be standing at map "
-                    f"x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
+            ok, reason = robot_frames.arm_can_reach(target)
+            if ok:
+                break
+
+            move = robot_frames.approach_move(target, standoff=PICK_NUDGE_STANDOFF)
+            if move is None or attempt == PICK_APPROACH_TRIES:
+                gx, gy, gyaw = robot_frames.approach_pose(
+                    robot_frames.arm_to_robot(target), pose)
+                tried = (f" after moving the base {attempt} times" if attempt else "")
+                return (f"The {obj} is out of reach{tried}: {reason}. Squared up "
+                        f"on it at a comfortable distance, I would be standing at "
+                        f"map x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
+
+            turn_deg, drive_m = move
+            drive_m = max(-PICK_MAX_NUDGE, min(PICK_MAX_NUDGE, drive_m))
+            print("pick_up: out of reach (%s); turning %+.1f deg, driving %+.3f m"
+                  % (reason, turn_deg, drive_m))
+            driven = _nudge_base(sdp, turn_deg, drive_m)
+            print("pick_up: drove %+.3f m" % driven)
+            # A straight drive moves the object straight back in the arm
+            # frame; after a turn the odometry is not worth extrapolating.
+            # A weak sighting is not worth it either: losing the object after
+            # a nudge planned from one backs up to find it again.
+            expected = ((target[0] - driven, target[1], target[2])
+                        if not turn_deg and not weak else None)
 
         # No is_holding() here: pick_can asks it itself, on approach and again
         # at carry, and aborts on a definite no. So an ok result has already
@@ -6022,6 +6218,7 @@ langgraph_tool_funcs = {
     "where_am_i": where_am_i_tool_helper,
     "recover_localization": recover_localization_tool_helper,
     "move_in_dir_dist": move_in_dir_dist_tool_helper,
+    "back_up": back_up_tool_helper,
     "go_recharge": go_recharge_tool_helper,
     "cancel_action": cancel_action_tool_helper,
     

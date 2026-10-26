@@ -321,6 +321,16 @@ class RobotTools:
             return f"Moved backward for {seconds} seconds."
         return "Backward movement not available."
 
+    def back_up(self, distance: float) -> str:
+        """Back straight up by a distance in metres without turning around."""
+        if self.sim:
+            pose = self._sdp.pose()
+            new_x = pose.x - distance * math.cos(math.radians(pose.yaw))
+            new_y = pose.y - distance * math.sin(math.radians(pose.yaw))
+            self._sdp.set_pose(new_x, new_y, pose.yaw)
+            return f"Backed up {distance:.2f} m (simulated)."
+        return self.call_tool_helper("back_up", self._sdp, distance)
+
     def turn_robot(self, degrees: float) -> str:
         """Turn robot by specified degrees (positive=left, negative=right)."""
         if self.sim:
@@ -845,6 +855,9 @@ class RobotTools:
     class MovementInput(BaseModel):
         seconds: float = Field(default=0.5, description="Duration in seconds", ge=0.1, le=10.0)
 
+    class BackUpInput(BaseModel):
+        distance: float = Field(..., description="Metres to back up", gt=0, le=1.0)
+
     class TurnInput(BaseModel):
         degrees: float = Field(..., description="Degrees to turn (positive=left, negative=right)", ge=-360, le=360)
 
@@ -990,6 +1003,13 @@ class RobotTools:
                 args_schema=self.MovementInput,
                 name="move_backward",
                 description="Move robot backward for specified seconds."
+            ),
+
+            StructuredTool.from_function(
+                func=self.back_up,
+                args_schema=self.BackUpInput,
+                name="back_up",
+                description="Back up distance in meters without turning."
             ),
             
             StructuredTool.from_function(
@@ -1214,7 +1234,8 @@ class RobotTools:
                 func=self.pick_up,
                 args_schema=self.PickUpInput,
                 name="pick_up",
-                description="Uses oak-d camera to look down on floor in front of robot and acquire an object's loc, then uses the arm to pick it up off the floor and hold it."
+                description="Uses oak-d camera to look down on floor in front of robot and acquire an object's loc, then uses the arm to pick it up off the floor and hold it. "
+                            "Moves closer itself if slightly out of reach."
             ),
 
             StructuredTool.from_function(
