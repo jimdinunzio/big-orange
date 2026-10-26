@@ -2,10 +2,6 @@
 """
 NanoOwl XML-RPC Client Example
 
-A COPY. This file belongs to the jetson-nano-services repo, at nano-owl-service/,
-beside the server it talks to. Edit it there, not here -- but diff before
-copying a new version down, since this copy can carry local fixes.
-
 Connects to the NanoOwl XML-RPC server for open-vocabulary object detection.
 
 The server starts in disabled (low power) mode. Call enable() to start processing.
@@ -16,6 +12,7 @@ Usage:
     python3 nano_owl_client.py -i      # Interactive mode
 """
 
+import http.client
 import xmlrpc.client
 import time
 import sys
@@ -25,6 +22,27 @@ from typing import Optional, Dict, List
 
 # Default server address
 DEFAULT_SERVER_URL = "http://192.168.55.1:8000/"
+
+# Seconds any one call may take. Without it a call to a dead Jetson waits out
+# the OS connect timeout, about 21 s on Windows, and every frame pushed and
+# every detection fetched waits it out again.
+CALL_TIMEOUT = 3.0
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """xmlrpc.client has no timeout knob; this is the documented way in."""
+
+    def __init__(self, timeout):
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        if self._connection and host == self._connection[0]:
+            return self._connection[1]
+        chost, self._extra_headers, _x509 = self.get_host_info(host)
+        self._connection = (host, http.client.HTTPConnection(
+            chost, timeout=self._timeout))
+        return self._connection[1]
 
 
 class NanoOwlClient:
@@ -46,9 +64,11 @@ class NanoOwlClient:
         self._connected = False
         self._lock = Lock()
 
-    def connect(self, timeout: float = 5.0) -> bool:
+    def connect(self, timeout: float = CALL_TIMEOUT) -> bool:
         try:
-            self._proxy = xmlrpc.client.ServerProxy(self.server_url, allow_none=True)
+            self._proxy = xmlrpc.client.ServerProxy(
+                self.server_url, allow_none=True,
+                transport=_TimeoutTransport(timeout))
             result = self._proxy.ping()
             self._connected = True
             print(f"Connected to NanoOWL server at {self.server_url}")
@@ -65,6 +85,20 @@ class NanoOwlClient:
     def is_connected(self) -> bool:
         return self._connected
 
+    def ensure_connected(self) -> bool:
+        """True if the server answers, reconnecting first if it was lost."""
+        return self._connected or self.connect()
+
+    def _failed(self, what: str, e: Exception):
+        """Report a failed call. A network error means the server is gone, so
+        mark it disconnected: later calls then return at once instead of each
+        timing out, until ensure_connected() finds it back."""
+        print(f"{what} error: {e}")
+        if isinstance(e, OSError) and self._connected:
+            self._connected = False
+            print(f"NanoOWL server at {self.server_url} is not responding; "
+                  f"marked disconnected")
+
     def ping(self) -> Optional[str]:
         if not self._connected or self._proxy is None:
             return None
@@ -72,7 +106,7 @@ class NanoOwlClient:
             with self._lock:
                 return str(self._proxy.ping())
         except Exception as e:
-            print(f"Ping error: {e}")
+            self._failed("Ping", e)
             self._connected = False
             return None
 
@@ -84,7 +118,7 @@ class NanoOwlClient:
                 result = self._proxy.get_status()
             return dict(result) if result else None
         except Exception as e:
-            print(f"Get status error: {e}")
+            self._failed("Get status", e)
             return None
 
     def is_running(self) -> Optional[bool]:
@@ -94,7 +128,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.is_running())
         except Exception as e:
-            print(f"Is running error: {e}")
+            self._failed("Is running", e)
             return None
 
     def enable(self) -> bool:
@@ -104,7 +138,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.enable())
         except Exception as e:
-            print(f"Enable error: {e}")
+            self._failed("Enable", e)
             return False
 
     def disable(self) -> bool:
@@ -114,7 +148,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.disable())
         except Exception as e:
-            print(f"Disable error: {e}")
+            self._failed("Disable", e)
             return False
 
     def is_enabled(self) -> Optional[bool]:
@@ -124,7 +158,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.is_enabled())
         except Exception as e:
-            print(f"Is enabled error: {e}")
+            self._failed("Is enabled", e)
             return None
 
     def get_prompt(self) -> Optional[str]:
@@ -134,7 +168,7 @@ class NanoOwlClient:
             with self._lock:
                 return str(self._proxy.get_prompt())
         except Exception as e:
-            print(f"Get prompt error: {e}")
+            self._failed("Get prompt", e)
             return None
 
     def set_prompt(self, prompt: str) -> bool:
@@ -144,7 +178,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.set_prompt(prompt))
         except Exception as e:
-            print(f"Set prompt error: {e}")
+            self._failed("Set prompt", e)
             return False
 
     def push_frame(self, frame, seq: int, jpeg_quality: int = 85) -> bool:
@@ -172,7 +206,7 @@ class NanoOwlClient:
             with self._lock:
                 return bool(self._proxy.push_frame(binary_data, seq))
         except Exception as e:
-            print(f"Push frame error: {e}")
+            self._failed("Push frame", e)
             return False
 
     def clear_prompt(self) -> bool:
@@ -195,7 +229,7 @@ class NanoOwlClient:
                 result = self._proxy.get_detections()
             return dict(result) if result else None
         except Exception as e:
-            print(f"Get detections error: {e}")
+            self._failed("Get detections", e)
             return None
 
     def reboot(self) -> bool:
@@ -206,7 +240,7 @@ class NanoOwlClient:
                 self._proxy.reboot()
             return True
         except Exception as e:
-            print(f"Reboot error: {e}")
+            self._failed("Reboot", e)
             return False
 
     @staticmethod
@@ -415,7 +449,8 @@ def interactive_mode():
                 detections = client.get_detections()
                 client.print_detections(detections)
             elif cmd == "reboot":
-                confirm = input("Are you sure you want to reboot the Jetson? (yes/no): ").strip().lower()
+                confirm = input("Reboot the Jetson? On battery it may not come "
+                                "back without wall power. (yes/no): ").strip().lower()
                 if confirm == "yes":
                     client.reboot()
                     print("Reboot command sent. Connection will be lost as system reboots...")

@@ -25,7 +25,7 @@ import re
 from nano_vlm_client import NanoVlmClient
 from nano_owl_client import NanoOwlClient
 from nano_owl_manager import NanoOwlManager
-from jetson_supervisor_client import SupervisorClient
+from jetson_supervisor_client import SupervisorClient, SETTLED_PHASES
 from arm_client import ArmClient
 import robot_frames
 import pyautogui
@@ -4943,6 +4943,10 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
         last_spatial = [None]  # mutable container for closure access
 
         def is_object_found(obj_name):
+            global _interrupt_action
+            if not _owl_alive():
+                _interrupt_action = True  # end the search rather than spin blind
+                return False, None
             try:
                 found, spatial = _nano_owl_mgr.check_for_object(obj_name)
                 if found:
@@ -4979,6 +4983,8 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
 
             if _interrupt_action:
                 _interrupt_action = False
+            if not _owl_alive():
+                return _OWL_DOWN
 
             obj_loc = None
             if p is not None and p.z > 0:
@@ -5365,7 +5371,7 @@ def _sample_floor_object(obj: str):
 
     samples = []
     for _ in range(PICK_SAMPLES):
-        if _interrupt_action:
+        if _interrupt_action or not _owl_alive():
             break
         found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
         valid = [s for s in (spatials or []) if s.z > 0]
@@ -5694,7 +5700,7 @@ def _connect_nano_vlm(max_retries: int = 3, retry_wait: float = 10.0):
     print("WARNING: No VLM connection available after all retries.")
     return None
 
-def _connect_camera_ai_client(target: str) -> bool:
+def _connect_camera_ai_client(target: str, max_retries: int = 3) -> bool:
     """Tear down the outgoing client and bring up `target`'s client. Sets the
     active-service globals. Returns True on success."""
     global _nano_owl, _nano_vlm, _nano_owl_mgr, _active_camera_ai, _pending_camera_ai
@@ -5708,7 +5714,7 @@ def _connect_camera_ai_client(target: str) -> bool:
             except Exception:
                 pass
             _nano_owl = None
-        _nano_vlm = _connect_nano_vlm()
+        _nano_vlm = _connect_nano_vlm(max_retries)
         ok = _nano_vlm is not None
     else:  # owl
         if _nano_vlm is not None:
@@ -5717,7 +5723,7 @@ def _connect_camera_ai_client(target: str) -> bool:
             except Exception:
                 pass
             _nano_vlm = None
-        _nano_owl = _connect_nano_owl()
+        _nano_owl = _connect_nano_owl(max_retries)
         ok = _nano_owl is not None
         if ok and _mdai is not None:
             _nano_owl_mgr = NanoOwlManager(_nano_owl, _mdai)
@@ -5740,8 +5746,8 @@ def _activate_camera_ai(target: str, announce: bool = True) -> str:
     friendly = _CAMERA_AI_FRIENDLY[target]
     secs = _SWITCH_SECONDS.get(target, 45)
 
-    # Already active and connected?
-    if _active_camera_ai == target and (_nano_owl if target == "owl" else _nano_vlm) is not None:
+    # Already active and connected? An OWL client that lost its server is not.
+    if _active_camera_ai == target and (_owl_alive() if target == "owl" else _nano_vlm is not None):
         return f"The {friendly} skill is already active."
 
     # A switch is already in flight.
@@ -5859,6 +5865,48 @@ def _poll_switch(target: str):
         print(f"Switch poll error: {e}")
         _pending_camera_ai = None
 
+_OWL_DOWN = ("Error: the Jetson's object detection server stopped responding, so "
+             "I cannot look for objects. The Jetson needs to be checked or restarted.")
+
+
+_OWL_STARTING = ("The Jetson is still starting the object search skill; wait a "
+                 "moment and try again.")
+
+
+def _owl_alive() -> bool:
+    """Whether the NanoOWL client is up and has not lost its server."""
+    return _nano_owl is not None and _nano_owl.is_connected()
+
+
+def _recover_owl():
+    """Bring the NanoOWL client back after its server went away, e.g. a Jetson
+    reboot. Returns None when OWL is usable again, or when the Jetson turns out
+    to be running something else -- _active_camera_ai then says what -- and
+    otherwise a message for the agent.
+
+    The supervisor is asked first, not port 8000: OWL and VLM both serve
+    there, and a server that answers a ping may still be loading or about to
+    be restarted. The client is then rebuilt as at startup, enable() included,
+    since the server comes back up disabled.
+    """
+    global _active_camera_ai
+    if _supervisor is not None:
+        if not _supervisor.is_connected() and not _supervisor.connect():
+            return _OWL_DOWN
+        status = _supervisor.get_status()
+        if status is None:
+            return _OWL_DOWN
+        running = _supervisor.current()
+        if running != "owl":
+            _active_camera_ai = running if running in ("owl", "vlm") else None
+            return None
+        if status.get("phase") not in SETTLED_PHASES or not status.get("app_port_ready"):
+            return _OWL_STARTING
+    if not _connect_camera_ai_client("owl", max_retries=1):
+        return _OWL_DOWN
+    return None
+
+
 def _require_camera_ai(target: str):
     """Return None if `target` is the active camera AI, else a message telling
     the agent to ask the user to switch (same switch the enable_* tools run).
@@ -5868,6 +5916,10 @@ def _require_camera_ai(target: str):
     eyes is busy, never that the robot cannot see -- and the planner will say
     it cannot see, and pick blind, if the refusal does not say otherwise.
     """
+    if _active_camera_ai == target == "owl" and not _owl_alive():
+        problem = _recover_owl()
+        if problem:
+            return problem
     if _active_camera_ai == target:
         return None
     friendly = _CAMERA_AI_FRIENDLY[target]
