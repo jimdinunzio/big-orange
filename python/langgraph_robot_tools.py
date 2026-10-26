@@ -795,13 +795,13 @@ class RobotTools:
             return f"I am holding a {self._sim_held} (simulated)."
         return self.call_tool_helper("get_held_object")
 
-    def reset_arm(self) -> str:
+    def reset_arm(self, force: bool = False) -> str:
         """Recover the arm after a failed pick or place."""
         if self.sim:
             self._sim_held = None
             return "The arm is reset and back at rest (simulated)."
-        return self.call_tool_helper("reset_arm")
-    
+        return self.call_tool_helper("reset_arm", force)
+
     # Tool definitions for LangGraph
 
     def get_move_by_deltas_tool(self):
@@ -903,6 +903,9 @@ class RobotTools:
 
     class PutDownInput(BaseModel):
         destination: str = Field(..., description="Where to release the held object: 'recycle bin' or 'trash bin'.")
+
+    class ResetArmInput(BaseModel):
+        force: bool = Field(False, description="Move without collision checking. Only after the user confirms nothing is in the way.")
 
     class AimCameraInput(BaseModel):
         yaw: Optional[int] = Field(None, description=f"Yaw angle for camera. {YAW_HOME_DEG} is straight ahead, {YAW_HOME_DEG + 11} aims left side of tray, {YAW_HOME_DEG - 11} right side of tray.")
@@ -1232,10 +1235,9 @@ class RobotTools:
 
             StructuredTool.from_function(
                 func=self.reset_arm,
+                args_schema=self.ResetArmInput,
                 name="reset_arm",
-                description="Recover the arm after pick_up or put_down reports a failure. Opens the "
-                            "gripper, dropping anything held, and returns the arm to rest. No further arm "
-                            "motion is possible until this runs."
+                description="Recover a stuck arm: opens the gripper, dropping anything held, and returns to rest."
             ),
 
             self.get_move_by_deltas_tool(),

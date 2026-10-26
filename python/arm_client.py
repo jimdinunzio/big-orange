@@ -8,14 +8,16 @@ run this file for a command line:
 
     python3 arm_client.py status
     python3 arm_client.py enable
-    python3 arm_client.py state ready
-    python3 arm_client.py pick 0.30 0.0 0.039
+    python3 arm_client.py state init
+    python3 arm_client.py pick 0.30 0.0 0.061
     python3 arm_client.py place
+    python3 arm_client.py drop               # let go where the arm is
     python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
-    python3 arm_client.py reset              # after a pick that failed partway,
+    python3 arm_client.py reset              # giving up after a failed pick
+                                             # (a retried pick resets itself);
                                              # parks clear of the OAK-D
-    python3 arm_client.py disable --park init
+    python3 arm_client.py disable            # parks at stow, then stops
     python3 arm_client.py -i             # interactive
 
 The server address comes from --url, then $DOFBOT_ARM_URL, then the default
@@ -142,6 +144,10 @@ class ArmClient:
         """Place whatever the gripper is carrying."""
         return self._call(self._motion, 'place_can')
 
+    def drop_can(self) -> Dict[str, Any]:
+        """Open the jaws where the arm is, and forget whatever was held."""
+        return self._call(self._motion, 'drop_can')
+
     def is_holding(self, object: str = '') -> Dict[str, Any]:
         """Look through the wrist camera: is the object still in the jaws?
 
@@ -151,7 +157,7 @@ class ArmClient:
         asked, so `ok` with `held` False is a working camera reporting an empty
         gripper.
 
-        Means what it says at 'carry', which is where a pick leaves the arm.
+        Means what it says at 'stow', which is where a pick leaves the arm.
         """
         return self._call(self._motion, 'is_holding', object)
 
@@ -283,12 +289,14 @@ def show_status(status: Optional[dict]):
 
 INTERACTIVE_HELP = """Commands:
   enable [--sim]        start the ROS stack (--sim: no servo bridge)
-  disable [state]       open the jaws and stop the stack, parking first if
-                        a state is given
+  disable [state]       open the jaws, park at state (default stow), and
+                        stop the stack
   pick X Y Z [object]   pick the object centred at X Y Z and carry it
   place                 place what the gripper is carrying
+  drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
-  reset [state] [force] clear the scene, let go, go home (after a failed pick)
+  reset [state] [force] clear the scene, let go, go home (giving up; a
+                        retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
   states                list the saved states
@@ -337,9 +345,11 @@ def interactive(client: ArmClient):
                 print('Starting the stack, this takes a few seconds...')
                 show(client.enable_arm(bridge='--sim' not in args))
             elif cmd == 'disable':
-                show(client.disable_arm(args[0] if args else ''))
+                show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
                 show(client.place_can())
+            elif cmd == 'drop':
+                show(client.drop_can())
             elif cmd == 'wave':
                 show(client.wave_arm(int(args[0]) if args else 1))
             elif cmd == 'reset':
@@ -389,8 +399,9 @@ def build_parser():
     enable.add_argument('--timeout', type=int, default=90)
 
     disable = sub.add_parser('disable', help='stop the ROS stack')
-    disable.add_argument('--park', default='',
-                         help='move to this state before shutting down')
+    disable.add_argument('--park', default='stow',
+                         help="move to this state before shutting down "
+                              "(default: %(default)s; '' to stop in place)")
 
     pick = sub.add_parser('pick', help='pick an object and carry it')
     pick.add_argument('x', type=float, help='object CENTRE x in base_link, m')
@@ -399,14 +410,16 @@ def build_parser():
     pick.add_argument('--object', default='', help='catalogue entry')
 
     sub.add_parser('place', help='place what the gripper is carrying')
+    sub.add_parser('drop', help='let go where the arm is, and forget what '
+                                'was held')
 
     state = sub.add_parser('state', help='move to a saved state')
     state.add_argument('name')
 
-    reset = sub.add_parser('reset', help='recover after a failed pick')
+    reset = sub.add_parser('reset', help='give up after a failed pick')
     reset.add_argument('state', nargs='?', default='',
                        help="where to leave the arm (default: the server's "
-                            "reset pose, folded clear of the OAK-D)")
+                            "reset pose, stow)")
     reset.add_argument('--force', action='store_true',
                        help='drive out blind if MoveIt will not plan from '
                             'where the arm is -- NOT collision checked')
@@ -415,7 +428,7 @@ def build_parser():
     wave.add_argument('waves', nargs='?', type=int, default=1,
                       help='back-and-forth swings (default: %(default)s)')
     wave.add_argument('--finish', default='',
-                      help='state to stow at afterwards (default: init)')
+                      help='state to stow at afterwards (default: stow)')
     wave.add_argument('--seconds', type=float, default=0.0,
                       help='how long ONE wave takes (default: 3)')
 
@@ -458,6 +471,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1
+    if cli.cmd == 'drop':
+        return 0 if show(client.drop_can(), cli.verbose) else 1
     if cli.cmd == 'state':
         return 0 if show(client.move_to_state(cli.name), cli.verbose) else 1
     if cli.cmd == 'reset':

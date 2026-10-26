@@ -5246,6 +5246,34 @@ def _ensure_arm_enabled() -> str:
     return "" if result.get("ok") else _arm_problem(result)
 
 
+# Exit statuses of a failed motion that leave the arm stranded: 1 is a plain
+# failure, 3 is the wrist camera reporting the jaws empty. Both get a reset; if
+# 3 turns out to misfire often, an OAK-D second opinion belongs ahead of it.
+# 4 (EXIT_NOT_THERE, a NotThereError) is no can there on approach, before the
+# grasp, so it needs none.
+_ARM_RESET_CODES = (1, 3)
+_ARM_NOT_THERE = 4
+
+# A forced reset is not collision checked, so it waits on the user.
+_FORCE_RESET_ASK = ("Ask the user whether anything is in the arm's way; if they "
+                    "say it is clear, call reset_arm with force=True.")
+
+
+def _recover_arm(result: dict):
+    """Reset the arm after a failed motion whose exit status strands it.
+    Returns (reset, note): whether a reset ran -- it opens the gripper first,
+    so anything held is dropped -- and a sentence to add if it failed."""
+    global _held_object
+    if result.get("returncode") not in _ARM_RESET_CODES:
+        return False, ""
+    reset = _arm_client.reset_arm()
+    _held_object = None
+    if reset.get("ok"):
+        return True, ""
+    return True, (f" The arm could not recover afterwards: {_arm_problem(reset)}. "
+                  + _FORCE_RESET_ASK)
+
+
 def wave_arm_tool_helper():
     """Wave the robot's arm using the arm client."""
     if _arm_client is None or not _arm_client.is_connected():
@@ -5263,7 +5291,8 @@ def wave_arm_tool_helper():
         result = _arm_client.wave_arm()
         if result.get("ok"):
             return "Waved the arm."
-        return f"Error: the arm failed to wave: {_arm_problem(result)}"
+        _, note = _recover_arm(result)
+        return f"Error: the arm failed to wave: {_arm_problem(result)}.{note}"
     except Exception as e:
         return f"Error waving the arm: {str(e)}"
 
@@ -5554,8 +5583,10 @@ def pick_up_tool_helper(sdp, object_name: str):
         if result.get("ok"):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
-        return (f"The arm failed to pick up the {obj}: {_arm_problem(result)}. "
-                f"It cannot plan another move until it is reset.")
+        if result.get("returncode") == _ARM_NOT_THERE:
+            return f"The {obj} was not detected where the arm reached for it."
+        _, note = _recover_arm(result)
+        return f"The arm failed to pick up the {obj}: {_arm_problem(result)}.{note}"
     except Exception as e:
         return f"Error picking up the {object_name}: {str(e)}"
     finally:
@@ -5617,6 +5648,10 @@ def put_down_tool_helper(sdp, destination: str):
         if result.get("ok"):
             _held_object = None
             return f"I put the {held} in the {dest}."
+        reset, note = _recover_arm(result)
+        if reset:
+            return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
+                    f"It dropped the {held} where it was standing.{note}")
         return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
                 f"I am still holding it, and the arm cannot plan another move "
                 f"until it is reset.")
@@ -5642,8 +5677,9 @@ def get_held_object_tool_helper():
     return f"I am holding a {_held_object}, and I can see it in the gripper."
 
 
-def reset_arm_tool_helper():
-    """Recover the arm after a failed pick or place."""
+def reset_arm_tool_helper(force: bool = False):
+    """Recover the arm after a failed pick or place; `force` skips collision
+    checking."""
     global _held_object
 
     if _arm_client is None or not _arm_client.is_connected():
@@ -5653,14 +5689,16 @@ def reset_arm_tool_helper():
         return f"Error: the arm could not be enabled to reset: {problem}"
     try:
         held = _held_object
-        result = _arm_client.reset_arm()
+        result = _arm_client.reset_arm(force=force)
         # reset_arm opens the gripper before it moves, so whatever was carried
         # is on the floor now whether or not the move that followed succeeded.
         _held_object = None
         if result.get("ok"):
             return ("The arm is reset and back at rest."
                     + (f" It dropped the {held} where it was standing." if held else ""))
-        return f"The arm could not be reset: {_arm_problem(result)}"
+        if force:
+            return f"The arm could not be reset even when forced: {_arm_problem(result)}"
+        return f"The arm could not be reset: {_arm_problem(result)}. {_FORCE_RESET_ASK}"
     except Exception as e:
         return f"Error resetting the arm: {str(e)}"
 
@@ -6177,7 +6215,7 @@ def shutdown_robot():
         _grasper = None
     if _arm_client is not None:
         print("parking the arm and stopping its ROS stack")
-        result = _arm_client.disable_arm("init")
+        result = _arm_client.disable_arm("stow")
         if not result.get("ok"):
             print(f"WARNING: the arm did not shut down cleanly: {_arm_problem(result)}")
         print("disconnecting arm client")
