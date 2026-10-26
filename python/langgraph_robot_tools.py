@@ -1057,7 +1057,7 @@ class RobotTools:
                 func=self.move_in_dir_dist,
                 args_schema=self.DirectionDistanceInput,
                 name="move_in_dir_dist",
-                description="Move in specified direction (forward, backward, right, left) for specified distance."
+                description="Turn front of robot to face direction (forward, backward, right, left), then move distance."
             ),
             
             StructuredTool.from_function(
@@ -1206,19 +1206,15 @@ class RobotTools:
             StructuredTool.from_function(
                 func=self.enable_scene_description_skill,
                 name="enable_scene_description_skill",
-                description="Activate the vision/scene-description skill (VLM), needed by describe_scene, "
-                            "ask_question_about_scene, and go_to_location_with_narration. Switching takes "
-                            "about 50 seconds; warn the user of the delay first. Use for requests like "
-                            "'enable vision description skill'."
+                description="Activate the scene-description skill (VLM). Only after a tool reports it "
+                            "inactive and the user agrees, or the user asks."
             ),
 
             StructuredTool.from_function(
                 func=self.enable_object_search_skill,
                 name="enable_object_search_skill",
-                description="Activate the vision open-vocabulary object-search skill (OWL), needed by track_object, "
-                            "search_for_object, pick up object, place object, and while_go_to_loc_find_object. Switching takes about 40 "
-                            "seconds; warn the user of the delay first. Use for requests like "
-                            "'enable object search skill'."
+                description="Activate the object-search skill (OWL). Only after a tool reports it "
+                            "inactive and the user agrees, or the user asks."
             ),
 
             StructuredTool.from_function(
