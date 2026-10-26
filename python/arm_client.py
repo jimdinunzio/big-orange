@@ -10,6 +10,7 @@ run this file for a command line:
     python3 arm_client.py enable
     python3 arm_client.py state init
     python3 arm_client.py pick 0.30 0.0 0.061
+    python3 arm_client.py pick 0.30 0.0 0.061 --no-lift   # straight to stow
     python3 arm_client.py place
     python3 arm_client.py drop               # let go where the arm is
     python3 arm_client.py held               # is the can still in the jaws?
@@ -18,6 +19,8 @@ run this file for a command line:
                                              # (a retried pick resets itself);
                                              # parks clear of the OAK-D
     python3 arm_client.py disable            # parks at stow, then stops
+    python3 arm_client.py torque off         # disables the arm, then goes limp
+    python3 arm_client.py torque on          # holds; enable to command it
     python3 arm_client.py -i             # interactive
 
 The server address comes from --url, then $DOFBOT_ARM_URL, then the default
@@ -134,11 +137,12 @@ class ArmClient:
         return self._call(self._motion, 'disable_arm', park)
 
     def pick_can(self, x: float, y: float, z: float,
-                 object: str = '') -> Dict[str, Any]:
+                 object: str = '', lift: bool = True) -> Dict[str, Any]:
         """Pick the object whose CENTRE is at (x, y, z) in base_link, and carry
-        it. Does not place -- call place_can() for that."""
+        it. Does not place -- call place_can() for that. lift=False skips the
+        straight-up lift after the grasp and goes directly to stow."""
         return self._call(self._motion, 'pick_can', float(x), float(y),
-                          float(z), object)
+                          float(z), object, bool(lift))
 
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
@@ -180,6 +184,17 @@ class ArmClient:
         machine drives the arm, so it keeps no second copy of that name.
         """
         return self._call(self._motion, 'reset_arm', str(state), bool(force))
+
+    def set_torque(self, on: bool) -> Dict[str, Any]:
+        """Servo torque on or off. TORQUE OFF DISABLES THE ARM.
+
+        Off disables the arm first if it is enabled -- the jaws open and drop
+        whatever is held -- and then the arm goes limp under its own weight;
+        support it. On holds the servos where they stand. A disabled arm stays
+        disabled; enable_arm() is what makes it commandable again, and turns
+        torque on by itself.
+        """
+        return self._call(self._motion, 'set_torque', bool(on))
 
     def wave_arm(self, waves: int = 1, finish: str = '',
                  seconds: float = 0.0) -> Dict[str, Any]:
@@ -291,7 +306,9 @@ INTERACTIVE_HELP = """Commands:
   enable [--sim]        start the ROS stack (--sim: no servo bridge)
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
-  pick X Y Z [object]   pick the object centred at X Y Z and carry it
+  pick X Y Z [object] [no-lift]
+                        pick the object centred at X Y Z and carry it
+                        (no-lift: skip the lift, go straight to stow)
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
@@ -299,6 +316,7 @@ INTERACTIVE_HELP = """Commands:
                         retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
+  torque on|off         servo torque; off DISABLES the arm, then goes limp
   states                list the saved states
   status                enabled? busy? what ran last?
   log [N]               tail the launch log
@@ -341,6 +359,12 @@ def interactive(client: ArmClient):
                 show(client.stop())
             elif cmd == 'held':
                 show_held(client.is_holding(args[0] if args else ''))
+            elif cmd == 'torque':
+                if args not in (['on'], ['off']):
+                    print('Usage: torque on|off   (off disables the arm, '
+                          'then it goes limp -- support it)')
+                else:
+                    show(client.set_torque(args[0] == 'on'))
             elif cmd == 'enable':
                 print('Starting the stack, this takes a few seconds...')
                 show(client.enable_arm(bridge='--sim' not in args))
@@ -362,13 +386,15 @@ def interactive(client: ArmClient):
                 else:
                     show(client.move_to_state(args[0]))
             elif cmd == 'pick':
-                if len(args) not in (3, 4):
-                    print('Usage: pick X Y Z [object]   '
+                lift = 'no-lift' not in args[3:]
+                rest = [a for a in args[3:] if a != 'no-lift']
+                if len(args) < 3 or len(rest) > 1:
+                    print('Usage: pick X Y Z [object] [no-lift]   '
                           '(metres, base_link, object CENTRE)')
                 else:
                     show(client.pick_can(float(args[0]), float(args[1]),
                                          float(args[2]),
-                                         args[3] if len(args) == 4 else ''))
+                                         rest[0] if rest else '', lift))
             else:
                 print('Unknown command: %s' % cmd)
         except KeyboardInterrupt:
@@ -408,6 +434,9 @@ def build_parser():
     pick.add_argument('y', type=float)
     pick.add_argument('z', type=float)
     pick.add_argument('--object', default='', help='catalogue entry')
+    pick.add_argument('--no-lift', dest='lift', action='store_false',
+                      help='skip the straight-up lift after the grasp and go '
+                           'directly to stow')
 
     sub.add_parser('place', help='place what the gripper is carrying')
     sub.add_parser('drop', help='let go where the arm is, and forget what '
@@ -436,6 +465,11 @@ def build_parser():
                           help='look: is the object still in the jaws?')
     held.add_argument('object', nargs='?', default='',
                       help='catalogue entry to look for')
+
+    torque = sub.add_parser('torque',
+                            help='servo torque; off DISABLES the arm first, '
+                                 'then it goes limp -- support it')
+    torque.add_argument('state', choices=('on', 'off'))
 
     sub.add_parser('states', help='list the saved states')
     sub.add_parser('status', help='server and stack status')
@@ -467,7 +501,8 @@ def main(argv=None):
     if cli.cmd == 'disable':
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
     if cli.cmd == 'pick':
-        return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object),
+        return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object,
+                                         cli.lift),
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1
@@ -483,6 +518,9 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'held':
         return 0 if show_held(client.is_holding(cli.object)) else 1
+    if cli.cmd == 'torque':
+        return 0 if show(client.set_torque(cli.state == 'on'),
+                         cli.verbose) else 1
     if cli.cmd == 'stop':
         return 0 if show(client.stop(), cli.verbose) else 1
     if cli.cmd == 'states':
