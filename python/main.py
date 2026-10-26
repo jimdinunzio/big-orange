@@ -5770,12 +5770,12 @@ def pick_up_tool_helper(sdp, object_name: str):
                         if not turn_deg and not weak else None)
 
         # No is_holding() here: pick_can asks it itself, on approach and again
-        # at carry, and aborts on a definite no. So an ok result has already
+        # at stow, and aborts on a definite no. So an ok result has already
         # been confirmed through the same camera, and a failure after the
         # grasp is one of the things that check caught -- which is why the
         # failure below reports the arm as stuck rather than inviting a retry.
         result = _arm_client.pick_can(target[0], target[1], target[2],
-                                      _arm_object(obj))
+                                      _arm_object(obj), lift=False)
         if result.get("ok"):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
