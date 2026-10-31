@@ -10,7 +10,7 @@ run this file for a command line:
     python3 arm_client.py enable
     python3 arm_client.py state init
     python3 arm_client.py pick 0.30 0.0 0.061
-    python3 arm_client.py pick 0.30 0.0 0.061 --no-lift   # straight to stow
+    python3 arm_client.py pick 0.30 0.0 0.061 --no-vision # no camera checks
     python3 arm_client.py place
     python3 arm_client.py drop               # let go where the arm is
     python3 arm_client.py held               # is the can still in the jaws?
@@ -137,12 +137,12 @@ class ArmClient:
         return self._call(self._motion, 'disable_arm', park)
 
     def pick_can(self, x: float, y: float, z: float,
-                 object: str = '', lift: bool = True) -> Dict[str, Any]:
+                 object: str = '', vision: bool = True) -> Dict[str, Any]:
         """Pick the object whose CENTRE is at (x, y, z) in base_link, and carry
-        it. Does not place -- call place_can() for that. lift=False skips the
-        straight-up lift after the grasp and goes directly to stow."""
+        it. Does not place -- call place_can() for that. vision=False skips both
+        wrist-camera checks, approach and held."""
         return self._call(self._motion, 'pick_can', float(x), float(y),
-                          float(z), object, bool(lift))
+                          float(z), object, bool(vision))
 
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
@@ -306,9 +306,9 @@ INTERACTIVE_HELP = """Commands:
   enable [--sim]        start the ROS stack (--sim: no servo bridge)
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
-  pick X Y Z [object] [no-lift]
+  pick X Y Z [object] [no-vision]
                         pick the object centred at X Y Z and carry it
-                        (no-lift: skip the lift, go straight to stow)
+                        (no-vision: skip the camera checks)
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
   state NAME            move to a saved state
@@ -386,15 +386,15 @@ def interactive(client: ArmClient):
                 else:
                     show(client.move_to_state(args[0]))
             elif cmd == 'pick':
-                lift = 'no-lift' not in args[3:]
-                rest = [a for a in args[3:] if a != 'no-lift']
+                vision = 'no-vision' not in args[3:]
+                rest = [a for a in args[3:] if a != 'no-vision']
                 if len(args) < 3 or len(rest) > 1:
-                    print('Usage: pick X Y Z [object] [no-lift]   '
+                    print('Usage: pick X Y Z [object] [no-vision]   '
                           '(metres, base_link, object CENTRE)')
                 else:
                     show(client.pick_can(float(args[0]), float(args[1]),
                                          float(args[2]),
-                                         rest[0] if rest else '', lift))
+                                         rest[0] if rest else '', vision))
             else:
                 print('Unknown command: %s' % cmd)
         except KeyboardInterrupt:
@@ -434,9 +434,8 @@ def build_parser():
     pick.add_argument('y', type=float)
     pick.add_argument('z', type=float)
     pick.add_argument('--object', default='', help='catalogue entry')
-    pick.add_argument('--no-lift', dest='lift', action='store_false',
-                      help='skip the straight-up lift after the grasp and go '
-                           'directly to stow')
+    pick.add_argument('--no-vision', dest='vision', action='store_false',
+                      help='skip both wrist-camera checks, approach and held')
 
     sub.add_parser('place', help='place what the gripper is carrying')
     sub.add_parser('drop', help='let go where the arm is, and forget what '
@@ -502,7 +501,7 @@ def main(argv=None):
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
     if cli.cmd == 'pick':
         return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object,
-                                         cli.lift),
+                                         cli.vision),
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1

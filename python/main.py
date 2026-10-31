@@ -4964,15 +4964,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
                 _interrupt_action = True  # end the search rather than spin blind
                 return False, None
             try:
-                if height == "floor":
-                    # The best-scoring can may be on a table; take the best
-                    # one on the floor instead.
-                    _, spatials = _nano_owl_mgr.check_for_all_objects(obj_name)
-                    floor = _floor_detections(spatials)
-                    spatial = max(floor, key=lambda s: s.confidence) if floor else None
-                    found = spatial is not None
-                else:
-                    found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+                found, spatial = _nano_owl_mgr.check_for_object(obj_name)
                 if found:
                     last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
@@ -5669,8 +5661,9 @@ def back_up_tool_helper(sdp, distance: float):
         return f"Error backing up: {str(e)}"
 
 
-def pick_up_tool_helper(sdp, object_name: str):
-    """Look at the floor, and if the object is within reach, grasp and hold it."""
+def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
+    """Look at the floor, and if the object is within reach, grasp and hold it.
+    `vision` False skips the arm's wrist-camera checks, approach and held."""
     global _held_object, _interrupt_action
 
     obj = _normalize_place_name(object_name)
@@ -5769,13 +5762,14 @@ def pick_up_tool_helper(sdp, object_name: str):
             expected = ((target[0] - driven, target[1], target[2])
                         if not turn_deg and not weak else None)
 
-        # No is_holding() here: pick_can asks it itself, on approach and again
-        # at stow, and aborts on a definite no. So an ok result has already
-        # been confirmed through the same camera, and a failure after the
-        # grasp is one of the things that check caught -- which is why the
-        # failure below reports the arm as stuck rather than inviting a retry.
+        # No is_holding() here: with `vision` pick_can asks it itself, on
+        # approach and again at stow, and aborts on a definite no. So an ok
+        # result has already been confirmed through the same camera, and a
+        # failure after the grasp is one of the things that check caught --
+        # which is why the failure below reports the arm as stuck rather than
+        # inviting a retry.
         result = _arm_client.pick_can(target[0], target[1], target[2],
-                                      _arm_object(obj), lift=False)
+                                      _arm_object(obj), vision=vision)
         if result.get("ok"):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
@@ -5821,6 +5815,23 @@ def put_down_tool_helper(sdp, destination: str):
                 f"{_held_object} into it. I have to be within "
                 f"{PLACE_ARRIVAL_DIST:.1f} m of it.")
 
+    return _place_held(f"in the {dest}", f"on the way to the {dest}")
+
+
+def place_tool_helper():
+    """Place the held object in front of the robot, wherever it stands."""
+    if _held_object is None:
+        return "I am not holding anything, so there is nothing to place."
+    if _arm_client is None or not _arm_client.is_connected():
+        return f"Error: the arm is not available to place the {_held_object}."
+    return _place_held("down in front of me", "since I picked it up")
+
+
+def _place_held(where: str, lost_when: str):
+    """place_can() the held object. `where` finishes "I put the can ...";
+    `lost_when` finishes "It must have come loose ..."."""
+    global _held_object
+
     # A can can shake loose on the drive over, and the planning scene would
     # be none the wiser -- the wrist camera is the only thing that knows.
     # Ask before going through the motions of a place. Only a definite no
@@ -5830,8 +5841,8 @@ def put_down_tool_helper(sdp, destination: str):
         lost = _held_object
         _held_object = None
         return (f"The {lost} is not in the gripper any more -- {why}. It must "
-                f"have come loose on the way to the {dest}, so there is "
-                f"nothing to put down.")
+                f"have come loose {lost_when}, so there is nothing to put "
+                f"down.")
 
     problem = _ensure_arm_enabled()
     if problem:
@@ -5843,7 +5854,7 @@ def put_down_tool_helper(sdp, destination: str):
         result = _arm_client.place_can()
         if result.get("ok"):
             _held_object = None
-            return f"I put the {held} in the {dest}."
+            return f"I put the {held} {where}."
         reset, note = _recover_arm(result)
         if reset:
             return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
@@ -5897,6 +5908,118 @@ def reset_arm_tool_helper(force: bool = False):
         return f"The arm could not be reset: {_arm_problem(result)}. {_FORCE_RESET_ASK}"
     except Exception as e:
         return f"Error resetting the arm: {str(e)}"
+
+
+def drop_tool_helper():
+    """Open the jaws where the arm is, letting go of whatever is held."""
+    global _held_object
+
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to drop anything."
+    problem = _ensure_arm_enabled()
+    if problem:
+        return f"Error: the arm could not be enabled to drop: {problem}"
+    try:
+        held = _held_object
+        result = _arm_client.drop_can()
+        if not result.get("ok"):
+            return f"The arm failed to drop: {_arm_problem(result)}"
+        _held_object = None
+        return f"I dropped the {held}." if held else "I opened the gripper."
+    except Exception as e:
+        return f"Error dropping: {str(e)}"
+
+
+def enable_arm_tool_helper():
+    """Start the arm's ROS stack."""
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to enable."
+    try:
+        problem = _ensure_arm_enabled()
+        if problem:
+            return f"Error: the arm could not be enabled: {problem}"
+        return "The arm is enabled."
+    except Exception as e:
+        return f"Error enabling the arm: {str(e)}"
+
+
+def disable_arm_tool_helper():
+    """Open the jaws, park at stow and stop the arm's ROS stack."""
+    global _held_object
+
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to disable."
+    try:
+        held = _held_object
+        result = _arm_client.disable_arm("stow")
+        # disable_arm opens the jaws whatever happens after, so the object is
+        # dropped where the arm stood.
+        _held_object = None
+        dropped = f" It dropped the {held} where it was standing." if held else ""
+        if result.get("ok"):
+            return "The arm is parked and disabled." + dropped
+        return f"The arm failed to disable: {_arm_problem(result)}.{dropped}"
+    except Exception as e:
+        return f"Error disabling the arm: {str(e)}"
+
+
+def move_arm_to_position_tool_helper(position: str):
+    """Move the arm to a saved state."""
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to move."
+    if _held_object is not None:
+        # Same reason as wave_arm: _held_object promises the arm is at carry,
+        # where the wrist camera can be trusted about what is in the jaws.
+        return (f"I am holding a {_held_object}, so I will not move the arm "
+                f"until it is put down.")
+    try:
+        problem = _ensure_arm_enabled()
+        if problem:
+            return f"Error: the arm could not be enabled to move: {problem}"
+        result = _arm_client.move_to_state(position)
+        if result.get("ok"):
+            return f"The arm is at {position}."
+        _, note = _recover_arm(result)
+        states = ", ".join(_arm_client.list_states()) or "unknown"
+        return (f"Error: the arm failed to move to {position}: "
+                f"{_arm_problem(result)}. Known positions: {states}.{note}")
+    except Exception as e:
+        return f"Error moving the arm: {str(e)}"
+
+
+def set_arm_torque_tool_helper(on: bool):
+    """Servo torque on or off; off disables the arm and it goes limp."""
+    global _held_object
+
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to set its torque."
+    try:
+        held = _held_object
+        result = _arm_client.set_torque(on)
+        if not on:
+            # Off disables the arm first, and that opens the jaws.
+            _held_object = None
+        if not result.get("ok"):
+            return f"The arm failed to set torque {'on' if on else 'off'}: {_arm_problem(result)}"
+        if on:
+            return "Arm torque is on; the servos are holding."
+        return ("Arm torque is off; the arm is disabled and limp."
+                + (f" It dropped the {held}." if held else ""))
+    except Exception as e:
+        return f"Error setting the arm torque: {str(e)}"
+
+
+def stop_arm_tool_helper():
+    """Abort the arm motion in flight."""
+    if _arm_client is None or not _arm_client.is_connected():
+        return "Error: the arm is not available to stop."
+    try:
+        result = _arm_client.stop()
+        if result.get("ok"):
+            return "Stopped the arm."
+        return f"The arm failed to stop: {_arm_problem(result)}"
+    except Exception as e:
+        return f"Error stopping the arm: {str(e)}"
 
 # --- Camera-AI service switching layer --------------------------------------
 # The ONLY code that constructs/connects/disconnects the OWL/VLM clients. All of
@@ -6271,7 +6394,14 @@ langgraph_tool_funcs = {
     "pick_up": pick_up_tool_helper,
     "put_down": put_down_tool_helper,
     "get_held_object": get_held_object_tool_helper,
-    "reset_arm": reset_arm_tool_helper
+    "reset_arm": reset_arm_tool_helper,
+    "place": place_tool_helper,
+    "drop": drop_tool_helper,
+    "enable_arm": enable_arm_tool_helper,
+    "disable_arm": disable_arm_tool_helper,
+    "move_arm_to_position": move_arm_to_position_tool_helper,
+    "set_arm_torque": set_arm_torque_tool_helper,
+    "stop_arm": stop_arm_tool_helper
 }
 
 ################################################################   

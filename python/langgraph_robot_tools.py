@@ -777,7 +777,7 @@ class RobotTools:
             return "Waved the arm (simulated)."
         return self.call_tool_helper("wave_arm")
 
-    def pick_up(self, object_name: str) -> str:
+    def pick_up(self, object_name: str, vision: bool = True) -> str:
         """Use Oak-D camera to locate object on floor in front of robot and use arm to pick it up and hold it."""
         if self.sim:
             if self._sim_held is not None:
@@ -786,7 +786,7 @@ class RobotTools:
                 return f"I cannot pick up a {object_name} (simulated)."
             self._sim_held = object_name
             return f"I picked up the {object_name} and am holding it (simulated)."
-        return self.call_tool_helper("pick_up", self._sdp, object_name)
+        return self.call_tool_helper("pick_up", self._sdp, object_name, vision)
 
     def put_down(self, destination: str) -> str:
         """Release the held object into the bin the robot is parked at or onto the floor."""
@@ -811,6 +811,55 @@ class RobotTools:
             self._sim_held = None
             return "The arm is reset and back at rest (simulated)."
         return self.call_tool_helper("reset_arm", force)
+
+    def place(self) -> str:
+        """Place the held object in front of the robot, wherever it stands."""
+        if self.sim:
+            if self._sim_held is None:
+                return "I am not holding anything (simulated)."
+            held, self._sim_held = self._sim_held, None
+            return f"I put the {held} down in front of me (simulated)."
+        return self.call_tool_helper("place")
+
+    def drop(self) -> str:
+        """Open the gripper where the arm is."""
+        if self.sim:
+            self._sim_held = None
+            return "I opened the gripper (simulated)."
+        return self.call_tool_helper("drop")
+
+    def enable_arm(self) -> str:
+        """Start the arm."""
+        if self.sim:
+            return "The arm is enabled (simulated)."
+        return self.call_tool_helper("enable_arm")
+
+    def disable_arm(self) -> str:
+        """Park and stop the arm."""
+        if self.sim:
+            self._sim_held = None
+            return "The arm is parked and disabled (simulated)."
+        return self.call_tool_helper("disable_arm")
+
+    def move_arm_to_position(self, position: str) -> str:
+        """Move the arm to a saved position."""
+        if self.sim:
+            return f"The arm is at {position} (simulated)."
+        return self.call_tool_helper("move_arm_to_position", position)
+
+    def set_arm_torque(self, on: bool) -> str:
+        """Arm servo torque on or off."""
+        if self.sim:
+            if not on:
+                self._sim_held = None
+            return f"Arm torque is {'on' if on else 'off'} (simulated)."
+        return self.call_tool_helper("set_arm_torque", on)
+
+    def stop_arm(self) -> str:
+        """Abort the arm motion in flight."""
+        if self.sim:
+            return "Stopped the arm (simulated)."
+        return self.call_tool_helper("stop_arm")
 
     # Tool definitions for LangGraph
 
@@ -913,12 +962,19 @@ class RobotTools:
 
     class PickUpInput(BaseModel):
         object_name: str = Field(..., description="Object to grasp off the floor. Only 'soda can' is supported.")
+        vision: bool = Field(True, description="Confirm the grasp with the wrist camera.")
 
     class PutDownInput(BaseModel):
         destination: str = Field(..., description="Where to release the held object: 'recycle bin' or 'trash bin'.")
 
     class ResetArmInput(BaseModel):
         force: bool = Field(False, description="Move without collision checking. Only after the user confirms nothing is in the way.")
+
+    class ArmPositionInput(BaseModel):
+        position: str = Field(..., description="Saved arm position name, e.g. 'stow' or 'init'.")
+
+    class ArmTorqueInput(BaseModel):
+        on: bool = Field(..., description="True holds the servos; False disables the arm and lets it go limp.")
 
     class AimCameraInput(BaseModel):
         yaw: Optional[int] = Field(None, description=f"Yaw angle for camera. {YAW_HOME_DEG} is straight ahead, {YAW_HOME_DEG + 11} aims left side of tray, {YAW_HOME_DEG - 11} right side of tray.")
@@ -1255,6 +1311,50 @@ class RobotTools:
                 args_schema=self.ResetArmInput,
                 name="reset_arm",
                 description="Recover a stuck arm: opens the gripper, dropping anything held, and returns to rest."
+            ),
+
+            StructuredTool.from_function(
+                func=self.place,
+                name="place",
+                description="Place the held object on the floor in front of the robot."
+            ),
+
+            StructuredTool.from_function(
+                func=self.drop,
+                name="drop",
+                description="Open the gripper where the arm is, dropping anything held."
+            ),
+
+            StructuredTool.from_function(
+                func=self.enable_arm,
+                name="enable_arm",
+                description="Start the arm so it can be commanded."
+            ),
+
+            StructuredTool.from_function(
+                func=self.disable_arm,
+                name="disable_arm",
+                description="Open the gripper, park the arm at stow and shut it down."
+            ),
+
+            StructuredTool.from_function(
+                func=self.move_arm_to_position,
+                args_schema=self.ArmPositionInput,
+                name="move_arm_to_position",
+                description="Move the arm to a saved position."
+            ),
+
+            StructuredTool.from_function(
+                func=self.set_arm_torque,
+                args_schema=self.ArmTorqueInput,
+                name="set_arm_torque",
+                description="Turn arm servo torque on or off."
+            ),
+
+            StructuredTool.from_function(
+                func=self.stop_arm,
+                name="stop_arm",
+                description="Abort the arm motion in progress."
             ),
 
             self.get_move_by_deltas_tool(),
