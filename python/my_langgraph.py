@@ -13,6 +13,7 @@ import base64
 import requests
 import ast
 import tts.flags
+from tool_failure import ToolFailure
 
 def is_server_running(url):
 #    return False
@@ -56,6 +57,12 @@ class RobotPlannerGraph:
         self._run_gen = 0
         self._abandon_count = 0
         self._run_start_len = 0
+        # verbose: speak the planner's intent and final summary.
+        # terse: say "OK" once a request starts acting, then stay quiet unless
+        # a tool errored; a reply that called no tools is still spoken.
+        self.speech_mode = "verbose"
+        self._acknowledged = False
+        self._run_had_error = False
 
         prompt_name ="orange_prompt_short"
         init_prompt = ""
@@ -213,7 +220,11 @@ class RobotPlannerGraph:
         def speech_node(state: State):
             print("*** Speech Node ***")
             last_msg = state["messages"][-1]
-            if isinstance(last_msg, AIMessage) and last_msg.content:
+            if self.speech_mode == "terse":
+                if not self._acknowledged:
+                    self._acknowledged = True
+                    self._speak("OK", add_to_memory=False)
+            elif isinstance(last_msg, AIMessage) and last_msg.content:
                 self._speak(
                     last_msg.content,
                     add_to_memory=False,
@@ -246,14 +257,18 @@ class RobotPlannerGraph:
                     tool_func = getattr(self.tools, tool_name, None)
                     if not tool_func:
                         result = f"Unknown tool: {tool_name}"
+                        self._run_had_error = True
                         tool_results.append(ToolMessage(content=result, tool_call_id=tool_call_id))
                     else:
                         try:
                             # Execute tool
                             result = tool_func(**tool_args)
+                            if isinstance(result, ToolFailure):
+                                self._run_had_error = True
                             tool_results.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
-                            
+
                         except Exception as e:
+                            self._run_had_error = True
                             tool_results.append(ToolMessage(content=f"Error executing {tool_name}: {str(e)}", tool_call_id=tool_call_id))
                 
                 # Return ALL tool results
@@ -265,7 +280,9 @@ class RobotPlannerGraph:
         def reporter_node(state: State):
             print("*** Reporter Node ***")
             last_msg = state["messages"][-1]
-            if isinstance(last_msg, AIMessage) and last_msg.content:
+            quiet = (self.speech_mode == "terse" and self._acknowledged
+                     and not self._run_had_error)
+            if not quiet and isinstance(last_msg, AIMessage) and last_msg.content:
                 self._speak(
                     last_msg.content,
                     add_to_memory=False,
@@ -475,6 +492,8 @@ class RobotPlannerGraph:
     def send_input(self, user_input: str, image=None):
         self._cancel = False
         self._is_processing = True
+        self._acknowledged = False
+        self._run_had_error = False
         self._run_gen += 1
         gen = self._run_gen
         config = self.config

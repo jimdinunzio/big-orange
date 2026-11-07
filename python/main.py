@@ -30,6 +30,7 @@ from arm_client import ArmClient
 import robot_frames
 import pyautogui
 from my_langgraph import RobotPlannerGraph
+from tool_failure import ToolFailure
 import traceback
 from move_by_deltas_alert import post_alert
 from typing import Dict, List, Callable, Tuple, Optional
@@ -1211,7 +1212,7 @@ def moveActionMonitor(sdp=None, location_name=None):
     if location_name is not None:
         while _action_flag == False and _run_flag:
             if _goal == "":  # Goal was cleared - error occurred
-                return "unknown location"
+                return ToolFailure("unknown location")
             time.sleep(0.50)
 
     while(_run_flag and _interrupt_action == False):
@@ -1225,8 +1226,9 @@ def moveActionMonitor(sdp=None, location_name=None):
     # wait for action to finish
     while _action_flag and _run_flag:
         time.sleep(0.1)
-    
-    if maStatus != ActionStatus.Finished:
+
+    failed = maStatus != ActionStatus.Finished
+    if failed:
         message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
     else:
         message = "move finished"
@@ -1235,10 +1237,11 @@ def moveActionMonitor(sdp=None, location_name=None):
     # if way is blocked the Finished status may be returned.
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         reached_goal = is_close_to(location_name)
+        failed = failed or not reached_goal
         message += ": arrived at " if reached_goal else ": did not arrive at "
         message += location_name
 
-    return message
+    return ToolFailure(message) if failed else message
 
 def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
     """Monitor movement while polling NanoOWL for an object.
@@ -1260,7 +1263,7 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
     if location_name is not None:
         while _action_flag == False and _run_flag:
             if _goal == "":
-                return "unknown location", None
+                return ToolFailure("unknown location"), None
             time.sleep(0.25)
 
     maStatus = ActionStatus.Running
@@ -1340,21 +1343,20 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
     while _action_flag and _run_flag:
         time.sleep(0.1)
 
-    if not obj_confirmed:
-        if maStatus != ActionStatus.Finished:
-            message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
-        else:
-            message = "move finished"
+    failed = not obj_confirmed and maStatus != ActionStatus.Finished
+    if failed:
+        message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
     else:
         message = "move finished"
 
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         if not obj_confirmed:
             reached_goal = is_close_to(location_name)
+            failed = failed or not reached_goal
             message += ": arrived at " if reached_goal else ": did not arrive at "
             message += location_name
 
-    return message, spatial_det
+    return (ToolFailure(message) if failed else message), spatial_det
 
 
 def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe the scene concisely.",
@@ -1381,7 +1383,7 @@ def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe t
     if location_name is not None:
         while _action_flag == False and _run_flag:
             if _goal == "":  # Goal was cleared - error occurred
-                return "unknown location"
+                return ToolFailure("unknown location")
             time.sleep(0.25)
     
     # Monitor movement while periodically describing scene
@@ -1426,18 +1428,20 @@ def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe t
         time.sleep(0.1)
     
     # Determine result message
-    if maStatus != ActionStatus.Finished:
+    failed = maStatus != ActionStatus.Finished
+    if failed:
         message = "move cancelled" if maStatus == ActionStatus.Stopped else "move error"
     else:
         message = "move finished"
-    
+
     # Check if robot actually made it to the destination
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         reached_goal = is_close_to(location_name)
+        failed = failed or not reached_goal
         message += ": arrived at " if reached_goal else ": did not arrive at "
         message += location_name
 
-    return message
+    return ToolFailure(message) if failed else message
 
 
 def move_by_deltas(sdp, deltas: List[Dict[str, float]], final_yaw: float, req_approval=False):
@@ -3636,7 +3640,12 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
             _langgraph.reset_memory()
             speak("I'm clearing my memory of this discussion.")
             return HandleResponseResult.Handled
-        
+
+        elif phrase in ("terse mode", "verbose mode"):
+            _langgraph.speech_mode = phrase.split()[0]
+            speak(phrase)
+            return HandleResponseResult.Handled
+
         elif phrase == "show chat log":
             print(_langgraph.print_message_history())
             return HandleResponseResult.Handled
@@ -4545,7 +4554,7 @@ def list_locations_tool_helper():
     """List all known locations."""
     global _locations
     if not _locations:
-        return "No locations saved."
+        return ToolFailure("No locations saved.")
     return f"Known locations: {', '.join(_locations.keys())}"
 
 def search_for_face_tool_helper(sdp, name: str, rot_clockwise: bool = True):
@@ -4571,9 +4580,9 @@ def search_for_face_tool_helper(sdp, name: str, rot_clockwise: bool = True):
 
         if p is not None:
             return f"Found {name} at {loc}."
-        return f"No instances of {name} found."
+        return ToolFailure(f"No instances of {name} found.")
     except Exception as e:
-        return f"Error searching for face {name}: {str(e)}"
+        return ToolFailure(f"Error searching for face {name}: {str(e)}")
     finally:
         _move_oak_d.allHome()
 
@@ -4621,7 +4630,7 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
             result += f", {_deliveree} was found at {loc}"
             del _locations[_deliveree]
         else:
-            result += f", {_deliveree} was not found"
+            result = ToolFailure(result + f", {_deliveree} was not found")
         
         # Clear the flag after completion
         _langgraph_initiated_move = False
@@ -4629,7 +4638,7 @@ def while_go_to_location_find_face_tool_helper(sdp, name: str, loc: str):
         return result
     except Exception as e:
         _langgraph_initiated_move = False
-        return f"Error going to {location_name} while searching for {name}: {str(e)}"
+        return ToolFailure(f"Error going to {location_name} while searching for {name}: {str(e)}")
 
 def cancel_action_tool_helper(sdp):
     """Cancel current action."""
@@ -4663,7 +4672,7 @@ def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0
         return result
     except Exception as e:
         _langgraph_initiated_move = False
-        return f"Error going to coordinates ({x}, {y}, {yaw}): {str(e)}"
+        return ToolFailure(f"Error going to coordinates ({x}, {y}, {yaw}): {str(e)}")
 
 def go_to_location_tool_helper(sdp, location_name: str):
     """Go to a specific named location using the existing goToLocation function."""
@@ -4684,7 +4693,7 @@ def go_to_location_tool_helper(sdp, location_name: str):
         return result
     except Exception as e:
         _langgraph_initiated_move = False
-        return f"Error going to {location_name}: {str(e)}"
+        return ToolFailure(f"Error going to {location_name}: {str(e)}")
 
 def go_to_location_with_narration_tool_helper(sdp, location_name: str, narration_interval_seconds: int = 5):
     """Go to a specific named location while periodically describing the scene."""
@@ -4721,7 +4730,7 @@ def go_to_location_with_narration_tool_helper(sdp, location_name: str, narration
         return result
     except Exception as e:
         _langgraph_initiated_move = False
-        return f"Error going to {location_name} with narration: {str(e)}"
+        return ToolFailure(f"Error going to {location_name} with narration: {str(e)}")
 
 def move_in_dir_dist_tool_helper(sdp, direction: str, distance: float, unit: str = "meters"):
     """Move in specified direction for specified distance."""
@@ -4740,7 +4749,7 @@ def move_in_dir_dist_tool_helper(sdp, direction: str, distance: float, unit: str
 
         return result
     except Exception as e:
-        return f"Error moving {direction}: {str(e)}"
+        return ToolFailure(f"Error moving {direction}: {str(e)}")
 
 def get_loc_of_person_from_voice_tool_helper(sdp):
     """Find person based on voice direction."""
@@ -4748,7 +4757,7 @@ def get_loc_of_person_from_voice_tool_helper(sdp):
         doa = _mic_array.getDoa()
         return getLocOfPersonFromSound(doa, sdp)
     except Exception as e:
-        return f"Error finding person from voice: {str(e)}"
+        return ToolFailure(f"Error finding person from voice: {str(e)}")
 
 def search_for_person_tool_helper(sdp):
     """Search for any person by rotating and scanning."""
@@ -4764,10 +4773,10 @@ def search_for_person_tool_helper(sdp):
             closest_person_loc = getLocationOfObj(sdp, "closest person", p, offset_dist=1, radians=False)
 
             return f"Found {len(ps)} person(s), the closest one is at {closest_person_loc}."
-        return "No person found."
+        return ToolFailure("No person found.")
 
     except Exception as e:
-        return f"Error searching for person: {str(e)}"
+        return ToolFailure(f"Error searching for person: {str(e)}")
     finally:
         _move_oak_d.allHome()    
 
@@ -4777,9 +4786,9 @@ def get_known_faces_tool_helper():
         faces = get_known_faces()
         if faces:
             return f"Known faces: {', '.join(faces)}"
-        return "No faces known."
+        return ToolFailure("No faces known.")
     except Exception as e:
-        return f"Error getting known faces: {str(e)}"
+        return ToolFailure(f"Error getting known faces: {str(e)}")
 
 def identify_visible_face_tool_helper(name: str):
     """Identify face if any visible."""
@@ -4788,9 +4797,9 @@ def identify_visible_face_tool_helper(name: str):
         if found:
             return f"{name} is here"
         else:
-            return "No known face is visible"
+            return ToolFailure("No known face is visible")
     except Exception as e:
-        return f"Error identifying any face: {str(e)}"
+        return ToolFailure(f"Error identifying any face: {str(e)}")
 
 def memorize_a_face(new_name):
     eyes.setTargetPitchYaw(-70, 0)
@@ -4809,7 +4818,7 @@ def memorize_a_face_tool_helper(name: str):
         memorize_a_face(name)
         return f"Memorized face for {name}"
     except Exception as e:
-        return f"Error memorizing face: {str(e)}"
+        return ToolFailure(f"Error memorizing face: {str(e)}")
 
 # TBD
 def get_object_from_person_tool_helper(sdp, obj: str):
@@ -4823,7 +4832,7 @@ def get_object_from_person_tool_helper(sdp, obj: str):
         _langgraph_initiated_move = False
         return result
     except Exception as e:
-        return f"Error getting {obj} from user: {str(e)}"
+        return ToolFailure(f"Error getting {obj} from user: {str(e)}")
 
 # TBD
 def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
@@ -4837,7 +4846,7 @@ def deliver_object_to_person_tool_helper(sdp, obj: str, person: str, loc: str):
         _langgraph_initiated_move = False
         return result
     except Exception as e:
-        return f"Error delivering {obj} to {person}: {str(e)}"
+        return ToolFailure(f"Error delivering {obj} to {person}: {str(e)}")
 
 def track_object_tool_helper(obj: str, height: str = "eye level", duration: int = 30):
     """Track object via NanoOWL at inference rate with no robot movement. Shows green bbox."""
@@ -4848,7 +4857,7 @@ def track_object_tool_helper(obj: str, height: str = "eye level", duration: int 
         return guard
 
     if _nano_owl_mgr is None:
-        return "Error: NanoOWL not available."
+        return ToolFailure("Error: NanoOWL not available.")
 
     if height == "floor":
         aim_oakd(pitch=135)
@@ -4939,16 +4948,18 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
             if p is not None:
                 obj_loc = getLocationOfObj(sdp, yolo_obj, p, offset_dist=0.75, radians=False)
 
-            return f"{obj} "+ (f"was found at {obj_loc}." if p else "was not found.")
+            if p is None:
+                return ToolFailure(f"{obj} was not found.")
+            return f"{obj} was found at {obj_loc}."
 
         except Exception as e:
-            return f"Error searching for object {obj}: {str(e)}"
+            return ToolFailure(f"Error searching for object {obj}: {str(e)}")
         finally:
             _move_oak_d.allHome()            
     else:
         # object not handled by YOLO. Use NanoOWL-based object search
         if _nano_owl_mgr is None:
-            return f"Error: NanoOWL not available to search for {obj}."
+            return ToolFailure(f"Error: NanoOWL not available to search for {obj}.")
 
         print("processing with nano owl")
         _nano_owl_mgr.set_prompt(f"[{obj}]")
@@ -5010,11 +5021,11 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
             if obj_loc:
                 return f"{obj} was found at {obj_loc}."
             elif p is not None:
-                return f"{obj} was found but depth unavailable, cannot determine location."
+                return ToolFailure(f"{obj} was found but depth unavailable, cannot determine location.")
             else:
-                return f"{obj} was not found."
+                return ToolFailure(f"{obj} was not found.")
         except Exception as e:
-            return f"Error searching for object {obj}: {str(e)}"
+            return ToolFailure(f"Error searching for object {obj}: {str(e)}")
         finally:
             _keep_camera_orientation = False
             _mdai.show_yolo_boxes = True
@@ -5058,18 +5069,18 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
                 result += f", {obj} is at {obj_loc}. I am not at {loc} or near the {obj}"
                 del _locations[yolo_obj]
             else:
-                result += f", {obj} was not found and I am now at {loc}."
+                result = ToolFailure(result + f", {obj} was not found and I am now at {loc}.")
 
             return result
         except Exception as e:
-            return f"Error finding {obj}: {str(e)}"
+            return ToolFailure(f"Error finding {obj}: {str(e)}")
         finally:
             _move_oak_d.allHome()
             sdp.setSpeed(_user_set_speed)
     else:
         # object not handled by YOLO. Use NanoOWL-based object search
         if _nano_owl_mgr is None:
-            return f"Error: NanoOWL not available to search for {obj}."
+            return ToolFailure(f"Error: NanoOWL not available to search for {obj}.")
 
         _nano_owl_mgr.set_prompt(f"[{obj}]")
         _nano_owl_mgr.start_streaming(fps=16)
@@ -5087,13 +5098,13 @@ def while_go_to_loc_find_object_tool_helper(sdp, obj: str, loc: str, height: str
                 obj_loc = getLocationOfObj(sdp, obj, spatial_det, offset_dist=0.75, radians=False)
                 if obj_loc:
                     return result + f", {obj} is at {obj_loc}. I am not at {loc} or near the {obj}"
-                return result + f", {obj} was found but depth unavailable, cannot determine location."
+                return ToolFailure(result + f", {obj} was found but depth unavailable, cannot determine location.")
             elif spatial_det is not None:
-                return result + f", {obj} was found but depth unavailable, cannot determine location."
+                return ToolFailure(result + f", {obj} was found but depth unavailable, cannot determine location.")
             else:
-                return result + f", {obj} was not found and I am now at {loc}."
+                return ToolFailure(result + f", {obj} was not found and I am now at {loc}.")
         except Exception as e:
-            return f"Error finding {obj}: {str(e)}"
+            return ToolFailure(f"Error finding {obj}: {str(e)}")
         finally:
             _keep_camera_orientation = False
             _mdai.show_yolo_boxes = True
@@ -5108,7 +5119,7 @@ def aim_camera_tool_helper(yaw: int = None, pitch: int = None):
         aim_oakd(yaw=yaw, pitch=pitch)
         return f"Camera aimed to yaw={yaw}, pitch={pitch}"
     except Exception as e:
-        return f"Error aiming camera: {str(e)}"
+        return ToolFailure(f"Error aiming camera: {str(e)}")
 
 def home_camera_tool_helper():
     """Return camera to home position."""
@@ -5116,7 +5127,7 @@ def home_camera_tool_helper():
         home_oakd()
         return "Camera returned to home position."
     except Exception as e:
-        return f"Error homing camera: {str(e)}"
+        return ToolFailure(f"Error homing camera: {str(e)}")
 
 def take_picture_tool_helper():
     """Take a picture using the camera."""
@@ -5129,7 +5140,7 @@ def take_picture_tool_helper():
         _mdai.takePicture()
         return "Picture taken and shown on screen."
     except Exception as e:
-        return f"Error taking picture: {str(e)}"
+        return ToolFailure(f"Error taking picture: {str(e)}")
 
 def where_am_i_tool_helper(sdp):
     """Get current location information."""
@@ -5139,7 +5150,7 @@ def where_am_i_tool_helper(sdp):
             return f"I am at the {location} location."
         return f"I am closest to the {location} location, {distance:.2f} meters away."
     except Exception as e:
-        return f"Error getting location: {str(e)}"
+        return ToolFailure(f"Error getting location: {str(e)}")
 
 def recover_localization_tool_helper(sdp, rect: dict = _WHOLE_MAP_RECT):
     """Recover localization using a given rectangle."""
@@ -5150,9 +5161,9 @@ def recover_localization_tool_helper(sdp, rect: dict = _WHOLE_MAP_RECT):
         if success:
             return "Localization recovered."
         else:
-            return f"Error recovering localization: {errStr}"
+            return ToolFailure(f"Error recovering localization: {errStr}")
     except Exception as e:
-        return f"Error recovering localization: {str(e)}"
+        return ToolFailure(f"Error recovering localization: {str(e)}")
 
 def follow_me_tool_helper():
     """Start following a person."""
@@ -5163,7 +5174,7 @@ def follow_me_tool_helper():
             return "Started following you."
         return "Already following."
     except Exception as e:
-        return f"Error starting follow: {str(e)}"
+        return ToolFailure(f"Error starting follow: {str(e)}")
 
 def stop_following_tool_helper():
     """Stop following a person."""
@@ -5171,7 +5182,7 @@ def stop_following_tool_helper():
         stop_following()
         return "Stopped following."
     except Exception as e:
-        return f"Error stopping follow: {str(e)}"
+        return ToolFailure(f"Error stopping follow: {str(e)}")
 
 def track_me_tool_helper():
     """Start tracking a person with camera."""
@@ -5179,7 +5190,7 @@ def track_me_tool_helper():
         start_tracking()
         return "Started tracking you."
     except Exception as e:
-        return f"Error starting tracking: {str(e)}"
+        return ToolFailure(f"Error starting tracking: {str(e)}")
 
 def stop_tracking_tool_helper():
     """Stop tracking a person."""
@@ -5187,7 +5198,7 @@ def stop_tracking_tool_helper():
         stop_tracking()
         return "Stopped tracking."
     except Exception as e:
-        return f"Error stopping tracking: {str(e)}"
+        return ToolFailure(f"Error stopping tracking: {str(e)}")
 
 def describe_scene_tool_helper():
     """Describe the scene concisely."""
@@ -5195,7 +5206,7 @@ def describe_scene_tool_helper():
     if guard:
         return guard
     if _nano_vlm is None:
-        return "Error: NanoVLM client not available to describe the scene."
+        return ToolFailure("Error: NanoVLM client not available to describe the scene.")
     try:
         prompt = "Describe the scene concisely."
         _nano_vlm.set_prompts([prompt])
@@ -5203,7 +5214,7 @@ def describe_scene_tool_helper():
         _mdai.drawText(answer, 1, 14)
         return answer
     except Exception as e:
-        return f"Error describing the scene: {str(e)}"    
+        return ToolFailure(f"Error describing the scene: {str(e)}")    
 
 def ask_question_about_scene_tool_helper(prompt: str):
     """Ask question about the scene."""
@@ -5211,14 +5222,14 @@ def ask_question_about_scene_tool_helper(prompt: str):
     if guard:
         return guard
     if _nano_vlm is None:
-        return "Error: NanoVLM client not available to answer questions about the scene."
+        return ToolFailure("Error: NanoVLM client not available to answer questions about the scene.")
     try:
         _nano_vlm.set_prompts([prompt])
         answer, _, _ = _nano_vlm.get_output(prompt_filter=prompt)
         _mdai.drawText(answer, 1, 14)
         return answer
     except Exception as e:
-        return f"Error asking about the scene: {str(e)}"
+        return ToolFailure(f"Error asking about the scene: {str(e)}")
 
 def get_yolo_detections_tool_helper(sdp: MyClient):
     """Get a list of objects and persons (with coordinates) visible in the scene using YOLO model."""
@@ -5248,19 +5259,76 @@ def _arm_problem(result: dict) -> str:
             or "no detail")
 
 
-def _ensure_arm_enabled() -> str:
+_ARM_SERVICE_RESTART = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                        "jim@192.168.55.1", "sudo", "systemctl", "restart", "dofbot-arm"]
+_ARM_RESTART_WAIT = 20  # seconds for the restarted server to start answering
+# Seconds enable_arm waits for the ROS stack. A healthy enable is up in ~10 s;
+# a wedged one never comes up, and a service restart clears it. The first
+# enable after boot is slower.
+_ARM_ENABLE_TIMEOUT = 15
+_ARM_FIRST_ENABLE_TIMEOUT = 30
+
+
+def _restart_arm_service() -> bool:
+    """Restart the arm server on the Jetson, then reconnect. True once it
+    answers again."""
+    print("Restarting dofbot-arm...")
+    try:
+        subprocess.run(_ARM_SERVICE_RESTART, timeout=30, check=True)
+    except Exception as e:
+        print(f"Could not restart dofbot-arm: {e}")
+        return False
+    deadline = time.time() + _ARM_RESTART_WAIT
+    while time.time() < deadline:
+        if _arm_client.connect():
+            return True
+        time.sleep(1)
+    print("dofbot-arm restarted but the arm server still is not answering.")
+    return False
+
+
+# Failures that mean the ROS stack itself is wedged rather than that a move was
+# hard: every command after one fails the same way until the service restarts.
+_ARM_STUCK_SIGNS = ("get_planning_scene timed out", "no /joint_states message")
+
+
+def _arm_stuck(result: dict) -> bool:
+    text = " ".join(str(result.get(k) or "") for k in ("error", "reason", "output"))
+    return any(sign in text for sign in _ARM_STUCK_SIGNS)
+
+
+def _revive_arm() -> str:
+    """Restart the arm service and enable the stack again. Returns "" when the
+    arm is ready, otherwise the reason it is not. Stopping the service opens
+    the jaws, so anything held is dropped."""
+    global _held_object
+    restarted = _restart_arm_service()
+    _held_object = None
+    if not restarted:
+        return "the arm service could not be restarted"
+    result = _arm_client.enable_arm(timeout=_ARM_ENABLE_TIMEOUT)
+    return "" if result.get("ok") else _arm_problem(result)
+
+
+def _ensure_arm_enabled(timeout: int = _ARM_ENABLE_TIMEOUT) -> str:
     """Bring the ROS arm stack up if it is not already up. Returns "" when the
     arm is ready, otherwise the reason it is not.
 
     Motion commands deliberately do not auto-enable, so every path that moves
     the arm comes through here. Normally a no-op: initialize_robot enables the
     stack at startup and this only does work if it went away since.
+
+    The stack gets `timeout` seconds to come up; if it does not, the arm
+    service is restarted and the enable tried once more.
     """
     status = _arm_client.get_status()
     if status is not None and status.get("arm_enabled"):
         return ""
-    result = _arm_client.enable_arm()
-    return "" if result.get("ok") else _arm_problem(result)
+    result = _arm_client.enable_arm(timeout=timeout)
+    if result.get("ok"):
+        return ""
+    print(f"Arm stack not up after {timeout} s: {_arm_problem(result)}")
+    return _revive_arm()
 
 
 # Exit statuses of a failed motion that leave the arm stranded: 1 is a plain
@@ -5279,8 +5347,16 @@ _FORCE_RESET_ASK = ("Ask the user whether anything is in the arm's way; if they 
 def _recover_arm(result: dict):
     """Reset the arm after a failed motion whose exit status strands it.
     Returns (reset, note): whether a reset ran -- it opens the gripper first,
-    so anything held is dropped -- and a sentence to add if it failed."""
+    so anything held is dropped -- and a sentence to add if it failed.
+
+    A wedged ROS stack fails the reset the same way, so it gets the arm
+    service restarted first."""
     global _held_object
+    if _arm_stuck(result):
+        print(f"Arm stack wedged: {_arm_problem(result)}")
+        problem = _revive_arm()
+        if problem:
+            return True, f" The arm software is stuck and could not be restarted: {problem}."
     if result.get("returncode") not in _ARM_RESET_CODES:
         return False, ""
     reset = _arm_client.reset_arm()
@@ -5294,24 +5370,24 @@ def _recover_arm(result: dict):
 def wave_arm_tool_helper():
     """Wave the robot's arm using the arm client."""
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: Arm client not available to wave the arm."
+        return ToolFailure("Error: Arm client not available to wave the arm.")
     if _held_object is not None:
         # The swings run well above picking speed and stow at `init`, so this
         # would both fling the can and leave the arm where the wrist camera
         # cannot be trusted about whether it is still there.
-        return (f"I am holding a {_held_object}, so I will not wave -- I would "
-                f"fling it.")
+        return ToolFailure(f"I am holding a {_held_object}, so I will not wave -- I would "
+                           f"fling it.")
     try:
         problem = _ensure_arm_enabled()
         if problem:
-            return f"Error: the arm could not be enabled to wave: {problem}"
+            return ToolFailure(f"Error: the arm could not be enabled to wave: {problem}")
         result = _arm_client.wave_arm()
         if result.get("ok"):
             return "Waved the arm."
         _, note = _recover_arm(result)
-        return f"Error: the arm failed to wave: {_arm_problem(result)}.{note}"
+        return ToolFailure(f"Error: the arm failed to wave: {_arm_problem(result)}.{note}")
     except Exception as e:
-        return f"Error waving the arm: {str(e)}"
+        return ToolFailure(f"Error waving the arm: {str(e)}")
 
 
 # --- Pick and place ----------------------------------------------------------
@@ -5658,7 +5734,7 @@ def back_up_tool_helper(sdp, distance: float):
             return f"Stopped after backing up {driven:.2f} m."
         return f"Backed up {driven:.2f} m."
     except Exception as e:
-        return f"Error backing up: {str(e)}"
+        return ToolFailure(f"Error backing up: {str(e)}")
 
 
 def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
@@ -5668,15 +5744,15 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
 
     obj = _normalize_place_name(object_name)
     if obj not in PICKABLE_OBJECTS:
-        return (f"I cannot pick up a {object_name}. I can only pick up: "
-                f"{', '.join(PICKABLE_OBJECTS)}.")
+        return ToolFailure(f"I cannot pick up a {object_name}. I can only pick up: "
+                           f"{', '.join(PICKABLE_OBJECTS)}.")
     if _held_object is not None:
-        return (f"I am already holding a {_held_object}, and I can only carry "
-                f"one thing at a time.")
+        return ToolFailure(f"I am already holding a {_held_object}, and I can only carry "
+                           f"one thing at a time.")
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to pick anything up."
+        return ToolFailure("Error: the arm is not available to pick anything up.")
     if _nano_owl_mgr is None:
-        return f"Error: NanoOWL not available to locate the {obj}."
+        return ToolFailure(f"Error: NanoOWL not available to locate the {obj}.")
 
     guard = _require_camera_ai("owl")
     if guard:
@@ -5684,7 +5760,7 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
 
     problem = _ensure_arm_enabled()
     if problem:
-        return f"Error: the arm could not be enabled to pick up the {obj}: {problem}"
+        return ToolFailure(f"Error: the arm could not be enabled to pick up the {obj}: {problem}")
 
     try:
         # Out of reach by a little, the base closes the gap itself and looks
@@ -5726,7 +5802,7 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
                     expected = None
                     continue
                 where = "after moving the base" if attempt else "on the floor in front of me"
-                return f"I do not see a {obj} {where}."
+                return ToolFailure(f"I do not see a {obj} {where}.")
 
             # The depth point is on the near face of the can partway up it; the
             # centre the arm wants comes from the can's own size and the floor.
@@ -5745,9 +5821,9 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
                 gx, gy, gyaw = robot_frames.approach_pose(
                     robot_frames.arm_to_robot(target), pose)
                 tried = (f" after moving the base {attempt} times" if attempt else "")
-                return (f"The {obj} is out of reach{tried}: {reason}. Squared up "
-                        f"on it at a comfortable distance, I would be standing at "
-                        f"map x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
+                return ToolFailure(f"The {obj} is out of reach{tried}: {reason}. Squared up "
+                                   f"on it at a comfortable distance, I would be standing at "
+                                   f"map x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
 
             turn_deg, drive_m = move
             drive_m = max(-PICK_MAX_NUDGE, min(PICK_MAX_NUDGE, drive_m))
@@ -5774,11 +5850,11 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
         if result.get("returncode") == _ARM_NOT_THERE:
-            return f"The {obj} was not detected where the arm reached for it."
+            return ToolFailure(f"The {obj} was not detected where the arm reached for it.")
         _, note = _recover_arm(result)
-        return f"The arm failed to pick up the {obj}: {_arm_problem(result)}.{note}"
+        return ToolFailure(f"The arm failed to pick up the {obj}: {_arm_problem(result)}.{note}")
     except Exception as e:
-        return f"Error picking up the {object_name}: {str(e)}"
+        return ToolFailure(f"Error picking up the {object_name}: {str(e)}")
     finally:
         _move_oak_d.allHome()
         eyes.setHome()
@@ -5789,19 +5865,19 @@ def put_down_tool_helper(sdp, destination: str):
     global _held_object
 
     if _held_object is None:
-        return "I am not holding anything, so there is nothing to put down."
+        return ToolFailure("I am not holding anything, so there is nothing to put down.")
 
     dest = _normalize_place_name(destination)
     if dest not in PLACE_DESTINATIONS:
-        return (f"I cannot put things in a {destination}. I can only put them "
-                f"in: {', '.join(PLACE_DESTINATIONS)}.")
+        return ToolFailure(f"I cannot put things in a {destination}. I can only put them "
+                           f"in: {', '.join(PLACE_DESTINATIONS)}.")
     if _arm_client is None or not _arm_client.is_connected():
-        return f"Error: the arm is not available to put down the {_held_object}."
+        return ToolFailure(f"Error: the arm is not available to put down the {_held_object}.")
 
     key = _find_location_key(dest)
     if key is None:
-        return (f"I have no saved location called '{dest}', so I do not know "
-                f"where to take the {_held_object}.")
+        return ToolFailure(f"I have no saved location called '{dest}', so I do not know "
+                           f"where to take the {_held_object}.")
 
     # Release drops the object in front of the robot, so being at the bin is
     # the whole of "placing it in the bin" -- check it rather than litter.
@@ -5809,11 +5885,11 @@ def put_down_tool_helper(sdp, destination: str):
         pose = sdp.pose()
         dist = distance_A_to_B(pose.x, pose.y, _locations[key][0], _locations[key][1])
     except Exception as e:
-        return f"Error checking whether I am at the {dest}: {str(e)}"
+        return ToolFailure(f"Error checking whether I am at the {dest}: {str(e)}")
     if dist > PLACE_ARRIVAL_DIST:
-        return (f"I am {dist:.1f} m from the {dest}, too far to drop the "
-                f"{_held_object} into it. I have to be within "
-                f"{PLACE_ARRIVAL_DIST:.1f} m of it.")
+        return ToolFailure(f"I am {dist:.1f} m from the {dest}, too far to drop the "
+                           f"{_held_object} into it. I have to be within "
+                           f"{PLACE_ARRIVAL_DIST:.1f} m of it.")
 
     return _place_held(f"in the {dest}", f"on the way to the {dest}")
 
@@ -5821,9 +5897,9 @@ def put_down_tool_helper(sdp, destination: str):
 def place_tool_helper():
     """Place the held object in front of the robot, wherever it stands."""
     if _held_object is None:
-        return "I am not holding anything, so there is nothing to place."
+        return ToolFailure("I am not holding anything, so there is nothing to place.")
     if _arm_client is None or not _arm_client.is_connected():
-        return f"Error: the arm is not available to place the {_held_object}."
+        return ToolFailure(f"Error: the arm is not available to place the {_held_object}.")
     return _place_held("down in front of me", "since I picked it up")
 
 
@@ -5840,14 +5916,14 @@ def _place_held(where: str, lost_when: str):
     if seen is False:
         lost = _held_object
         _held_object = None
-        return (f"The {lost} is not in the gripper any more -- {why}. It must "
-                f"have come loose {lost_when}, so there is nothing to put "
-                f"down.")
+        return ToolFailure(f"The {lost} is not in the gripper any more -- {why}. It must "
+                           f"have come loose {lost_when}, so there is nothing to put "
+                           f"down.")
 
     problem = _ensure_arm_enabled()
     if problem:
-        return (f"Error: the arm could not be enabled to put down the "
-                f"{_held_object}: {problem}")
+        return ToolFailure(f"Error: the arm could not be enabled to put down the "
+                           f"{_held_object}: {problem}")
 
     try:
         held = _held_object
@@ -5857,13 +5933,13 @@ def _place_held(where: str, lost_when: str):
             return f"I put the {held} {where}."
         reset, note = _recover_arm(result)
         if reset:
-            return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
-                    f"It dropped the {held} where it was standing.{note}")
-        return (f"The arm failed to put down the {held}: {_arm_problem(result)}. "
-                f"I am still holding it, and the arm cannot plan another move "
-                f"until it is reset.")
+            return ToolFailure(f"The arm failed to put down the {held}: {_arm_problem(result)}. "
+                               f"It dropped the {held} where it was standing.{note}")
+        return ToolFailure(f"The arm failed to put down the {held}: {_arm_problem(result)}. "
+                           f"I am still holding it, and the arm cannot plan another move "
+                           f"until it is reset.")
     except Exception as e:
-        return f"Error putting down the {_held_object}: {str(e)}"
+        return ToolFailure(f"Error putting down the {_held_object}: {str(e)}")
 
 
 def get_held_object_tool_helper():
@@ -5876,8 +5952,8 @@ def get_held_object_tool_helper():
     if seen is False:
         lost = _held_object
         _held_object = None
-        return (f"I thought I was holding a {lost}, but the gripper is "
-                f"empty -- {why}.")
+        return ToolFailure(f"I thought I was holding a {lost}, but the gripper is "
+                           f"empty -- {why}.")
     if seen is None:
         return (f"I am holding a {_held_object}, though I could not confirm "
                 f"it by looking ({why}).")
@@ -5890,13 +5966,19 @@ def reset_arm_tool_helper(force: bool = False):
     global _held_object
 
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to reset."
+        return ToolFailure("Error: the arm is not available to reset.")
     problem = _ensure_arm_enabled()
     if problem:
-        return f"Error: the arm could not be enabled to reset: {problem}"
+        return ToolFailure(f"Error: the arm could not be enabled to reset: {problem}")
     try:
         held = _held_object
         result = _arm_client.reset_arm(force=force)
+        if _arm_stuck(result):
+            print(f"Arm stack wedged: {_arm_problem(result)}")
+            problem = _revive_arm()
+            if problem:
+                return ToolFailure(f"The arm software is stuck and could not be restarted: {problem}")
+            result = _arm_client.reset_arm(force=force)
         # reset_arm opens the gripper before it moves, so whatever was carried
         # is on the floor now whether or not the move that followed succeeded.
         _held_object = None
@@ -5904,10 +5986,10 @@ def reset_arm_tool_helper(force: bool = False):
             return ("The arm is reset and back at rest."
                     + (f" It dropped the {held} where it was standing." if held else ""))
         if force:
-            return f"The arm could not be reset even when forced: {_arm_problem(result)}"
-        return f"The arm could not be reset: {_arm_problem(result)}. {_FORCE_RESET_ASK}"
+            return ToolFailure(f"The arm could not be reset even when forced: {_arm_problem(result)}")
+        return ToolFailure(f"The arm could not be reset: {_arm_problem(result)}. {_FORCE_RESET_ASK}")
     except Exception as e:
-        return f"Error resetting the arm: {str(e)}"
+        return ToolFailure(f"Error resetting the arm: {str(e)}")
 
 
 def drop_tool_helper():
@@ -5915,32 +5997,39 @@ def drop_tool_helper():
     global _held_object
 
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to drop anything."
+        return ToolFailure("Error: the arm is not available to drop anything.")
     problem = _ensure_arm_enabled()
     if problem:
-        return f"Error: the arm could not be enabled to drop: {problem}"
+        return ToolFailure(f"Error: the arm could not be enabled to drop: {problem}")
     try:
         held = _held_object
         result = _arm_client.drop_can()
+        if _arm_stuck(result):
+            # Restarting the service opens the jaws, which is the drop.
+            print(f"Arm stack wedged: {_arm_problem(result)}")
+            problem = _revive_arm()
+            if problem:
+                return ToolFailure(f"The arm software is stuck and could not be restarted: {problem}")
+            return f"I dropped the {held}." if held else "I opened the gripper."
         if not result.get("ok"):
-            return f"The arm failed to drop: {_arm_problem(result)}"
+            return ToolFailure(f"The arm failed to drop: {_arm_problem(result)}")
         _held_object = None
         return f"I dropped the {held}." if held else "I opened the gripper."
     except Exception as e:
-        return f"Error dropping: {str(e)}"
+        return ToolFailure(f"Error dropping: {str(e)}")
 
 
 def enable_arm_tool_helper():
     """Start the arm's ROS stack."""
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to enable."
+        return ToolFailure("Error: the arm is not available to enable.")
     try:
         problem = _ensure_arm_enabled()
         if problem:
-            return f"Error: the arm could not be enabled: {problem}"
+            return ToolFailure(f"Error: the arm could not be enabled: {problem}")
         return "The arm is enabled."
     except Exception as e:
-        return f"Error enabling the arm: {str(e)}"
+        return ToolFailure(f"Error enabling the arm: {str(e)}")
 
 
 def disable_arm_tool_helper():
@@ -5948,7 +6037,7 @@ def disable_arm_tool_helper():
     global _held_object
 
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to disable."
+        return ToolFailure("Error: the arm is not available to disable.")
     try:
         held = _held_object
         result = _arm_client.disable_arm("stow")
@@ -5958,33 +6047,33 @@ def disable_arm_tool_helper():
         dropped = f" It dropped the {held} where it was standing." if held else ""
         if result.get("ok"):
             return "The arm is parked and disabled." + dropped
-        return f"The arm failed to disable: {_arm_problem(result)}.{dropped}"
+        return ToolFailure(f"The arm failed to disable: {_arm_problem(result)}.{dropped}")
     except Exception as e:
-        return f"Error disabling the arm: {str(e)}"
+        return ToolFailure(f"Error disabling the arm: {str(e)}")
 
 
 def move_arm_to_position_tool_helper(position: str):
     """Move the arm to a saved state."""
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to move."
+        return ToolFailure("Error: the arm is not available to move.")
     if _held_object is not None:
         # Same reason as wave_arm: _held_object promises the arm is at carry,
         # where the wrist camera can be trusted about what is in the jaws.
-        return (f"I am holding a {_held_object}, so I will not move the arm "
-                f"until it is put down.")
+        return ToolFailure(f"I am holding a {_held_object}, so I will not move the arm "
+                           f"until it is put down.")
     try:
         problem = _ensure_arm_enabled()
         if problem:
-            return f"Error: the arm could not be enabled to move: {problem}"
+            return ToolFailure(f"Error: the arm could not be enabled to move: {problem}")
         result = _arm_client.move_to_state(position)
         if result.get("ok"):
             return f"The arm is at {position}."
         _, note = _recover_arm(result)
         states = ", ".join(_arm_client.list_states()) or "unknown"
-        return (f"Error: the arm failed to move to {position}: "
-                f"{_arm_problem(result)}. Known positions: {states}.{note}")
+        return ToolFailure(f"Error: the arm failed to move to {position}: "
+                           f"{_arm_problem(result)}. Known positions: {states}.{note}")
     except Exception as e:
-        return f"Error moving the arm: {str(e)}"
+        return ToolFailure(f"Error moving the arm: {str(e)}")
 
 
 def set_arm_torque_tool_helper(on: bool):
@@ -5992,7 +6081,7 @@ def set_arm_torque_tool_helper(on: bool):
     global _held_object
 
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to set its torque."
+        return ToolFailure("Error: the arm is not available to set its torque.")
     try:
         held = _held_object
         result = _arm_client.set_torque(on)
@@ -6000,26 +6089,26 @@ def set_arm_torque_tool_helper(on: bool):
             # Off disables the arm first, and that opens the jaws.
             _held_object = None
         if not result.get("ok"):
-            return f"The arm failed to set torque {'on' if on else 'off'}: {_arm_problem(result)}"
+            return ToolFailure(f"The arm failed to set torque {'on' if on else 'off'}: {_arm_problem(result)}")
         if on:
             return "Arm torque is on; the servos are holding."
         return ("Arm torque is off; the arm is disabled and limp."
                 + (f" It dropped the {held}." if held else ""))
     except Exception as e:
-        return f"Error setting the arm torque: {str(e)}"
+        return ToolFailure(f"Error setting the arm torque: {str(e)}")
 
 
 def stop_arm_tool_helper():
     """Abort the arm motion in flight."""
     if _arm_client is None or not _arm_client.is_connected():
-        return "Error: the arm is not available to stop."
+        return ToolFailure("Error: the arm is not available to stop.")
     try:
         result = _arm_client.stop()
         if result.get("ok"):
             return "Stopped the arm."
-        return f"The arm failed to stop: {_arm_problem(result)}"
+        return ToolFailure(f"The arm failed to stop: {_arm_problem(result)}")
     except Exception as e:
-        return f"Error stopping the arm: {str(e)}"
+        return ToolFailure(f"Error stopping the arm: {str(e)}")
 
 # --- Camera-AI service switching layer --------------------------------------
 # The ONLY code that constructs/connects/disconnects the OWL/VLM clients. All of
@@ -6098,7 +6187,7 @@ def _activate_camera_ai(target: str, announce: bool = True) -> str:
     global _active_camera_ai, _pending_camera_ai, _nano_owl, _nano_vlm, _nano_owl_mgr
 
     if target not in ("owl", "vlm"):
-        return f"Error: unknown camera skill '{target}'."
+        return ToolFailure(f"Error: unknown camera skill '{target}'.")
 
     friendly = _CAMERA_AI_FRIENDLY[target]
     secs = _SWITCH_SECONDS.get(target, 45)
@@ -6117,7 +6206,7 @@ def _activate_camera_ai(target: str, announce: bool = True) -> str:
     if _supervisor is not None and _supervisor.is_connected() and _supervisor.current() == target:
         if _connect_camera_ai_client(target):
             return f"The {friendly} skill is now active."
-        return f"Switched to {friendly} but could not connect its client."
+        return ToolFailure(f"Switched to {friendly} but could not connect its client.")
 
     # No supervisor: we cannot orchestrate a switch. Try to connect the requested
     # client directly (legacy single-service setup); if its service isn't running
@@ -6125,8 +6214,8 @@ def _activate_camera_ai(target: str, announce: bool = True) -> str:
     if _supervisor is None or not _supervisor.is_connected():
         if _connect_camera_ai_client(target):
             return f"The {friendly} skill is now active."
-        return (f"The {friendly} skill is not available and the camera AI cannot be "
-                f"switched right now (supervisor unavailable).")
+        return ToolFailure(f"The {friendly} skill is not available and the camera AI cannot be "
+                           f"switched right now (supervisor unavailable).")
 
     # Tear down the outgoing client now (its service is about to stop) and mark
     # the switch pending so tools report "not active yet".
@@ -6153,7 +6242,7 @@ def _activate_camera_ai(target: str, announce: bool = True) -> str:
     result = _supervisor.switch_to(target)
     if not result or not result.get("accepted"):
         _pending_camera_ai = None
-        return f"Error: the supervisor did not accept the switch to the {friendly} skill."
+        return ToolFailure(f"Error: the supervisor did not accept the switch to the {friendly} skill.")
 
     # Wait for the switch to settle in the background so the listen loop stays
     # free; _poll_switch connects the client and announces readiness.
@@ -6222,12 +6311,12 @@ def _poll_switch(target: str):
         print(f"Switch poll error: {e}")
         _pending_camera_ai = None
 
-_OWL_DOWN = ("Error: the Jetson's object detection server stopped responding, so "
-             "I cannot look for objects. The Jetson needs to be checked or restarted.")
+_OWL_DOWN = ToolFailure("Error: the Jetson's object detection server stopped responding, so "
+                        "I cannot look for objects. The Jetson needs to be checked or restarted.")
 
 
-_OWL_STARTING = ("The Jetson is still starting the object search skill; wait a "
-                 "moment and try again.")
+_OWL_STARTING = ToolFailure("The Jetson is still starting the object search skill; wait a "
+                            "moment and try again.")
 
 
 def _owl_alive() -> bool:
@@ -6283,10 +6372,10 @@ def _require_camera_ai(target: str):
     secs = _SWITCH_SECONDS.get(target, 45)
     enable_tool = "enable_scene_description_skill" if target == "vlm" else "enable_object_search_skill"
     if _pending_camera_ai == target:
-        return f"The {friendly} skill is still starting up; please wait a moment and try again."
+        return ToolFailure(f"The {friendly} skill is still starting up; please wait a moment and try again.")
     if _supervisor is None or not _supervisor.is_connected():
-        return (f"The {friendly} skill is not active and the camera AI cannot be "
-                f"switched right now (supervisor unavailable).")
+        return ToolFailure(f"The {friendly} skill is not active and the camera AI cannot be "
+                           f"switched right now (supervisor unavailable).")
 
     up = _CAMERA_AI_FRIENDLY.get(_active_camera_ai)
     tools = _CAMERA_AI_TOOLS.get(_active_camera_ai)
@@ -6297,7 +6386,7 @@ def _require_camera_ai(target: str):
            f"skill is unavailable. Ask the user whether to switch; if they "
            f"agree, call {enable_tool} and then retry this request.")
     print("camera guard: %r" % (msg,))
-    return msg
+    return ToolFailure(msg)
 
 def _disconnect_camera_ai():
     """Tear down all camera-AI resources. Used by shutdown_robot."""
@@ -6427,7 +6516,7 @@ def initialize_robot():
                 # Reaching the server does not mean the arm can move: the ROS
                 # stack is started explicitly. Do it now so the first wave is
                 # not also paying for the launch.
-                problem = _ensure_arm_enabled()
+                problem = _ensure_arm_enabled(_ARM_FIRST_ENABLE_TIMEOUT)
                 if problem:
                     print(f"WARNING: arm reachable but its ROS stack would not start: {problem}")
                 else:

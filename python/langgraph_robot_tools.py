@@ -14,6 +14,7 @@ from move_by_deltas_alert import post_alert
 import math
 from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG
 import time
+from tool_failure import ToolFailure
 
 class Pose:
     def __init__(self, x, y, yaw):
@@ -261,7 +262,7 @@ class RobotTools:
         if result == 0:
             self._sdp.setMapUpdate(True)
             return "Map cleared and mapping re-enabled."
-        return "Failed to clear map."
+        return ToolFailure("Failed to clear map.")
 
     def save_map(self, filename: str) -> str:
         """Save current map to file."""
@@ -302,7 +303,7 @@ class RobotTools:
             n = int(seconds * 10)  # Convert to 0.1 second increments
             self.langgraph_tool_funcs["forward"](self._sdp, n)
             return f"Moved forward for {seconds} seconds."
-        return "Forward movement not available."
+        return ToolFailure("Forward movement not available.")
 
     def move_backward(self, seconds: float = 0.5) -> str:
         """Move robot backward for specified seconds."""
@@ -319,7 +320,7 @@ class RobotTools:
             n = int(seconds * 10)  # Convert to 0.1 second increments
             self.langgraph_tool_funcs["backup"](self._sdp, n)
             return f"Moved backward for {seconds} seconds."
-        return "Backward movement not available."
+        return ToolFailure("Backward movement not available.")
 
     def back_up(self, distance: float) -> str:
         """Back straight up by a distance in metres without turning around."""
@@ -347,7 +348,7 @@ class RobotTools:
         if "turn" in self.langgraph_tool_funcs:
             self.langgraph_tool_funcs["turn"](degrees, self._sdp)
             return f"Turned {degrees} degrees."
-        return "Turn movement not available."
+        return ToolFailure("Turn movement not available.")
 
     # Tool helper wrapper functions for complex behaviors from main.py
     def call_tool_helper(self, tool_name: str, *args, **kwargs) -> str:
@@ -357,8 +358,8 @@ class RobotTools:
                 func = self.langgraph_tool_funcs[tool_name]
                 return func(*args, **kwargs)
             except Exception as e:
-                return f"Error calling {tool_name}: {str(e)}"
-        return f"Tool {tool_name} not available."
+                return ToolFailure(f"Error calling {tool_name}: {str(e)}")
+        return ToolFailure(f"Tool {tool_name} not available.")
 
     def list_locations(self) -> str:
         """List all known locations."""
