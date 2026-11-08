@@ -9,10 +9,11 @@ run this file for a command line:
     python3 arm_client.py status
     python3 arm_client.py enable
     python3 arm_client.py state init
-    python3 arm_client.py pick 0.30 0.0 0.061
-    python3 arm_client.py pick 0.30 0.0 0.061 --no-vision # no camera checks
+    python3 arm_client.py pick 0.30 0.0 0.035   # can centre, hard floor
+    python3 arm_client.py pick 0.30 0.0 0.035 --no-vision # no camera checks
     python3 arm_client.py place
     python3 arm_client.py drop               # let go where the arm is
+    python3 arm_client.py grip               # hand it a can: opens, 5 s, grips
     python3 arm_client.py held               # is the can still in the jaws?
     python3 arm_client.py wave 3
     python3 arm_client.py reset              # giving up after a failed pick
@@ -36,7 +37,7 @@ import http.client
 import os
 import sys
 import xmlrpc.client
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 DEFAULT_SERVER_URL = os.environ.get('DOFBOT_ARM_URL',
                                     'http://192.168.55.1:8001/')
@@ -123,9 +124,14 @@ class ArmClient:
     # -------------------------------------------------------------- commands
 
     def enable_arm(self, timeout: int = 90, bridge: bool = True,
-                   rviz: bool = False, port: str = '') -> Dict[str, Any]:
-        """Start the ROS stack. Blocks until the nodes are up or it gives up."""
-        return self._call(self._motion, 'enable_arm', timeout, bridge, rviz, port)
+                   rviz: bool = False, port: str = '',
+                   floor: str = '') -> Dict[str, Any]:
+        """Start the ROS stack. Blocks until the nodes are up or it gives up.
+
+        floor is 'carpet' or 'hard', the surface the robot stands on; '' takes
+        the server's default. Fixed until disable_arm()."""
+        return self._call(self._motion, 'enable_arm', timeout, bridge, rviz,
+                          port, floor)
 
     def disable_arm(self, park: str = '') -> Dict[str, Any]:
         """Open the jaws, optionally move to `park`, then stop the ROS stack.
@@ -137,12 +143,26 @@ class ArmClient:
         return self._call(self._motion, 'disable_arm', park)
 
     def pick_can(self, x: float, y: float, z: float,
-                 object: str = '', vision: bool = True) -> Dict[str, Any]:
+                 object: str = '', vision: bool = True,
+                 approach: bool = False, held: bool = True) -> Dict[str, Any]:
         """Pick the object whose CENTRE is at (x, y, z) in base_link, and carry
-        it. Does not place -- call place_can() for that. vision=False skips both
-        wrist-camera checks, approach and held."""
+        it. Does not place -- call place_can() for that.
+
+        The two wrist-camera checks are chosen separately: `approach` (object
+        between the open jaws, before closing; off by default) and `held`
+        (object came with the arm, at stow; on by default). vision=False skips
+        both."""
         return self._call(self._motion, 'pick_can', float(x), float(y),
-                          float(z), object, bool(vision))
+                          float(z), object, bool(vision), bool(approach),
+                          bool(held))
+
+    def can_pick(self, x: float, y: float, z: float,
+                 object: str = '') -> Dict[str, Any]:
+        """Would pick_can(x, y, z) plan? Moves nothing. `ok` is the answer,
+        `reason` says why not -- which stage ran out, so which way to nudge
+        the base."""
+        return self._call(self._motion, 'can_pick', float(x), float(y),
+                          float(z), object)
 
     def place_can(self) -> Dict[str, Any]:
         """Place whatever the gripper is carrying."""
@@ -151,6 +171,22 @@ class ArmClient:
     def drop_can(self) -> Dict[str, Any]:
         """Open the jaws where the arm is, and forget whatever was held."""
         return self._call(self._motion, 'drop_can')
+
+    def grip_can(self, delay: float = 5.0, object: str = '',
+                 say: Optional[Callable[[str], None]] = print
+                 ) -> Dict[str, Any]:
+        """Hand the arm a can: it opens, waits `delay` s, then grips it.
+
+        Announces the hand-over through `say` first (print by default; pass
+        None to stay quiet, or a speech function). Moves nothing; the jaws
+        close to the object's pick grip and it is then held exactly as after
+        pick_can(), so place_can() or drop_can() lets go of it. Refused while
+        something is already held.
+        """
+        if say is not None:
+            say('In %g seconds I will try to grip a can. Place it between my '
+                'fingers.' % delay)
+        return self._call(self._motion, 'grip_can', float(delay), object)
 
     def is_holding(self, object: str = '') -> Dict[str, Any]:
         """Look through the wrist camera: is the object still in the jaws?
@@ -168,6 +204,16 @@ class ArmClient:
     def move_to_state(self, name: str) -> Dict[str, Any]:
         """Move to a saved state -- see list_states()."""
         return self._call(self._motion, 'move_to_state', str(name))
+
+    def current_state(self) -> Dict[str, Any]:
+        """Which saved state the arm is in. Read `state`: the name, or None
+        when it is in none of them. `ok` False means the question could not be
+        asked (not enabled, busy mid-move), and `state` is None then too."""
+        result = self._call(self._motion, 'current_state')
+        # A call that never reached the server has no `state`; give it one,
+        # so every caller can read result['state'].
+        result.setdefault('state', None)
+        return result
 
     def reset_arm(self, state: str = '',
                   force: bool = False) -> Dict[str, Any]:
@@ -277,6 +323,15 @@ def show_held(result: Dict[str, Any]) -> bool:
     return bool(result.get('ok'))
 
 
+def show_state(result: Dict[str, Any]) -> bool:
+    """Print a current_state() result: the state name, or none."""
+    if result.get('ok'):
+        print(result.get('state') or 'none (not at any saved state)')
+    else:
+        show(result)
+    return bool(result.get('ok'))
+
+
 def show_status(status: Optional[dict]):
     if status is None:
         return
@@ -303,20 +358,27 @@ def show_status(status: Optional[dict]):
 
 
 INTERACTIVE_HELP = """Commands:
-  enable [--sim]        start the ROS stack (--sim: no servo bridge)
+  enable [--sim] [carpet|hard]
+                        start the ROS stack (--sim: no servo bridge; the
+                        floor defaults to the server's)
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
-  pick X Y Z [object] [no-vision]
+  pick X Y Z [object] [no-vision] [approach] [no-held]
                         pick the object centred at X Y Z and carry it
-                        (no-vision: skip the camera checks)
+                        (no-vision: skip both camera checks; approach: turn
+                        on the approach check; no-held: skip the held one)
+  check X Y Z [object]  would that pick plan? Moves nothing
   place                 place what the gripper is carrying
   drop                  let go where the arm is, and forget what was held
+  grip [seconds] [object]
+                        hand it a can: opens, waits (default 5 s), grips
   state NAME            move to a saved state
   reset [state] [force] clear the scene, let go, go home (giving up; a
                         retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
   torque on|off         servo torque; off DISABLES the arm, then goes limp
+  where                 which saved state the arm is in, or none
   states                list the saved states
   status                enabled? busy? what ran last?
   log [N]               tail the launch log
@@ -351,6 +413,8 @@ def interactive(client: ArmClient):
                 print(client.ping())
             elif cmd == 'status':
                 show_status(client.get_status())
+            elif cmd == 'where':
+                show_state(client.current_state())
             elif cmd == 'states':
                 print(', '.join(client.list_states()) or '(none)')
             elif cmd == 'log':
@@ -367,13 +431,20 @@ def interactive(client: ArmClient):
                     show(client.set_torque(args[0] == 'on'))
             elif cmd == 'enable':
                 print('Starting the stack, this takes a few seconds...')
-                show(client.enable_arm(bridge='--sim' not in args))
+                floor = [a for a in args if a in ('carpet', 'hard')]
+                show(client.enable_arm(bridge='--sim' not in args,
+                                       floor=floor[0] if floor else ''))
             elif cmd == 'disable':
                 show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
                 show(client.place_can())
             elif cmd == 'drop':
                 show(client.drop_can())
+            elif cmd == 'grip':
+                nums = [a for a in args if a.replace('.', '', 1).isdigit()]
+                names = [a for a in args if a not in nums]
+                show(client.grip_can(float(nums[0]) if nums else 5.0,
+                                     names[0] if names else ''))
             elif cmd == 'wave':
                 show(client.wave_arm(int(args[0]) if args else 1))
             elif cmd == 'reset':
@@ -385,16 +456,27 @@ def interactive(client: ArmClient):
                           % ', '.join(client.list_states()))
                 else:
                     show(client.move_to_state(args[0]))
-            elif cmd == 'pick':
-                vision = 'no-vision' not in args[3:]
-                rest = [a for a in args[3:] if a != 'no-vision']
-                if len(args) < 3 or len(rest) > 1:
-                    print('Usage: pick X Y Z [object] [no-vision]   '
+            elif cmd == 'check':
+                if len(args) not in (3, 4):
+                    print('Usage: check X Y Z [object]   '
                           '(metres, base_link, object CENTRE)')
+                else:
+                    show(client.can_pick(float(args[0]), float(args[1]),
+                                         float(args[2]),
+                                         args[3] if len(args) > 3 else ''))
+            elif cmd == 'pick':
+                flags = ('no-vision', 'approach', 'no-held')
+                rest = [a for a in args[3:] if a not in flags]
+                if len(args) < 3 or len(rest) > 1:
+                    print('Usage: pick X Y Z [object] [no-vision] [approach] '
+                          '[no-held]   (metres, base_link, object CENTRE)')
                 else:
                     show(client.pick_can(float(args[0]), float(args[1]),
                                          float(args[2]),
-                                         rest[0] if rest else '', vision))
+                                         rest[0] if rest else '',
+                                         'no-vision' not in args[3:],
+                                         'approach' in args[3:],
+                                         'no-held' not in args[3:]))
             else:
                 print('Unknown command: %s' % cmd)
         except KeyboardInterrupt:
@@ -422,6 +504,9 @@ def build_parser():
                         help='simulation only -- no moveit_bridge, no servos')
     enable.add_argument('--rviz', action='store_true',
                         help='also start RViz on the robot')
+    enable.add_argument('--floor', choices=('carpet', 'hard'), default='',
+                        help="surface the robot stands on (default: the "
+                             "server's DOFBOT_FLOOR)")
     enable.add_argument('--timeout', type=int, default=90)
 
     disable = sub.add_parser('disable', help='stop the ROS stack')
@@ -436,11 +521,29 @@ def build_parser():
     pick.add_argument('--object', default='', help='catalogue entry')
     pick.add_argument('--no-vision', dest='vision', action='store_false',
                       help='skip both wrist-camera checks, approach and held')
+    pick.add_argument('--approach', action='store_true',
+                      help='turn on the approach check: the object between '
+                           'the open jaws before closing (off by default)')
+    pick.add_argument('--no-held', dest='held', action='store_false',
+                      help='skip the held check at stow (on by default)')
+
+    check = sub.add_parser('check', help='would a pick there plan? moves '
+                                         'nothing')
+    check.add_argument('x', type=float, help='object CENTRE x in base_link, m')
+    check.add_argument('y', type=float)
+    check.add_argument('z', type=float)
+    check.add_argument('--object', default='', help='catalogue entry')
 
     sub.add_parser('place', help='place what the gripper is carrying')
     sub.add_parser('drop', help='let go where the arm is, and forget what '
                                 'was held')
 
+    grip = sub.add_parser('grip', help='hand it a can: open, wait, then grip '
+                                       'it as if picked; moves nothing')
+    grip.add_argument('--delay', type=float, default=5.0,
+                      help='seconds the jaws stay open (default %(default)s)')
+    grip.add_argument('--object', default='',
+                      help='catalogue object (default soda_can)')
     state = sub.add_parser('state', help='move to a saved state')
     state.add_argument('name')
 
@@ -470,6 +573,7 @@ def build_parser():
                                  'then it goes limp -- support it')
     torque.add_argument('state', choices=('on', 'off'))
 
+    sub.add_parser('where', help='which saved state the arm is in, or none')
     sub.add_parser('states', help='list the saved states')
     sub.add_parser('status', help='server and stack status')
     sub.add_parser('stop', help='abort the motion in flight')
@@ -496,17 +600,24 @@ def main(argv=None):
     if cli.cmd == 'enable':
         return 0 if show(client.enable_arm(timeout=cli.timeout,
                                            bridge=not cli.sim,
-                                           rviz=cli.rviz), cli.verbose) else 1
+                                           rviz=cli.rviz, floor=cli.floor),
+                         cli.verbose) else 1
     if cli.cmd == 'disable':
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
     if cli.cmd == 'pick':
         return 0 if show(client.pick_can(cli.x, cli.y, cli.z, cli.object,
-                                         cli.vision),
+                                         cli.vision, cli.approach, cli.held),
+                         cli.verbose) else 1
+    if cli.cmd == 'check':
+        return 0 if show(client.can_pick(cli.x, cli.y, cli.z, cli.object),
                          cli.verbose) else 1
     if cli.cmd == 'place':
         return 0 if show(client.place_can(), cli.verbose) else 1
     if cli.cmd == 'drop':
         return 0 if show(client.drop_can(), cli.verbose) else 1
+    if cli.cmd == 'grip':
+        return 0 if show(client.grip_can(cli.delay, cli.object),
+                         cli.verbose) else 1
     if cli.cmd == 'state':
         return 0 if show(client.move_to_state(cli.name), cli.verbose) else 1
     if cli.cmd == 'reset':
@@ -522,6 +633,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'stop':
         return 0 if show(client.stop(), cli.verbose) else 1
+    if cli.cmd == 'where':
+        return 0 if show_state(client.current_state()) else 1
     if cli.cmd == 'states':
         states = client.list_states()
         print('\n'.join(states) if states else '(none)')
