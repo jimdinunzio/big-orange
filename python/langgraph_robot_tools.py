@@ -452,7 +452,7 @@ class RobotTools:
             return f"Tracked '{object_name}' for {duration}s (simulated)."
         return self.call_tool_helper("track_object", object_name, height, duration)
 
-    def search_for_object(self, object_name: str, height: str, rot_clockwise: bool = True) -> str:
+    def search_for_object(self, object_name: str, height: str, rot_clockwise: Optional[bool] = None) -> str:
         """Search for a specific object by name by rotating and scanning."""
         if self.sim:
             # Simulate rotating 360 degrees to search

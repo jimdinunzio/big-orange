@@ -1820,9 +1820,12 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
         time.sleep(0.05)
 
     if recheck_obj:
-        print(f"rechecking {obj}")
+        # The hit came from a frame taken while turning, and its depth from a
+        # later one, so its range is not trusted: stop, let the base come to
+        # rest, and look again from still frames.
         sdp.cancelMoveAction()
-        time.sleep(0.3)
+        coasted = _settle_heading(sdp)
+        print(f"rechecking {obj} (base turned {coasted:.1f} deg after the hit)")
         if stream_mgr is not None:
             stream_mgr.pause_streaming()
         deg = 5 if is_clockwise else -5
@@ -4956,9 +4959,14 @@ def _search_offset(obj: str, height: str) -> float:
     return 0.75
 
 
-def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: bool = True):
-    """Search for object by rotating in place."""
+def search_for_object_tool_helper(sdp, obj: str, height: str,
+                                  rot_clockwise: Optional[bool] = None):
+    """Search for object by rotating in place, starting in a random direction
+    unless rot_clockwise says which."""
     global _interrupt_action, _keep_camera_orientation
+
+    if rot_clockwise is None:
+        rot_clockwise = random.choice((True, False))
 
     guard = _require_camera_ai("owl")
     if guard:
@@ -5005,6 +5013,10 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
                 return False, None
             try:
                 found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+                if (found and height == "floor" and spatial.z > 0
+                        and not _floor_detections([spatial])):
+                    print(f"OWL {obj_name} too high for floor: {objBearingRangeStr(spatial)}")
+                    return False, None
                 if found:
                     last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
@@ -5032,10 +5044,13 @@ def search_for_object_tool_helper(sdp, obj: str, height: str, rot_clockwise: boo
                 print(f"recheck failed, moving halfway ({half_dist:.2f}m) toward last known {obj} location")
                 sdp.moveToFloat(xt, yt)
                 sdp.waitUntilMoveActionDone()
-                # Search again from new position
-                p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+                # Search again from new position. Half the distance puts a
+                # floor object inside the near view pick_up looks with, which
+                # the room-sweep tilt overshoots.
+                near = dict(floor_pitch=PICK_ACQUIRE_PITCH)
+                p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, **near)
                 if p is None and not _interrupt_action:
-                    p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+                    p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, **near)
 
             if _interrupt_action:
                 _interrupt_action = False
