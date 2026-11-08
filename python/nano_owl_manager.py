@@ -310,15 +310,19 @@ if __name__ == "__main__":
     print(f"After enable: is_enabled={client.is_enabled()}  is_running={client.is_running()}")
 
     # Create and start MyDepthAI in a background thread.  Subpixel is a
-    # build-time choice, so it is a flag here rather than a command.
-    subpixel = "--subpixel" in sys.argv
+    # build-time choice, so it is a flag here rather than a command.  On by
+    # default, as main.py runs it and as DEPTH_BIAS_BY_TILT was measured.
+    subpixel = "--no-subpixel" not in sys.argv
+    # Any other arguments are the starting prompt, e.g. `soda can`.
+    start_prompt = " ".join(a for a in sys.argv[1:] if not a.startswith("--"))
     mdai = MyDepthAI(subpixel=subpixel)
-    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, True), daemon=True)
+    show_depth = "--depth" in sys.argv
+    mdai_thread = Thread(target=mdai.startUp, args=("TOP", True, show_depth), daemon=True)
     mdai_thread.start()
     time.sleep(2)  # Wait for camera to initialize
 
     print("subpixel %s -- depth steps %.0f mm at 0.75 m"
-          % ("ON" if subpixel else "off (pass --subpixel for eighths)",
+          % ("ON (pass --no-subpixel for whole steps)" if subpixel else "off",
              mdai.depthResolutionAt(0.75) * 1000))
 
     mgr = NanoOwlManager(client, mdai)
@@ -341,6 +345,9 @@ Commands:
                   pick_can would be handed minus where the can actually is
   where           one reading of the tracked object: oakd -> robot -> arm,
                   with the error against `truth` if one is set
+  bias [P ...]    measure DEPTH_BIAS_BY_TILT: with `truth` set, reads the can
+                  at each head tilt P (servo degrees, default 140 145 150) with
+                  no bias applied and reports the shortfall that tilt needs
   sweep           consistency only, no truth needed: the same can from several
                   head angles must read the same.  Catches only the lens
                   offsets -- see sweep.__doc__ for what a flat sweep does NOT
@@ -350,10 +357,14 @@ Commands:
   floor carpet|hard   which surface the robot is standing on (sets FLOOR_Z)
   help, quit
 
-Depth quantizes in whole disparity steps -- about 17 mm at 0.75 m, growing
-as the square of range -- so a reading can only be as good as one step.
-Start with --subpixel to split each step into eighths; it cannot be turned
-on later, the firmware refuses to switch it on a running device.
+The RGB window boxes the reduced depth patch with its camera X/Y/Z in mm.
+Line 2 at the top left is the nearest can's arm-frame range: the centre as
+pick_up computes it, then `raw` with no depth bias, at the current tilt.
+
+Run as `python nano_owl_manager.py soda can` to start detecting at once.
+Subpixel is on, as in main.py; --no-subpixel turns it off, and it cannot be
+changed later -- the firmware refuses to switch it on a running device.
+--depth also opens the depth window, with the sampled patch boxed.
 
 """
 
@@ -669,6 +680,70 @@ on later, the firmware refuses to switch it on a running device.
               % robot_frames.OBJECT_SIZES[obj][0])
         return centre
 
+    BIAS_SAMPLES = 24  # what pick_up takes at one tilt
+
+    def measure_bias(obj, pitches=(140, 145, 150)):
+        """The depth shortfall each head tilt needs in DEPTH_BIAS_BY_TILT.
+
+        Reads the can at each tilt with no bias applied and compares the
+        arm-frame radius against the tape.  The difference is the bias that
+        tilt needs, as long as the can is near straight ahead -- the bias is
+        added along the lens bearing, and radius is measured from the arm.
+        """
+        if TRUTH[0] is None:
+            print("  set the truth first: `truth <forward> [<left>]`, metres from")
+            print("  the ARM BASE to the can's centre")
+            return
+        if obj not in robot_frames.OBJECT_SIZES:
+            print("  bias needs a known object size; %r is not in OBJECT_SIZES" % obj)
+            return
+        tr = math.hypot(*TRUTH[0])
+        start_pitch = m.pitchServo.getAngle(relToHome=False)
+        print()
+        print("  truth radius %.3f m, %s floor" % (tr, current_surface()))
+        print("  %-6s %7s %8s %8s %8s %6s"
+              % ("tilt", "frames", "raw r", "needs", "table", "span"))
+        try:
+            for p in pitches:
+                m.setPitch(p)
+                time.sleep(1.5)
+                det, hits, tries = read_object(obj, BIAS_SAMPLES)
+                if det is None:
+                    print("  %-6.0f %3d/%-3d  (not seen)" % (p, 0, tries))
+                    continue
+                yaw, pitch, _, _ = head_angles()
+                raw = robot_frames.floor_object_to_arm(
+                    det.x, det.y, det.z, yaw_deg=yaw, pitch_deg=pitch,
+                    obj=obj, bias=0.0)
+                rr = math.hypot(raw[0], raw[1])
+                taped = robot_frames.DEPTH_BIAS_BY_TILT.get(int(round(p)))
+                span = patch_span(det)
+                print("  %-6.0f %3d/%-3d %8.3f %+8.3f %8s %6s"
+                      % (p, hits, tries, rr, tr - rr,
+                         "-" if taped is None else "%+.3f" % taped,
+                         "-" if span is None else "%.0f" % span))
+        finally:
+            m.setPitch(start_pitch)
+        print()
+        print("  `needs` is the DEPTH_BIAS_BY_TILT entry for that tilt; `table`")
+        print("  is what it holds now (- for a tilt never measured).  Repeat at a")
+        print("  few distances across the reach band before trusting one value.")
+
+    def overlay_range(obj, spatials):
+        """Nearest can's arm range on the RGB window, as pick_up sees it."""
+        valid = [s for s in spatials if s.z > 0]
+        if not valid or obj not in robot_frames.OBJECT_SIZES:
+            return
+        det = min(valid, key=lambda s: s.z)
+        yaw, pitch, _, spitch = head_angles()
+        centre = robot_frames.floor_object_to_arm(
+            det.x, det.y, det.z, yaw_deg=yaw, pitch_deg=pitch, obj=obj)
+        raw = robot_frames.floor_object_to_arm(
+            det.x, det.y, det.z, yaw_deg=yaw, pitch_deg=pitch, obj=obj, bias=0.0)
+        mdai.drawText("range %.3f  raw %.3f  tilt %.0f"
+                      % (math.hypot(centre[0], centre[1]),
+                         math.hypot(raw[0], raw[1]), spitch), 2, 20)
+
     def sweep(obj, pitches=(135, 140, 145, 150),
               yaws=tuple(YAW_HOME_DEG + d for d in (-15, -5, 5, 15))):
         """Read one stationary object from several head angles.
@@ -754,6 +829,10 @@ on later, the firmware refuses to switch it on a running device.
 
     # Main loop — handles detection; picks up new prompts from the queue
     current_obj = ""
+    if start_prompt:
+        current_obj = start_prompt.strip("[]").split(",")[0].strip()
+        mgr.set_prompt(start_prompt if start_prompt.startswith("[")
+                       else f"[{start_prompt}]")
     poll_interval = 1.0 / 16
 
     try:
@@ -783,9 +862,16 @@ on later, the firmware refuses to switch it on a running device.
                             print("  truth set: the can centre is %.3f m forward and "
                                   "%.3f m to the %s of the ARM BASE"
                                   % (fwd, abs(left), "left" if left >= 0 else "right"))
-                elif verb in ("where", "sweep", "check"):
+                elif verb in ("where", "sweep", "check", "bias"):
                     if not current_obj:
                         print("  set a prompt first, e.g. 'soda can'")
+                    elif verb == "bias":
+                        try:
+                            tilts = [float(a) for a in cmd[1:]] or [140, 145, 150]
+                        except ValueError:
+                            print("  bias takes servo tilts in degrees: bias 140 150")
+                        else:
+                            measure_bias(current_obj, tilts)
                     elif verb == "where":
                         show_reading(current_obj)
                     elif verb == "check":
@@ -823,6 +909,7 @@ on later, the firmware refuses to switch it on a running device.
                 found, spatials = mgr.check_for_all_objects(current_obj)
                 if found and spatials:
                     mdai.drawText(f"{current_obj} x{len(spatials)}", 1, 24)
+                    overlay_range(current_obj, spatials)
 
             time.sleep(poll_interval)
     finally:

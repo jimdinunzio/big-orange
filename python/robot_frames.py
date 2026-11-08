@@ -79,25 +79,24 @@ LENS_UP = 0.02
 
 # Shortfall in the depth reading, metres, added along the same lens-to-object
 # bearing as the radius correction below.  Keyed by head tilt in servo
-# degrees, because how much the reading is off depends on how much floor the
-# sampled patch takes in beside the can, and that is set by the tilt.
+# degrees: the shortfall grows with the tilt, for reasons not pinned down.
 #
-# Taped with a can at 0.28, 0.30 and 0.32 m -- yaw home, subpixel on, the
-# median of the middle half of the box:
+# Measured on hard floor with nano_owl_manager's `bias` command -- can centre
+# on the arm's centre line at 0.26, 0.28, 0.30, 0.32 and 0.34 m, arm at init,
+# yaw home, subpixel on, the median of the middle half of the box over 24
+# frames.  Every tilt saw the can in every frame at every distance, bar 145
+# at 0.28 (14 of 24).  Shortfall, mm:
 #
-#   145   short by 35, 40, 40 mm; the patch takes in the floor ahead of the
-#         can, but the can is reliably in frame at the grasp standoff
-#   140   short by 21, 22 mm and the patch is all can, though the can drops
-#         out of frame about half the time at the 0.30 m standoff
+#   140   -8, 0, 0, 3, 4, 1
+#   145   25, 26, 32, 26, 26, 28
+#   150   32, 32, 34, 33, 34, 32
 #
-# Only taped tilts belong here, and main's PICK_ACQUIRE_PITCH and
-# PICK_SAMPLE_PITCH are the two that are: those constants and this table move
-# together.  Deeper tilts do not extrapolate -- at 150 the patch spans 90 mm
-# of depth against a 66 mm can, so it is averaging floor in front of the can
-# with the can.
+# Only measured tilts belong here, and main's PICK_ACQUIRE_PITCH and
+# PICK_SAMPLE_PITCH must be among them.
 DEPTH_BIAS_BY_TILT = {
-    145: 0.038,
-    140: 0.021,
+    140: 0.000,
+    145: 0.026,
+    150: 0.033,
 }
 
 
@@ -183,10 +182,10 @@ ARM_MAX_GRASP_Z = 0.20
 # the robot frame rides on that plate, the floor sits this far BELOW the
 # origin, and it is the only quantity here the surface changes.
 PLATE_HEIGHTS = {
-    "carpet": 0.025,    # current testing
-    "hard": 0.029,      # contest
+    "carpet": 0.025,
+    "hard": 0.029,      # contest and current testing
 }
-DEFAULT_SURFACE = "carpet"
+DEFAULT_SURFACE = "hard"
 
 FLOOR_Z = None
 
@@ -194,7 +193,7 @@ FLOOR_Z = None
 def set_floor_surface(surface=DEFAULT_SURFACE):
     """
     Select the surface the robot is standing on, which sets how far the
-    floor lies below the robot origin.  Call once at startup; carpet is
+    floor lies below the robot origin.  Call once at startup; hard floor is
     assumed until you do.
     """
     global FLOOR_Z
@@ -304,7 +303,7 @@ def height_above_floor(x, y, z, yaw_deg=0.0, pitch_deg=0.0, absolute=False):
 
 def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
                         obj=None, half_height=None, radius=None,
-                        absolute=False):
+                        absolute=False, bias=None):
     """
     Arm-frame centre of an object known to be standing on the floor.
 
@@ -325,10 +324,12 @@ def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
     `radius`; explicit values win where both are given.  Omitting all of
     them returns the surface point at floor height, the depth bias still
     applied -- that one is the camera's error, not the object's size.
+    `bias` overrides the tilt's depth_bias(); 0 gives the raw reading, which
+    is what measuring a new tilt for DEPTH_BIAS_BY_TILT needs.
 
     The returned z is NOT half_height: the floor is below the robot
     origin and the arm plate below that, so it works out to about
-    half_height - 0.022 on carpet.  Use set_floor_surface() to switch.
+    half_height - 0.026 on hard floor.  Use set_floor_surface() to switch.
 
     Returns (x, y, z) in the arm frame.
     """
@@ -343,7 +344,9 @@ def floor_object_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0,
 
     p = oakd_to_robot(x, y, z, yaw_deg, pitch_deg, absolute)
 
-    reach = radius + depth_bias(pitch_deg, absolute)
+    if bias is None:
+        bias = depth_bias(pitch_deg, absolute)
+    reach = radius + bias
     if reach:
         lens = lens_position(yaw_deg, pitch_deg, absolute)
         bearing = math.atan2(p[1] - lens[1], p[0] - lens[0])
@@ -456,7 +459,7 @@ if __name__ == '__main__':
     print("Lens at home (0.055 forward of the pivot):")
     show("  robot frame", lens_position())
     show("  arm origin", ARM_ORIGIN)
-    print("  floor on carpet: z = %.3f" % FLOOR_Z)
+    print("  floor on %s: z = %.3f" % (DEFAULT_SURFACE, FLOOR_Z))
 
     print()
     print("Camera at home, object 1.0 m straight down the optical axis:")
@@ -499,9 +502,9 @@ if __name__ == '__main__':
     print("  arm reach (range, yaw deg, height): %.3f %.1f %.3f" % arm_reach(a))
 
     print()
-    print("Hard floor drops the floor 4 mm; mounts are unchanged:")
-    set_floor_surface("hard")
+    print("Carpet raises the floor 4 mm; mounts are unchanged:")
+    set_floor_surface("carpet")
     show("  lens at home", lens_position())
     show("  same can, arm frame",
          floor_object_to_arm(0.0, 0.0, 0.80, pitch_deg=35.0, obj="soda can"))
-    set_floor_surface("carpet")
+    set_floor_surface()

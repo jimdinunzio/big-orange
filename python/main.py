@@ -5268,6 +5268,12 @@ _ARM_RESTART_WAIT = 20  # seconds for the restarted server to start answering
 _ARM_ENABLE_TIMEOUT = 15
 _ARM_FIRST_ENABLE_TIMEOUT = 30
 
+# The surface the robot stands on, "hard" or "carpet". It sets where the
+# camera transforms put the floor, and the arm stack is enabled with it so the
+# planning scene's floor matches.
+FLOOR_SURFACE = "hard"
+robot_frames.set_floor_surface(FLOOR_SURFACE)
+
 
 def _restart_arm_service() -> bool:
     """Restart the arm server on the Jetson, then reconnect. True once it
@@ -5306,7 +5312,8 @@ def _revive_arm() -> str:
     _held_object = None
     if not restarted:
         return "the arm service could not be restarted"
-    result = _arm_client.enable_arm(timeout=_ARM_ENABLE_TIMEOUT)
+    result = _arm_client.enable_arm(timeout=_ARM_ENABLE_TIMEOUT,
+                                    floor=FLOOR_SURFACE)
     return "" if result.get("ok") else _arm_problem(result)
 
 
@@ -5324,7 +5331,7 @@ def _ensure_arm_enabled(timeout: int = _ARM_ENABLE_TIMEOUT) -> str:
     status = _arm_client.get_status()
     if status is not None and status.get("arm_enabled"):
         return ""
-    result = _arm_client.enable_arm(timeout=timeout)
+    result = _arm_client.enable_arm(timeout=timeout, floor=FLOOR_SURFACE)
     if result.get("ok"):
         return ""
     print(f"Arm stack not up after {timeout} s: {_arm_problem(result)}")
@@ -5422,21 +5429,16 @@ PLACE_DESTINATIONS = ("recycle bin", "trash bin")
 # and not littering. Roughly the arm's forward span plus nav slop.
 PLACE_ARRIVAL_DIST = 1.0
 
-# Head tilts for looking at the floor close in, in servo degrees. No single
-# tilt both finds the can and reads it well, so _look_for_floor_object uses
-# each for what it is good at:
+# Head tilts for looking at the floor close in, in servo degrees.
+# _look_for_floor_object looks at the acquire tilt first and moves to the
+# sample tilt only when the first look did not lock on. On hard floor with
+# the arm at init, 150 sees a straight-ahead can from 0.245 m to beyond 1 m,
+# and reads it the most consistently of the measured tilts; 145 looks further
+# out.
 #
-#   acquire   the frame covers from about 0.4 m in front of the lens
-#             outwards, so both a can at arm's length and one across the room
-#             stay in view, and a can at the grasp standoff is reliably seen
-#   sample    the depth patch is all can rather than part floor, worth some
-#             20 mm of the shortfall, but the can falls out of frame about
-#             half the time at the 0.28-0.30 m standoff
-#
-# robot_frames.DEPTH_BIAS_BY_TILT is taped at these two tilts and no others,
-# so those and this pair move together.
-PICK_ACQUIRE_PITCH = 145
-PICK_SAMPLE_PITCH = 140
+# Both must have an entry in robot_frames.DEPTH_BIAS_BY_TILT.
+PICK_ACQUIRE_PITCH = 150
+PICK_SAMPLE_PITCH = 145
 
 # Seconds to let the head stop moving between the two tilts. Long enough that
 # no frame from during the tilt reaches the median.
@@ -5568,14 +5570,14 @@ def _look_for_floor_object(obj: str):
     which is not necessarily the tilt the head ends up at; the caller homes it
     either way. `frames` is how many frames at that tilt saw the object.
 
-    Looks twice, at PICK_ACQUIRE_PITCH and then PICK_SAMPLE_PITCH, because
-    the tilt that reliably has the can in frame is not the one that reads its
-    depth truest. The sample tilt wins whenever it saw the can in enough
-    frames to take a median from, and the acquire tilt carries the pick when
-    it did not.
+    Looks at PICK_ACQUIRE_PITCH, the tilt that reliably has the can in frame,
+    and takes that look whenever it saw the can in enough frames to take a
+    median from. Only when it did not does it tilt to PICK_SAMPLE_PITCH and
+    look again; the sample tilt then wins if it reached that many frames, and
+    the acquire tilt's few frames carry the pick if it did not.
 
-    That pair of looks is run once per PICK_YAW_SWEEP offset, stopping at the
-    first pass that saw the object at either tilt, so a can the robot is only
+    That look is run once per PICK_YAW_SWEEP offset, stopping at the first
+    pass that saw the object at either tilt, so a can the robot is only
     roughly squared up on still gets found.
 
     Unlike search_for_object this never rotates the base: pick_up is called
@@ -5605,6 +5607,12 @@ def _look_for_floor_object(obj: str):
             time.sleep(PICK_SETTLE)
             wide = _sample_floor_object(obj)
             if _interrupt_action:
+                break
+            if len(wide[0]) >= PICK_MIN_SAMPLES:
+                print("pick_up: %s at yaw %+d: in %d of %d frames at tilt %d; "
+                      "using it" % (obj, offset, len(wide[0]), PICK_SAMPLES,
+                                    PICK_ACQUIRE_PITCH))
+                use_tight = False
                 break
             aim_oakd(pitch=PICK_SAMPLE_PITCH)
             time.sleep(PICK_SETTLE)
