@@ -1744,14 +1744,43 @@ def checkForObject(obj, max_tries=1):
         time.sleep(_dai_fps_recip)
     return False, None
 
+def _settle_pose(sdp, timeout=2.0, still_m=0.002, still_deg=0.3, poll=0.1):
+    """Wait until the base position and heading stop changing, at most
+    `timeout` seconds."""
+    last = sdp.pose()
+    still = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline and still < 2:
+        time.sleep(poll)
+        p = sdp.pose()
+        moved = math.hypot(p.x - last.x, p.y - last.y)
+        turned = abs((p.yaw - last.yaw + 180) % 360 - 180)
+        still = still + 1 if moved < still_m and turned < still_deg else 0
+        last = p
+
+def _settle_heading(sdp, timeout=2.0, still_deg=0.3, poll=0.1):
+    """Wait until the base heading stops changing, at most `timeout` seconds.
+
+    Returns how many degrees the base turned while it was waited on."""
+    start = last = sdp.heading()
+    still = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline and still < 2:
+        time.sleep(poll)
+        h = sdp.heading()
+        still = still + 1 if abs((h - last + 180) % 360 - 180) < still_deg else 0
+        last = h
+    return abs((last - start + 180) % 360 - 180)
+
+
 # rotate 360 and stop if a object is spotted
 def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObject=checkForObject, rot_speed=0.1,
-                    min_recheck=False, stream_mgr=None):
+                    min_recheck=False, stream_mgr=None, floor_pitch=135):
     global _action_flag, _interrupt_action
 
     _interrupt_action = False
     if height=="floor":
-        aim_oakd(pitch=135) # aim down to see floor objects better
+        aim_oakd(pitch=floor_pitch) # aim down to see floor objects better
         eyes.setTargetPitchYaw(50, 0)
     elif height == "up high":
         aim_oakd(pitch=85) # aim up to see high objects better
@@ -5342,7 +5371,8 @@ def _ensure_arm_enabled(timeout: int = _ARM_ENABLE_TIMEOUT) -> str:
 # failure, 3 is the wrist camera reporting the jaws empty. Both get a reset; if
 # 3 turns out to misfire often, an OAK-D second opinion belongs ahead of it.
 # 4 (EXIT_NOT_THERE, a NotThereError) is no can there on approach, before the
-# grasp, so it needs none.
+# grasp; only an approach check raises it, and pick_up leaves that off.
+# pick_up resets to init after every failure regardless.
 _ARM_RESET_CODES = (1, 3)
 _ARM_NOT_THERE = 4
 
@@ -5351,10 +5381,12 @@ _FORCE_RESET_ASK = ("Ask the user whether anything is in the arm's way; if they 
                     "say it is clear, call reset_arm with force=True.")
 
 
-def _recover_arm(result: dict):
-    """Reset the arm after a failed motion whose exit status strands it.
-    Returns (reset, note): whether a reset ran -- it opens the gripper first,
-    so anything held is dropped -- and a sentence to add if it failed.
+def _recover_arm(result: dict, state: str = "", always: bool = False):
+    """Reset the arm to `state` (the server's reset pose when empty) after a
+    failed motion whose exit status strands it, or after any failure when
+    `always`. Returns (reset, note): whether a reset ran -- it opens the
+    gripper first, so anything held is dropped -- and a sentence to add if it
+    failed.
 
     A wedged ROS stack fails the reset the same way, so it gets the arm
     service restarted first."""
@@ -5364,9 +5396,9 @@ def _recover_arm(result: dict):
         problem = _revive_arm()
         if problem:
             return True, f" The arm software is stuck and could not be restarted: {problem}."
-    if result.get("returncode") not in _ARM_RESET_CODES:
+    if not always and result.get("returncode") not in _ARM_RESET_CODES:
         return False, ""
-    reset = _arm_client.reset_arm()
+    reset = _arm_client.reset_arm(state)
     _held_object = None
     if reset.get("ok"):
         return True, ""
@@ -5473,21 +5505,21 @@ PICK_MIN_SAMPLES = 3
 PICK_APPROACH_TRIES = 4
 PICK_MAX_NUDGE = 0.3
 
-# Arm range, metres, pick_up's nudge aims the object at. Outside the grasp
-# standoff, at the far end of the reach band, because the camera loses a can
-# behind the gripper closer in: seen at 0.38, barely at 0.357, never at
-# 0.26-0.29.
-PICK_NUDGE_STANDOFF = 0.33
+# Arm range, metres, pick_up's nudge aims the object at. Past the grasp
+# standoff because _nudge_base runs some 20 mm beyond the drive it is given,
+# which lands the object near 0.30.
+PICK_NUDGE_STANDOFF = 0.32
 
 # How far beyond the arm's reach search_for_object stops short of a pickable
 # floor object. A search reading at 1.5 m or more can be 0.3 m off, and only
 # an error that lands too far is one pick_up can recover from by driving.
 PICK_SEARCH_MARGIN = 0.10
 
-# When pick_up sees nothing in front of it, the object may be under the
-# camera's view rather than gone: back up this far and look again, at most
+# When pick_up sees nothing in front of it, or glimpses the object within
+# reach in too few frames to grasp on, the object may be under the camera's
+# view or hidden by the gripper: back up this far and look again, at most
 # PICK_MAX_BACKOFFS times.
-PICK_BACKOFF = 0.20
+PICK_BACKOFF = 0.10
 PICK_MAX_BACKOFFS = 2
 
 # _nudge_base: move_imm has to be repeated every NUDGE_STEP seconds to keep
@@ -5725,11 +5757,25 @@ def _nudge_base(sdp, turn_deg: float, drive_m: float) -> float:
             move_imm(sdp, sign)
             steps += 1
             time.sleep(NUDGE_STEP)
-        time.sleep(0.3)  # let it coast to a stop before the pose is final
+        _settle_pose(sdp)  # coasted to a stop before the pose is final
         return along(start, h)
     finally:
         sdp.setSpeed(_user_set_speed)
         _action_flag = False
+
+
+def _arm_refuses(target, obj: str) -> str:
+    """Ask the arm whether pick_can would plan at `target`, moving nothing.
+
+    Returns "" for yes, and for an answer that never came -- pick_can is the
+    authority and will say so itself -- otherwise the arm's reason for no."""
+    result = _arm_client.can_pick(target[0], target[1], target[2], _arm_object(obj))
+    if result.get("ok"):
+        return ""
+    if result.get("returncode") == -1:
+        print("pick_up: could not ask the arm about the pick: %s" % _arm_problem(result))
+        return ""
+    return result.get("reason") or _arm_problem(result)
 
 
 def back_up_tool_helper(sdp, distance: float):
@@ -5747,7 +5793,7 @@ def back_up_tool_helper(sdp, distance: float):
 
 def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
     """Look at the floor, and if the object is within reach, grasp and hold it.
-    `vision` False skips the arm's wrist-camera checks, approach and held."""
+    `vision` False skips the arm's wrist-camera held check."""
     global _held_object, _interrupt_action
 
     obj = _normalize_place_name(object_name)
@@ -5775,10 +5821,9 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
         # again: the planner cannot judge a drive that short, and the
         # navigator will not make one.
         backoffs = 0
-        # Where the last confident sighting (PICK_MIN_SAMPLES frames or more)
-        # puts the object after the straight nudges since, arm frame; None
-        # when that sighting was weak or a turn came after it.
-        expected = None
+        # The grasp is aimed only at a sighting confirmed in PICK_MIN_SAMPLES
+        # frames or more, taken in this pass with the base stopped and not
+        # moved since -- never one carried across a nudge.
         for attempt in range(PICK_APPROACH_TRIES + 1):
             pose = sdp.pose()
             det, cam_yaw, cam_pitch, frames = _look_for_floor_object(obj)
@@ -5788,43 +5833,52 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
                 return f"Stopped before picking up the {obj}."
             if not _owl_alive():
                 return _OWL_DOWN
-            weak = det is not None and frames < PICK_MIN_SAMPLES
-            if ((det is None or weak) and expected is not None
-                    and robot_frames.arm_can_reach(expected)[0]):
-                # Inside the reach band the gripper hides much of the floor
-                # from the camera, so a nudge that worked loses sight of the
-                # object, or catches its edge in a frame or two with a depth
-                # reading well off. Trust the sighting it was planned from.
-                target = expected
-                print("pick_up: %s %s after the nudge; grasping where the last "
-                      "confident sighting puts it, arm (%.3f, %.3f, %.3f)"
-                      % (obj, "in only %d frames" % frames if weak else "out of view",
-                         target[0], target[1], target[2]))
-                break
             if det is None:
                 if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
                     backoffs += 1
                     print("pick_up: no %s in view; backing up %.2f m to look again"
                           % (obj, PICK_BACKOFF))
-                    _nudge_base(sdp, 0.0, -PICK_BACKOFF)
-                    expected = None
+                    driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
+                    print("pick_up: backed up %.3f m" % -driven)
                     continue
                 where = "after moving the base" if attempt else "on the floor in front of me"
                 return ToolFailure(f"I do not see a {obj} {where}.")
+            weak = frames < PICK_MIN_SAMPLES
 
             # The depth point is on the near face of the can partway up it; the
             # centre the arm wants comes from the can's own size and the floor.
             target = robot_frames.floor_object_to_arm(
                 det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
             rng, arm_yaw, height = robot_frames.arm_reach(target)
-            print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg"
-                  % (obj, target[0], target[1], target[2], rng, arm_yaw))
+            print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg, "
+                  "%d frames" % (obj, target[0], target[1], target[2], rng,
+                                 arm_yaw, frames))
 
             ok, reason = robot_frames.arm_can_reach(target)
+            standoff = PICK_NUDGE_STANDOFF
+            if ok and weak:
+                # In reach but only glimpsed -- inside the reach band the
+                # gripper hides much of the floor. Back up to see it whole.
+                if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
+                    backoffs += 1
+                    print("pick_up: %s in only %d frames; backing up %.2f m to "
+                          "confirm it" % (obj, frames, PICK_BACKOFF))
+                    driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
+                    print("pick_up: backed up %.3f m" % -driven)
+                    continue
+                return ToolFailure(f"I only glimpsed the {obj} in {frames} frames, too few "
+                                   f"to be sure where it is for a grasp.")
             if ok:
-                break
+                refused = _arm_refuses(target, obj)
+                if not refused:
+                    break
+                # In the band but no plan: aim for the middle of it.
+                reason = "the arm cannot plan it there: %s" % refused
+                standoff = robot_frames.GRASP_STANDOFF
 
-            move = robot_frames.approach_move(target, standoff=PICK_NUDGE_STANDOFF)
+            move = robot_frames.approach_move(target, standoff=standoff)
+            if move is not None and not move[0] and abs(move[1]) < NUDGE_MIN_DRIVE:
+                move = None  # already where a nudge would put it
             if move is None or attempt == PICK_APPROACH_TRIES:
                 gx, gy, gyaw = robot_frames.approach_pose(
                     robot_frames.arm_to_robot(target), pose)
@@ -5839,27 +5893,22 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
                   % (reason, turn_deg, drive_m))
             driven = _nudge_base(sdp, turn_deg, drive_m)
             print("pick_up: drove %+.3f m" % driven)
-            # A straight drive moves the object straight back in the arm
-            # frame; after a turn the odometry is not worth extrapolating.
-            # A weak sighting is not worth it either: losing the object after
-            # a nudge planned from one backs up to find it again.
-            expected = ((target[0] - driven, target[1], target[2])
-                        if not turn_deg and not weak else None)
 
-        # No is_holding() here: with `vision` pick_can asks it itself, on
-        # approach and again at stow, and aborts on a definite no. So an ok
-        # result has already been confirmed through the same camera, and a
-        # failure after the grasp is one of the things that check caught --
-        # which is why the failure below reports the arm as stuck rather than
-        # inviting a retry.
+        # No is_holding() here: with `vision` pick_can asks it itself at stow
+        # (its held check; the approach check is off by default) and aborts on
+        # a definite no. So an ok result has already been confirmed through
+        # the same camera.
         result = _arm_client.pick_can(target[0], target[1], target[2],
                                       _arm_object(obj), vision=vision)
         if result.get("ok"):
             _held_object = obj
             return f"I picked up the {obj} and am holding it."
+        # Any failure can leave the arm out over the floor, and the base must
+        # never move with it there. Every one ends at init: folded, and the
+        # pose the floor looks and nudges of a retried pick expect.
+        _, note = _recover_arm(result, state="init", always=True)
         if result.get("returncode") == _ARM_NOT_THERE:
-            return ToolFailure(f"The {obj} was not detected where the arm reached for it.")
-        _, note = _recover_arm(result)
+            return ToolFailure(f"The {obj} was not detected where the arm reached for it.{note}")
         return ToolFailure(f"The arm failed to pick up the {obj}: {_arm_problem(result)}.{note}")
     except Exception as e:
         return ToolFailure(f"Error picking up the {object_name}: {str(e)}")
