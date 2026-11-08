@@ -378,6 +378,27 @@ def cancelAction(interrupt = False, sdp=None):
             _action_flag = False
     return retval
 
+_AGENT_ABORT_NOTICE = ("[The user said stop. Everything you were doing for the request above "
+                       "was aborted and may be only partly done. Do not resume or retry it; "
+                       "wait for the user's next instruction.]")
+
+def abortAgent():
+    """Abort the agent's run in flight, leaving it a notice to wait for further
+    instructions, and stop any arm motion it started. Returns True if a run
+    was aborted."""
+    if _langgraph is None or not _langgraph.is_processing:
+        return False
+    # Cancel before stopping hardware so the run cannot plan another step
+    # when the interrupted tool returns.
+    if not _langgraph.cancel_stream(notice=_AGENT_ABORT_NOTICE):
+        return False
+    if _arm_client is not None and _arm_client.is_connected():
+        try:
+            _arm_client.stop()
+        except Exception as e:
+            print(f"Error stopping the arm: {e}")
+    return True
+
 def startrun():
     global _run_flag
     _run_flag = True
@@ -2626,24 +2647,28 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
     while True:
         # convert phrase to lower case for comparison
         phrase = phrase.lower().strip() 
+        # An aborted agent run already has the stop recorded in its memory, so
+        # those cases report HandledByLangGraph to skip adding it again.
         if phrase == "stop all":
+            aborted = abortAgent()
             cancelAction(True, sdp)
-            if _langgraph is not None:
-                _langgraph.cancel_stream()
             speak("Stopping everything.")
-            return HandleResponseResult.Handled
+            return HandleResponseResult.HandledByLangGraph if aborted else HandleResponseResult.Handled
 
         if phrase == "stop" or phrase == "stop moving" or phrase == "stop motors" or phrase == "stop stop":
+            aborted = abortAgent()
             retval = cancelAction(True, sdp)
             if retval == 1:
                 speak("Stopping.")
-                location, distance, closeEnough = where_am_i() 
+                location, distance, closeEnough = where_am_i()
                 if not closeEnough:
                     speak("I'm closest to the " + location)
                 else:
                     ans = "I am now near the " + location + " location."
                     speak(ans)
-            return HandleResponseResult.Handled
+            elif aborted:
+                speak("Stopping.")
+            return HandleResponseResult.HandledByLangGraph if aborted else HandleResponseResult.Handled
         
         if (phrase == "what's your name" or
             phrase == "what is your name" or
@@ -4677,6 +4702,16 @@ def cancel_action_tool_helper(sdp):
     cancelAction(True, sdp)
     return "Action cancelled."
 
+def initiate_shutdown_tool_helper():
+    """Close the robot program, as the "initiate shutdown" voice command does."""
+    global _run_flag
+    shutdown_eyes_thread()
+    speak("Okay, I'm shutting down.")
+    print("\nClosing these active threads:")
+    pretty_print_threads()
+    _run_flag = False
+    return "Shutting down."
+
 def go_recharge_tool_helper(sdp):
     """Go to the recharge location."""
     global _goal
@@ -6505,7 +6540,8 @@ langgraph_tool_funcs = {
     "back_up": back_up_tool_helper,
     "go_recharge": go_recharge_tool_helper,
     "cancel_action": cancel_action_tool_helper,
-    
+    "initiate_shutdown": initiate_shutdown_tool_helper,
+
     # Object Detection & Retrieval
     "track_object": track_object_tool_helper,
     "while_go_to_loc_find_object": while_go_to_loc_find_object_tool_helper,
@@ -6630,7 +6666,10 @@ def initialize_robot():
 
     #_cmdEmbedMgr = CmdEmbedMgr()
     #_cmdEmbedMgr.load_cmds_embeddings()
-    _listen_thread = Thread(target = listen, name = "Listen")
+    # Daemon so a shutdown started off this thread (agent tool, Ctrl-C) doesn't
+    # wait on it while it blocks for a wake word. Restart is only ever triggered
+    # from this thread, so it has always exited before robot() runs again.
+    _listen_thread = Thread(target = listen, name = "Listen", daemon = True)
     _listen_thread.start()
 
     _langgraph = None

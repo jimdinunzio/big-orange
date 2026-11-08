@@ -230,6 +230,12 @@ class RobotTools:
             return "Current action cancelled (simulated)."
         return self.call_tool_helper("cancel_action", self._sdp)
 
+    def initiate_shutdown(self) -> str:
+        """Close the robot program."""
+        if self.sim:
+            return "Shutting down (simulated)."
+        return self.call_tool_helper("initiate_shutdown")
+
     def go_recharge(self) -> str:
         """Return robot to recharge dock. Not same as home."""
         if self.sim:
@@ -999,7 +1005,13 @@ class RobotTools:
                 name="cancel_action",
                 description="Cancel current action (movement, etc.)."
             ),
-            
+
+            StructuredTool.from_function(
+                func=self.initiate_shutdown,
+                name="initiate_shutdown",
+                description="Shut down the robot program. First ask exactly \"Are you sure you want me to shut down?\" and call only on yes."
+            ),
+
             StructuredTool.from_function(
                 func=self.go_recharge,
                 name="go_recharge",

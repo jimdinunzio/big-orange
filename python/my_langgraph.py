@@ -57,6 +57,7 @@ class RobotPlannerGraph:
         self._run_gen = 0
         self._abandon_count = 0
         self._run_start_len = 0
+        self._run_message = None
         # verbose: speak the planner's intent and final summary.
         # terse: say "OK" once a request starts acting, then stay quiet unless
         # a tool errored; a reply that called no tools is still spoken.
@@ -348,14 +349,16 @@ class RobotPlannerGraph:
         """Return True if the agent is currently processing a request."""
         return self._is_processing
 
-    def cancel_stream(self):
+    def cancel_stream(self, notice: str = ""):
         """Cancel the current run, even one stuck inside a node.
 
         The stream thread cannot be interrupted, so it is abandoned: the agent
         is freed immediately and moves to a fresh conversation thread holding
-        the history from before the cancelled request. The cancelled request
-        and any late writes from the old run (e.g. dangling tool_calls, which
-        OpenAI rejects) stay behind on the old thread.
+        the history from before the cancelled request. Any late writes from the
+        old run (e.g. dangling tool_calls, which OpenAI rejects) stay behind on
+        the old thread. With a notice, the cancelled request is kept on the
+        fresh thread, followed by the notice as a user message, so the agent
+        knows what was abandoned; without one, the request is dropped too.
         Returns True if a run was cancelled."""
         self._cancel = True
         t = self._stream_thread
@@ -371,6 +374,10 @@ class RobotPlannerGraph:
             messages = []
         if not messages:
             messages = self.init_messages + [AIMessage(content=self._greeting)]
+        if notice:
+            if self._run_message is not None:
+                messages = messages + [self._run_message]
+            messages = messages + [HumanMessage(content=notice)]
 
         self._abandon_count += 1
         self.thread_id = f"{self._base_thread_id}-{self._abandon_count}"
@@ -512,6 +519,7 @@ class RobotPlannerGraph:
                         },
                     },
                 ])
+        self._run_message = message
 
         def _run_stream(msg: HumanMessage):
             try:
