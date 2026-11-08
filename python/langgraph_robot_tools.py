@@ -835,6 +835,17 @@ class RobotTools:
             return "I opened the gripper (simulated)."
         return self.call_tool_helper("drop")
 
+    def hand_over(self, object_name: str) -> str:
+        """Take an object from the user's hand and hold it."""
+        if self.sim:
+            if self._sim_held is not None:
+                return f"I am already holding a {self._sim_held} (simulated)."
+            if object_name not in ("soda can",):
+                return f"I cannot hold a {object_name} (simulated)."
+            self._sim_held = object_name
+            return f"I took the {object_name} and am holding it (simulated)."
+        return self.call_tool_helper("hand_over", object_name)
+
     def enable_arm(self) -> str:
         """Start the arm."""
         if self.sim:
@@ -970,6 +981,9 @@ class RobotTools:
     class PickUpInput(BaseModel):
         object_name: str = Field(..., description="Object to grasp off the floor. Only 'soda can' is supported.")
         vision: bool = Field(True, description="Confirm the grasp with the wrist camera.")
+
+    class HandOverInput(BaseModel):
+        object_name: str = Field(..., description="Object the user is handing over. Only 'soda can' is supported.")
 
     class PutDownInput(BaseModel):
         destination: str = Field(..., description="Where to release the held object: 'recycle bin' or 'trash bin'.")
@@ -1336,6 +1350,13 @@ class RobotTools:
                 func=self.drop,
                 name="drop",
                 description="Open the gripper where the arm is, dropping anything held."
+            ),
+
+            StructuredTool.from_function(
+                func=self.hand_over,
+                args_schema=self.HandOverInput,
+                name="hand_over",
+                description="Take an object from the user's hand: opens the gripper, waits for it, then grips and holds it."
             ),
 
             StructuredTool.from_function(

@@ -6126,6 +6126,65 @@ def drop_tool_helper():
         return ToolFailure(f"Error dropping: {str(e)}")
 
 
+# Seconds the jaws stay open for the user to put the object between them.
+HAND_OVER_DELAY = 5.0
+
+
+def hand_over_tool_helper(object_name: str):
+    """Take an object from the user's hand: open at trash, wait, grip, then
+    carry it at stow exactly as a pick would."""
+    global _held_object
+
+    obj = _normalize_place_name(object_name)
+    if obj not in PICKABLE_OBJECTS:
+        return ToolFailure(f"I cannot hold a {object_name}. I can only hold: "
+                           f"{', '.join(PICKABLE_OBJECTS)}.")
+    if _held_object is not None:
+        return ToolFailure(f"I am already holding a {_held_object}, and I can only carry "
+                           f"one thing at a time.")
+    if _arm_client is None or not _arm_client.is_connected():
+        return ToolFailure(f"Error: the arm is not available to take the {obj}.")
+    problem = _ensure_arm_enabled()
+    if problem:
+        return ToolFailure(f"Error: the arm could not be enabled to take the {obj}: {problem}")
+
+    try:
+        # grip_can moves nothing, so the arm is put where a hand can reach it.
+        result = _arm_client.move_to_state("trash")
+        if not result.get("ok"):
+            _, note = _recover_arm(result)
+            return ToolFailure(f"The arm could not get ready to take the {obj}: "
+                               f"{_arm_problem(result)}.{note}")
+
+        result = _arm_client.grip_can(HAND_OVER_DELAY, _arm_object(obj), say=speak)
+        if not result.get("ok"):
+            _, note = _recover_arm(result)
+            return ToolFailure(f"The arm failed to grip the {obj}: {_arm_problem(result)}.{note}")
+        _held_object = obj
+
+        # Held means at stow: the base must not move with the arm out, and it
+        # is the only pose the wrist camera's held check can be trusted from.
+        result = _arm_client.move_to_state("stow")
+        if not result.get("ok"):
+            reset, note = _recover_arm(result)
+            if reset:
+                return ToolFailure(f"The arm failed to move to stow with the {obj}: "
+                                   f"{_arm_problem(result)}. It dropped the {obj}.{note}")
+            return ToolFailure(f"The arm failed to move to stow with the {obj}: "
+                               f"{_arm_problem(result)}. I am still holding it, and the "
+                               f"arm cannot plan another move until it is reset.")
+
+        # The jaws close whether or not anything was put between them.
+        seen, why = _gripper_sees(obj)
+        if seen is False:
+            _arm_client.drop_can()
+            _held_object = None
+            return ToolFailure(f"I closed the gripper but the {obj} is not in it -- {why}.")
+        return f"I took the {obj} and am holding it."
+    except Exception as e:
+        return ToolFailure(f"Error taking the {obj}: {str(e)}")
+
+
 def enable_arm_tool_helper():
     """Start the arm's ROS stack."""
     if _arm_client is None or not _arm_client.is_connected():
@@ -6594,6 +6653,7 @@ langgraph_tool_funcs = {
     "reset_arm": reset_arm_tool_helper,
     "place": place_tool_helper,
     "drop": drop_tool_helper,
+    "hand_over": hand_over_tool_helper,
     "enable_arm": enable_arm_tool_helper,
     "disable_arm": disable_arm_tool_helper,
     "move_arm_to_position": move_arm_to_position_tool_helper,
