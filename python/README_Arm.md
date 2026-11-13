@@ -25,7 +25,7 @@ nothing here touches serial.
 
 | method | what it runs |
 |---|---|
-| `enable_arm(timeout, bridge, rviz, port, floor)` | `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
+| `enable_arm(timeout, bridge, rviz, port, floor, check_jaws)` | `ros2 run dofbot_ctrl check_jaws`, then `ros2 launch dofbot_ctrl pick_place.launch.py rviz:=false`, with `DOFBOT_FLOOR` set to `floor` |
 | `disable_arm()` | opens the jaws, then stops that launch (whole process group) |
 | `pick_can(x, y, z, object, vision, approach, held)` | `ros2 run dofbot_ctrl pick_place -- --pick x y z`, plus `--approach-check` when `approach` is True, `--no-held-check` when `held` is False, `--no-vision` when `vision` is False |
 | `can_pick(x, y, z, object)` | `ros2 run dofbot_ctrl pick_place -- --check x y z`: would that pick plan? Moves nothing |
@@ -37,6 +37,7 @@ nothing here touches serial.
 | `reset_arm(state, force)` | `ros2 run dofbot_ctrl pick_place -- --reset STATE` |
 | `wave_arm(waves, finish, seconds)` | `ros2 run dofbot_ctrl wave_arm -- --waves N` |
 | `is_holding(object)` | `ros2 run dofbot_ctrl vision_check -- --held` |
+| `held_color(object)` | `ros2 run dofbot_ctrl vision_check -- --color` |
 | `set_torque(on)` | off: `disable_arm()` first, then `ros2 run dofbot_ctrl set_torque off`. on: `ros2 run dofbot_ctrl set_torque on` (nothing to do while enabled) |
 
 Plus `list_states()`, `stop()`, `tail_log()`, `get_status()`, `ping()`.
@@ -71,6 +72,10 @@ within half a degree of it, None when the arm is in none of them. `ok` False
 
 `is_holding()` adds three keys to that dict: `held` (**True / False / None**),
 `verdict` (the same three as text) and `reason`.
+
+`held_color()` adds those and `color`: `'red'`, `'green'`, `'blue'` or None.
+When None, `held` says why: False empty jaws, True held but the colour was not
+clear, None the camera could not answer.
 
 ## Running it
 
@@ -234,6 +239,14 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   the arm settles wherever the waypoint already in flight leaves it.
 - **`moveit_bridge` needs `/dev/ttyTHS1` to itself.** Stop `gui_teleop` and
   `joint_state_mirror` before `enable_arm()`.
+- **`enable_arm()` checks the jaws first.** With the bridge on, it opens,
+  closes and opens the empty jaws and reads the gripper servo back. A jaw that
+  does not follow gets a torque cycle and one retry, and if it still does not
+  follow, the enable is refused with `jaw check failed: ...`. The fix is then
+  `torque off`, work the jaws by hand, enable again. `check_jaws=False`
+  (`enable --no-jaw-check`) skips it. The check opens the jaws first, so
+  anything left in them is dropped where the arm stands -- as the launch's own
+  first sync would do anyway.
 - **A failed `enable_arm()` tears its own launch down.** A leftover half-stack
   would put a second `move_group` on the domain at the next attempt, and two
   action servers driving one arm is a far worse failure than a clean retry.
@@ -290,21 +303,19 @@ anything that hard-codes the values above has to read `DOFBOT_GRIPPER` the way
   the question got asked, so `ok` with `held` False is a working camera
   reporting an empty gripper. Treating `None` as `False` turns "the detector is
   busy elsewhere" into "you dropped it".
-- **It is a classification, not a detection.** nanoOWL is asked to choose
-  between *an empty gripper* and *a gripper holding a soda can*, which needs no
-  detectable object: measured, 0.99 holding and 0.93 empty. **How much of a
-  held can is in frame depends on how high it was gripped**, and that varies
-  from pick to pick: gripped low, the can fills the middle of the frame and is
-  even detected; gripped high, only a sliver shows at the bottom edge and no
-  detector will name it. The classification is meant to cover both.
-- **It reads the WHOLE frame, and at `stow` that frame includes the floor.**
-  `stow` points the tool level, so the floor is in view, and a can lying there
-  can read as held at 1.000 — a confident wrong answer, not a weak one. The
-  wording was measured at an earlier pose that pointed the tool up and showed
-  no floor, where the only can that could appear was the held one; that pose is
-  gone. Until this is fixed, treat `held` True as "a can is in view", not
-  proof that the gripper has it. `held` False (a good look and no can) is still
-  meaningful. See ARCHITECTURE.md, *Seeing the pick*.
+- **It classifies the bottom-centre of the frame, and asks about size.**
+  nanoOWL chooses between *a close-up of a can filling the picture*, *a small
+  can on the floor* and *a floor* for the bottom half, middle 70% of the frame
+  (`vision.HELD_CROP`). Only the close-up means held. At `stow` the floor is in
+  view, but when the jaws are empty the only cans that can be in it are further
+  away, so they come out small; a held can fills that region. A whole-frame
+  question could not tell the two apart and called every empty frame with a
+  can in view held.
+- **It means what it says at `stow` and nowhere else** -- the crop is where a
+  held can lands from that pose. Score changes against labelled frames with
+  `ros2 run dofbot_ctrl rescore_held` (frames in `~/held_frames/`, named
+  `stow_held_*.png` / `stow_empty_*.png`; `grip_can()` and
+  `calibrate_view --shot` make them).
 - **It does not need the arm enabled**, since a camera and a detector are not
   `move_group` — but it does take the motion lock, so it comes back `busy`
   during a pick rather than photographing a moving arm.

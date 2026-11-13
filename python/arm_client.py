@@ -125,13 +125,14 @@ class ArmClient:
 
     def enable_arm(self, timeout: int = 90, bridge: bool = True,
                    rviz: bool = False, port: str = '',
-                   floor: str = '') -> Dict[str, Any]:
+                   floor: str = '', check_jaws: bool = True) -> Dict[str, Any]:
         """Start the ROS stack. Blocks until the nodes are up or it gives up.
 
         floor is 'carpet' or 'hard', the surface the robot stands on; '' takes
-        the server's default. Fixed until disable_arm()."""
+        the server's default. Fixed until disable_arm(). check_jaws exercises
+        the empty jaws first and refuses the enable if they do not follow."""
         return self._call(self._motion, 'enable_arm', timeout, bridge, rviz,
-                          port, floor)
+                          port, floor, check_jaws)
 
     def disable_arm(self, park: str = '') -> Dict[str, Any]:
         """Open the jaws, optionally move to `park`, then stop the ROS stack.
@@ -200,6 +201,17 @@ class ArmClient:
         Means what it says at 'stow', which is where a pick leaves the arm.
         """
         return self._call(self._motion, 'is_holding', object)
+
+    def held_color(self, object: str = '') -> Dict[str, Any]:
+        """Look through the wrist camera: is the held can red, green or blue?
+
+        Read `color`: 'red', 'green', 'blue', or None. When None, `held` says
+        why -- False empty jaws, True held but the colour was not clear, None
+        the camera could not answer. Means what it says at 'stow'.
+        """
+        result = self._call(self._motion, 'held_color', object)
+        result.setdefault('color', None)
+        return result
 
     def move_to_state(self, name: str) -> Dict[str, Any]:
         """Move to a saved state -- see list_states()."""
@@ -323,6 +335,18 @@ def show_held(result: Dict[str, Any]) -> bool:
     return bool(result.get('ok'))
 
 
+def show_color(result: Dict[str, Any]) -> bool:
+    """Print a held_color() result: the colour, or why there is none."""
+    color = result.get('color')
+    held = result.get('held')
+    word = (color.upper() if color else
+            {True: 'UNSURE', False: 'EMPTY'}.get(held, 'UNKNOWN'))
+    print('%-8s %s' % (word, result.get('reason') or result.get('error') or ''))
+    if held is None and not result.get('ok'):
+        show(result)
+    return bool(result.get('ok'))
+
+
 def show_state(result: Dict[str, Any]) -> bool:
     """Print a current_state() result: the state name, or none."""
     if result.get('ok'):
@@ -358,9 +382,10 @@ def show_status(status: Optional[dict]):
 
 
 INTERACTIVE_HELP = """Commands:
-  enable [--sim] [carpet|hard]
+  enable [--sim] [--no-jaw-check] [carpet|hard]
                         start the ROS stack (--sim: no servo bridge; the
-                        floor defaults to the server's)
+                        floor defaults to the server's); first checks the
+                        empty jaws open and close
   disable [state]       open the jaws, park at state (default stow), and
                         stop the stack
   pick X Y Z [object] [no-vision] [approach] [no-held]
@@ -377,6 +402,7 @@ INTERACTIVE_HELP = """Commands:
                         retried pick resets itself)
   wave [N]              wave hello N times, then stow
   held [object]         look: is the object still in the jaws?
+  color [object]        look: is the held can red, green or blue?
   torque on|off         servo torque; off DISABLES the arm, then goes limp
   where                 which saved state the arm is in, or none
   states                list the saved states
@@ -423,6 +449,8 @@ def interactive(client: ArmClient):
                 show(client.stop())
             elif cmd == 'held':
                 show_held(client.is_holding(args[0] if args else ''))
+            elif cmd == 'color':
+                show_color(client.held_color(args[0] if args else ''))
             elif cmd == 'torque':
                 if args not in (['on'], ['off']):
                     print('Usage: torque on|off   (off disables the arm, '
@@ -433,7 +461,8 @@ def interactive(client: ArmClient):
                 print('Starting the stack, this takes a few seconds...')
                 floor = [a for a in args if a in ('carpet', 'hard')]
                 show(client.enable_arm(bridge='--sim' not in args,
-                                       floor=floor[0] if floor else ''))
+                                       floor=floor[0] if floor else '',
+                                       check_jaws='--no-jaw-check' not in args))
             elif cmd == 'disable':
                 show(client.disable_arm(args[0] if args else 'stow'))
             elif cmd == 'place':
@@ -507,6 +536,8 @@ def build_parser():
     enable.add_argument('--floor', choices=('carpet', 'hard'), default='',
                         help="surface the robot stands on (default: the "
                              "server's DOFBOT_FLOOR)")
+    enable.add_argument('--no-jaw-check', action='store_true',
+                        help='skip exercising the empty jaws before the launch')
     enable.add_argument('--timeout', type=int, default=90)
 
     disable = sub.add_parser('disable', help='stop the ROS stack')
@@ -568,6 +599,11 @@ def build_parser():
     held.add_argument('object', nargs='?', default='',
                       help='catalogue entry to look for')
 
+    color = sub.add_parser('color',
+                           help='look: is the held can red, green or blue?')
+    color.add_argument('object', nargs='?', default='',
+                       help='catalogue entry to look for')
+
     torque = sub.add_parser('torque',
                             help='servo torque; off DISABLES the arm first, '
                                  'then it goes limp -- support it')
@@ -600,7 +636,8 @@ def main(argv=None):
     if cli.cmd == 'enable':
         return 0 if show(client.enable_arm(timeout=cli.timeout,
                                            bridge=not cli.sim,
-                                           rviz=cli.rviz, floor=cli.floor),
+                                           rviz=cli.rviz, floor=cli.floor,
+                                           check_jaws=not cli.no_jaw_check),
                          cli.verbose) else 1
     if cli.cmd == 'disable':
         return 0 if show(client.disable_arm(cli.park), cli.verbose) else 1
@@ -628,6 +665,8 @@ def main(argv=None):
                          cli.verbose) else 1
     if cli.cmd == 'held':
         return 0 if show_held(client.is_holding(cli.object)) else 1
+    if cli.cmd == 'color':
+        return 0 if show_color(client.held_color(cli.object)) else 1
     if cli.cmd == 'torque':
         return 0 if show(client.set_torque(cli.state == 'on'),
                          cli.verbose) else 1
