@@ -85,6 +85,11 @@ class NanoOwlManager:
         self._paused = False
         self._stream_thread = None
 
+        # Results from frames older than this are ignored; set by
+        # push_fresh_frame so a check after the robot stops cannot report a
+        # box from a frame taken while it was still turning.
+        self._min_seq = -1
+
     # ------------------------------------------------------------------ #
     #  Streaming control
     # ------------------------------------------------------------------ #
@@ -93,6 +98,7 @@ class NanoOwlManager:
         """Start pushing OAK-D preview frames to the OWL server."""
         if self._streaming:
             return
+        self._min_seq = -1
         self._streaming = True
         self._stream_thread = Thread(
             target=self._stream_loop, args=(fps,), name="owl_stream", daemon=True
@@ -118,12 +124,33 @@ class NanoOwlManager:
         """Resume frame pushing after a pause."""
         self._paused = False
 
-    def push_fresh_frame(self):
-        """Push one frame synchronously and wait for server inference."""
+    def push_fresh_frame(self, timeout=1.5):
+        """Push the newest camera frame and wait for the server's result on it.
+
+        From then on the check_* methods report nothing from an older frame:
+        a box from a frame the server finished earlier is in the wrong place
+        once the robot has moved, and its depth would be read at that wrong
+        place in the current depth frame.  Returns False if the result did
+        not arrive within `timeout` seconds.
+        """
         preview, seq = self._mdai.getLatestFrame()
-        if preview is not None:
-            self._owl.push_frame(preview, seq)
-            time.sleep(0.35)
+        if preview is None or not self._owl.push_frame(preview, seq):
+            return False
+        self._min_seq = seq
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            result = self._owl.get_detections()
+            if result is not None and self._fresh(result):
+                return True
+            time.sleep(0.03)
+        print("NanoOWL: no result for frame %d within %.1f s" % (seq, timeout))
+        return False
+
+    def _fresh(self, result):
+        """Whether a server result is from a frame push_fresh_frame allows.
+        A server that reports no frame_seq is trusted."""
+        seq = result.get("frame_seq")
+        return seq is None or seq >= self._min_seq
 
     def _stream_loop(self, fps):
         interval = 1.0 / fps
@@ -151,8 +178,12 @@ class NanoOwlManager:
     # ------------------------------------------------------------------ #
 
     def get_detections_nms(self, iou_threshold=0.5, score_threshold=0.08):
-        """Get NMS-filtered detections from the OWL server."""
-        return self._owl.get_detections_nms(iou_threshold, score_threshold)
+        """Get NMS-filtered detections from the OWL server, or None if the
+        latest result is from a frame older than push_fresh_frame allows."""
+        result = self._owl.get_detections_nms(iou_threshold, score_threshold)
+        if result is None or not self._fresh(result):
+            return None
+        return result
 
     def check_for_object(self, obj_name):
         """
