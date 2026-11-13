@@ -4184,7 +4184,8 @@ def listen():
         model_paths=[wake_path, stop_path],
         keyword_types=[r.OpenWakeWordListener.KeywordType.LISTEN,
                        r.OpenWakeWordListener.KeywordType.IMMEDIATE],
-        thresholds=[0.5, 0.5],
+        thresholds=[0.5, 0.75],
+        min_hold_seconds=[0.0, 0.15],  # stop must hold over threshold ~2 model frames
         on_detection=on_detection,
         on_det_timeout=on_listen_timeout)
 
