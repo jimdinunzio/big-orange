@@ -58,6 +58,13 @@ from head_servos import YAW_HOME_DEG, PITCH_HOME_DEG
 # plate that defines z = 0.
 ARM_ORIGIN = (0.265, 0.0, -0.003)
 
+# Sonar, arm frame: front face of the cylinders and the beam axis height.
+# Readings are measured from the front face; SONAR_BIAS is how much the
+# speed-of-sound conversion over-reads (constant over 165-305 mm).
+SONAR_FACE_X = 0.063
+SONAR_Z = 0.052
+SONAR_BIAS = 0.012
+
 # Yaw axis of the camera head is the vertical line through this x, y; the
 # pitch pivot sits on that axis at PITCH_PIVOT_Z, so panning rotates the
 # head without translating the pivot.
@@ -265,6 +272,11 @@ def arm_to_robot(p):
 def oakd_to_arm(x, y, z, yaw_deg=0.0, pitch_deg=0.0, absolute=False):
     """Convert an Oak-D detection straight to the arm base frame."""
     return robot_to_arm(oakd_to_robot(x, y, z, yaw_deg, pitch_deg, absolute))
+
+
+def sonar_to_arm(dist):
+    """Arm-frame point of a sonar echo `dist` metres from the sonar face."""
+    return (SONAR_FACE_X + dist, 0.0, SONAR_Z)
 
 
 def lens_position(yaw_deg=0.0, pitch_deg=0.0, absolute=False):

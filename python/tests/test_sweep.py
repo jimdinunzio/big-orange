@@ -80,7 +80,7 @@ def main():
     
     _lpArduino = LattePandaArduino()
     _lpArduino.initialize()
-    _grasper_sonar = _lpArduino.board.get_pin('d:13:o')
+    _grasper_sonar = _lpArduino.board.get_pin('d:12:o')
     sdp_comm.connectToSdp(sdp)
     sdp.setSpeed(1)
 

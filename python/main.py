@@ -71,7 +71,6 @@ _dai_fps = 20 # depthai approx. FPS (adjust lower to conserve CPU usage)
 _dai_fps_recip = 1.0 / _dai_fps
 _movement_timeout = 60
 _movement_towards_away = 30
-_sonar_grasp_offset = -0.063 # distance to back of grasper
 _maps_dir = "maps"
 _sounds_dir = "sounds"
 _closest_cmd_dist_thresh = 0.15
@@ -135,8 +134,8 @@ _mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
 _enable_aws_mqtt_listener = False
 _button_pad = Button4Pad()
-_grasper_sonar : Pin
-_last_grasper_sonar : float = 4.50
+_sonar : typing.Optional[Pin] = None
+_last_sonar : float = 4.50
 #_cmdEmbedMgr : CmdEmbedMgr = None
 _map_proc : subprocess.Popen = None
 _langgraph : RobotPlannerGraph = None
@@ -449,21 +448,30 @@ def batteryMonitor():
     except:
         None
 
-def getGrasperSonar() -> float:
-    global _last_grasper_sonar
-    duration = _grasper_sonar.ping()
-    if duration:
-        _last_grasper_sonar = pyfirmata_util.ping_time_to_distance(duration)
-    return _last_grasper_sonar
+def _sonar_ping():
+    """One sonar reading, metres from the sonar face, or None for no echo."""
+    if _sonar is None:
+        return None
+    duration = _sonar.ping()
+    if not duration:
+        return None
+    return pyfirmata_util.ping_time_to_distance(duration) / 100.0 - robot_frames.SONAR_BIAS
 
-def getGraspDist() -> float:
-    return getGrasperSonar() + _sonar_grasp_offset
+def getSonarDist() -> float:
+    """Metres from the sonar face to the nearest echo (last good reading if none)."""
+    global _last_sonar
+    dist = _sonar_ping()
+    if dist is not None:
+        _last_sonar = dist
+    return _last_sonar
 
-def testGraspDist():
-    dist = getGraspDist()
+def getSonarArmPoint():
+    """Arm-frame (x, y, z) of the nearest sonar echo."""
+    return robot_frames.sonar_to_arm(getSonarDist())
+
+def testSonarDist():
     for i in range(0,10):
-        dist = getGraspDist()
-        print("dist = {} cm".format(dist * 100))
+        print("sonar = {:.1f} cm".format(getSonarDist() * 100))
         time.sleep(.5)
 
 def moveToFloatWithYawCapt(sdp, xt, yt, yaw):
@@ -500,7 +508,7 @@ def sonarSweep(sdp, angle, min_dist, min_angle):
             maStatus == ActionStatus.Error or \
             maStatus == ActionStatus.Finished:
             break
-        dist = getGraspDist()
+        dist = getSonarDist()
         cur_angle = sdp.heading()
         if dist < min_dist:
             min_angle = cur_angle            
@@ -520,7 +528,7 @@ def sonarSweepStop(sdp, angle, min_dist, min_angle, dist_thresh):
             maStatus == ActionStatus.Error or \
             maStatus == ActionStatus.Finished:
             break
-        dist = getGraspDist()
+        dist = getSonarDist()
         #print("sonar dist = {}".format(dist))
         cur_angle = sdp.heading()
         if dist <= dist_thresh:# and dist - last_dist < -0.10:
@@ -540,7 +548,7 @@ def rotateToPrecise(sdp, angle):
     sdp.waitUntilMoveActionDone()
 
 def sonarSweepSearchForObject(sdp):
-    min_dist = getGraspDist()
+    min_dist = getSonarDist()
     min_angle = sdp.heading()
     pose = sdp.pose()
 
@@ -565,7 +573,7 @@ def centerObjWithSonar(sdp, dist_thresh):
             continue
         print("turning to min_angle {}".format(min_angle))
         rotateToPrecise(sdp, min_angle)
-        dist = getGraspDist()
+        dist = getSonarDist()
         print("now dist = {} cm".format(dist*100))
         for i in range(3):
             if _interrupt_action:
@@ -573,7 +581,7 @@ def centerObjWithSonar(sdp, dist_thresh):
             if dist > min_dist + .02:
                 print("readjusting angle")
                 rotateToPrecise(sdp, min_angle)
-                dist = getGraspDist()
+                dist = getSonarDist()
             else:
                 break
         print("final dist = {} cm".format(dist*100))
@@ -582,7 +590,7 @@ def centerObjWithSonar(sdp, dist_thresh):
     return dist
 
 def sonarSweepFindObjAndStop(sdp, dir, spread_angle, dist_thresh):
-    min_dist = getGraspDist()
+    min_dist = getSonarDist()
     min_angle = sdp.heading()
     pose = sdp.pose()
 
@@ -615,15 +623,15 @@ def findObjWithSonar(sdp, dist_thresh):
             spread_angle += 5
             print("min_dist > dist_thresh, new spread angle = {}".format(spread_angle))
             continue
-        dist = getGraspDist()
+        dist = getSonarDist()
         print("now dist = {} cm".format(dist*100))
         if dist - min_dist > .02:
             turnImm(sdp, -dir)
-        return getGraspDist()
-    return getGraspDist()
+        return getSonarDist()
+    return getSonarDist()
 
 def checkIfDoneMovingOrCaptured(sdp):
-    dist = getGraspDist()
+    dist = getSonarDist()
     angle = sdp.heading()
     print("dist = {} cm".format(dist * 100))
 
@@ -654,7 +662,7 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
     while retries > 0: 
         if _interrupt_action:
             return False
-        dist = getGraspDist()
+        dist = getSonarDist()
         print("after moving close, dist = {} cm".format(dist * 100))
         moved_forward = False
         if dist >= 0.025 and dist <= 0.25:
@@ -668,7 +676,7 @@ def finalCaptureObject(obj, grasp_hold_angle, sdp : MyClient):
                     break
                 time.sleep(0.05)
         
-        dist = getGraspDist()
+        dist = getSonarDist()
         if dist > 0.025:
             print("Missed it")
             orig_yaw = sdp.pose().yaw
@@ -703,7 +711,7 @@ def captureObject(obj, sdp):
 
     _grasper.setGraspFullOpen()
 
-    dist = getGraspDist()
+    dist = getSonarDist()
     print("capturing, dist = {} cm".format(dist*100))
     if dist > 0.25:
         retries = 3
@@ -7004,7 +7012,7 @@ def buttonEventCb(change_mask, button_state_mask, sdp: MyClient):
                 handleButton4Event(pressed, sdp)
 
 def run(no_move=False):
-    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _grasper_sonar
+    global _sdp, _slamtec_on, _move_oak_d, _mic_array, _pixel_ring, _lpArduino, _radar, _grasper, _sonar
 
     # Start 32 bit bridge server (main-thread command client; connect below, conditionally)
     _sdp = manager.dedicated('main', connect=False)
@@ -7031,7 +7039,7 @@ def run(no_move=False):
         #_grasper.setGrasp(120)
         _grasper.allHome()
 
-    _grasper_sonar = _lpArduino.board.get_pin('d:13:o')
+    _sonar = _lpArduino.board.get_pin('d:12:o')
 
     _button_pad.initialize(_lpArduino.board, buttonEventCb)
 
