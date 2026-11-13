@@ -549,6 +549,7 @@ class RobotPlannerGraph:
             finally:
                 if gen == self._run_gen:
                     self._is_processing = False
+                    print("*** Agent completed ***")
 
         # Launch background streaming so callers (e.g., listen loop) never block
         self._stream_thread = Thread(target=_run_stream, args=(message,), daemon=True)

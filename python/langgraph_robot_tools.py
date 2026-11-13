@@ -846,6 +846,12 @@ class RobotTools:
             return f"I took the {object_name} and am holding it (simulated)."
         return self.call_tool_helper("hand_over", object_name)
 
+    def clean_the_room(self) -> str:
+        """Contest: put every soda can on the floor in the recycle bin."""
+        if self.sim:
+            return "The room has been cleaned (simulated)."
+        return self.call_tool_helper("clean_the_room", self._sdp)
+
     def enable_arm(self) -> str:
         """Start the arm."""
         if self.sim:
@@ -1306,15 +1312,14 @@ class RobotTools:
                 description="Wave the robot's arm to greet someone."
             ),
 
-            # Pick and place. pick_up locates the object itself from where the
-            # robot stands, so the planner never passes it coordinates -- it
-            # only has to get the robot to the spot pick_up asks for.
+            # Pick and place. pick_up drives to the object the last floor
+            # search found and locates it itself, so the planner never passes
+            # it coordinates.
             StructuredTool.from_function(
                 func=self.pick_up,
                 args_schema=self.PickUpInput,
                 name="pick_up",
-                description="Uses oak-d camera to look down on floor in front of robot and acquire an object's loc, then uses the arm to pick it up off the floor and hold it. "
-                            "Moves closer itself if slightly out of reach."
+                description="Drive to the floor object a search found, or look in front of the robot, and pick it up with the arm."
             ),
 
             StructuredTool.from_function(
@@ -1357,6 +1362,12 @@ class RobotTools:
                 args_schema=self.HandOverInput,
                 name="hand_over",
                 description="Take an object from the user's hand: opens the gripper, waits for it, then grips and holds it."
+            ),
+
+            StructuredTool.from_function(
+                func=self.clean_the_room,
+                name="clean_the_room",
+                description="Clean the room contest: put all 3 soda cans on the floor in the recycle bin, then announce it."
             ),
 
             StructuredTool.from_function(

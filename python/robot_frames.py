@@ -464,6 +464,12 @@ def robot_to_world(p, pose):
     return (wx + pose.x, wy + pose.y, p[2])
 
 
+def world_to_robot(p, pose):
+    """The inverse of robot_to_world: a map-frame point in the robot frame
+    of an sdp pose."""
+    return _rot_z(p[0] - pose.x, p[1] - pose.y, p[2], -math.radians(pose.yaw))
+
+
 if __name__ == '__main__':
     def show(label, p):
         print("%-36s % .3f % .3f % .3f" % (label, p[0], p[1], p[2]))

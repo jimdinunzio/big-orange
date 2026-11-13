@@ -39,11 +39,11 @@ import kill_server32
 # Constants
 _show_rgb_window = True
 _show_depth_window = False
-_default_map_name = 'my house'
+_default_map_name = 'clean the room'
 _current_map_name = ''
 # At shows and competitions the venue is not the mapped house, so startup
 # begins with a blank map unless --load-map asks for the default one.
-_load_default_map = False
+_load_default_map = True
 _hotword = "orange"
 _google_mode = False
 _execute = True # False for debugging, must be True to run as: >python main.py
@@ -167,7 +167,7 @@ _CAMERA_AI_FRIENDLY = {"owl": "object search", "vlm": "scene description"}
 # the planner otherwise reads one skill being off as having no eyes at all.
 _CAMERA_AI_TOOLS = {
     "owl": ("pick_up", "track_object", "search_for_object",
-            "while_go_to_loc_find_object"),
+            "while_go_to_loc_find_object", "clean_the_room"),
     "vlm": ("describe_scene", "ask_question_about_scene",
             "go_to_location_with_narration"),
 }
@@ -412,14 +412,30 @@ def cancelAction(interrupt = False, sdp=None):
             _action_flag = False
     return retval
 
+# Bumped by every user stop (abortAgent), so a tool that chains other tools --
+# each of which clears _interrupt_action as it returns -- can tell it was told
+# to stop. Not cancelAction: goToLocation calls that to start every move.
+_stop_count = 0
+
 _AGENT_ABORT_NOTICE = ("[The user said stop. Everything you were doing for the request above "
                        "was aborted and may be only partly done. Do not resume or retry it; "
                        "wait for the user's next instruction.]")
+
+def _forget_floor_cans():
+    """Drop every remembered floor can, so the next floor search scans."""
+    global _floor_target
+    _floor_cans_scanned.clear()
+    _floor_cans_seen.clear()
+    _floor_target = None
 
 def abortAgent():
     """Abort the agent's run in flight, leaving it a notice to wait for further
     instructions, and stop any arm motion it started. Returns True if a run
     was aborted."""
+    global _stop_count
+    _stop_count += 1
+    _forget_floor_cans()  # they belong to the request just stopped
+    _lost_floor_cans.clear()
     if _langgraph is None or not _langgraph.is_processing:
         return False
     # Cancel before stopping hardware so the run cannot plan another step
@@ -1652,9 +1668,9 @@ def loadMap(filename, sdp):
     filepath = os.path.join(_maps_dir, filename)
     res = sdp.loadSlamtecMap(str.encode(filepath) + b'.stcm')
     if (res == 0):
-        # set update to false because we don't want to change the map when doing a demo with people standing around messing up the map!
-        sdp.setMapUpdate(False)
-        speak("Map and locations are loaded. Mapping is off.")
+        # for contest start with 8x8 open area but allow mapping.
+        sdp.setMapUpdate(True)
+        speak("Map and locations are loaded. Mapping is on.")
         # speak("Now let me get my bearings.")
         # result, errStr = recoverLocalization(_INIT_RECT)
         # if result == False:
@@ -1828,9 +1844,21 @@ def _settle_heading(sdp, timeout=2.0, still_deg=0.3, poll=0.1):
     return abs((last - start + 180) % 360 - 180)
 
 
-# rotate 360 and stop if a object is spotted
+# Head tilt, servo degrees, searchForObject sweeps the floor at: across the
+# room rather than close in.
+FLOOR_SEARCH_PITCH = 135
+
+# Degrees a sweep_all search keeps turning once it first sees the object:
+# the cans stand together mid-room, so this covers the rest of them.
+SWEEP_AFTER_SEEN = 180
+
+# rotate 360 and stop if a object is spotted. With sweep_all, keep turning
+# SWEEP_AFTER_SEEN past the first sighting, or until `seen_all()` says every
+# one has been seen, so checkForObject sees each in the area, and return the
+# last one seen with the base stopped.
 def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObject=checkForObject, rot_speed=0.1,
-                    min_recheck=False, stream_mgr=None, floor_pitch=135):
+                    min_recheck=False, stream_mgr=None, floor_pitch=FLOOR_SEARCH_PITCH, sweep_all=False,
+                    seen_all=None):
     global _action_flag, _interrupt_action
 
     _interrupt_action = False
@@ -1845,11 +1873,18 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
         eyes.setHome()
 
     p = None
-    # First see if the obj is already in view and if so return
+    # First see if the obj is already in view and if so return. The head was
+    # just re-aimed, so with a stream let it stop and look at a frame from
+    # after that.
+    if stream_mgr is not None:
+        time.sleep(PICK_SETTLE)
+        stream_mgr.push_fresh_frame()
     found, p = checkForObject(obj)
-    if found:
+    if found and not sweep_all:
         _move_oak_d.allHome()
         return p
+    seen = p if found else None
+    seen_at = 0 if found else None  # sweep angle of the first sighting
     
     # if object not in view, then slowly rotate 360 degrees and check every so often
     _action_flag = True
@@ -1861,7 +1896,11 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
     while (sweep < 380 and not _interrupt_action):
         sdp.rotate(-rot_speed if is_clockwise else rot_speed)
         found, p = checkForObject(obj)
-        if found:
+        if found and sweep_all:
+            seen = p
+            if seen_at is None:
+                seen_at = sweep
+        elif found:
             recheck_obj = True
             break
         yaw = sdp.heading() + 360
@@ -1872,12 +1911,22 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
         #print("yaw = ", yaw, " covered = ", covered, " sweep = ", sweep)
         
         oldyaw = yaw
+        if seen_at is not None and (sweep - seen_at >= SWEEP_AFTER_SEEN
+                                    or (seen_all is not None and seen_all())):
+            break
         time.sleep(0.05)
+
+    if sweep_all:
+        sdp.cancelMoveAction()
+        _settle_heading(sdp)
+        p = seen
 
     if recheck_obj:
         # The hit came from a frame taken while turning, and its depth from a
-        # later one, so its range is not trusted: stop, let the base come to
-        # rest, and look again from still frames.
+        # later one, so neither its bearing nor its range is trusted: stop,
+        # let the base come to rest, and look again. push_fresh_frame makes
+        # the stream manager drop results from frames taken before then --
+        # an older box sits behind the turn, off the object's side.
         sdp.cancelMoveAction()
         coasted = _settle_heading(sdp)
         print(f"rechecking {obj} (base turned {coasted:.1f} deg after the hit)")
@@ -3768,6 +3817,7 @@ def handle_response(sdp, phrase, doa, listenResponseFn : typing.Union[typing.Cal
         
         response = ""
         tools_log = ""    
+        _forget_floor_cans()  # each request scans the floor afresh
         try:
             response, tools_log = _langgraph.send_input(phrase, image=image)
         except Exception as e:
@@ -4755,7 +4805,14 @@ def go_recharge_tool_helper(sdp):
     return "Going to recharge dock."
 
 def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0.0):
-    """Go to a location given coordinates"""
+    """Go to a location given coordinates, clear of any lost floor can."""
+    failed = _steer_clear_of_lost_cans(sdp, x, y)
+    if failed:
+        return failed
+    return _go_to_coords(sdp, x, y, yaw)
+
+def _go_to_coords(sdp, x: float, y: float, yaw: float = 0.0):
+    """Navigate to map coordinates, as the navigator plans it."""
     global _langgraph_initiated_move, _locations, _goal
     try:
         # Mark this as a LangGraph-initiated move
@@ -4779,6 +4836,11 @@ def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0
 def go_to_location_tool_helper(sdp, location_name: str):
     """Go to a specific named location using the existing goToLocation function."""
     global _langgraph_initiated_move
+    key = _find_location_key(location_name)
+    if key is not None:
+        failed = _steer_clear_of_lost_cans(sdp, _locations[key][0], _locations[key][1])
+        if failed:
+            return failed
     try:
         # Mark this as a LangGraph-initiated move
         _langgraph_initiated_move = True
@@ -5029,11 +5091,239 @@ def _search_offset(obj: str, height: str) -> float:
     return 0.75
 
 
+# Metres apart two floor sightings may be and still be the same object.
+# Under the 1 ft (0.30 m) the contest cans stand apart.
+SEARCH_MERGE = 0.2
+
+# Frames a floor sighting needs to count: a remembered one before the search
+# turns back to it, a still one before it is the goal.
+SEARCH_MIN_HITS = 2
+
+# Most times one search turns back to check a remembered sighting.
+SEARCH_MAX_CONFIRMS = 3
+
+# A floor search starting within this many metres of a can the last scan
+# saw (_floor_cans_scanned, picked ones included) sweeps at PICK_ACQUIRE_PITCH
+# alone. _floor_cans_seen is the same less any picked up since; while any
+# remain, a floor search returns the nearest of them instead of scanning.
+FLOOR_NEAR_RANGE = 1.0
+_floor_cans_scanned = []
+_floor_cans_seen = []
+
+# Metres a picked can may lie from where the scan placed it and still be
+# struck off _floor_cans_seen.
+PICKED_MATCH = 0.5
+
+# Map (x, y) of the can the last floor search sent the robot to. pick_up goes
+# for that one, never another, if it starts within FLOOR_TARGET_RANGE metres.
+_floor_target = None
+FLOOR_TARGET_RANGE = 1.5
+
+# Map (x, y) of floor cans a pick failed on or gave up on, still lying there.
+# The lidar does not see a can, so the navigator would drive over one; drives
+# back away from them and route around them instead. Kept across requests,
+# since the can stays put; cleared by a stop, and one is struck off when a
+# pick there succeeds.
+_lost_floor_cans = []
+
+# Metres between the robot's centre and a lost can's centre that a drive must
+# keep: half the base's width plus the can's radius plus a margin.
+LOST_CAN_CLEAR = 0.35
+# A lost can this far ahead of the robot's centre or nearer, inside
+# LOST_CAN_CLEAR of its centre line, gets backed away from before a drive.
+LOST_CAN_AHEAD = 0.7
+LOST_CAN_BACKUP = 0.3
+
+
+def _mark_floor_can_lost(p):
+    """Remember map point `p` as a can left on the floor."""
+    if p is None:
+        return
+    if all(math.hypot(c[0] - p[0], c[1] - p[1]) > SEARCH_MERGE for c in _lost_floor_cans):
+        _lost_floor_cans.append((p[0], p[1]))
+        print("lost can: remembering one at (%.2f, %.2f) to drive around" % (p[0], p[1]))
+
+
+def _clear_lost_can(p):
+    """Strike remembered lost cans within SEARCH_MERGE of map point `p`."""
+    _lost_floor_cans[:] = [c for c in _lost_floor_cans
+                           if math.hypot(c[0] - p[0], c[1] - p[1]) > SEARCH_MERGE]
+
+
+def _steer_clear_of_lost_cans(sdp, x, y):
+    """Before a drive to map (x, y): back away from a lost can just ahead,
+    then, if the straight line there passes within LOST_CAN_CLEAR of one,
+    go by a point beside it first. Returns a ToolFailure if a move failed,
+    else None."""
+    if not _lost_floor_cans:
+        return None
+    pose = sdp.pose()
+    h = math.radians(pose.yaw)
+    for c in _lost_floor_cans:
+        dx, dy = c[0] - pose.x, c[1] - pose.y
+        ahead = dx * math.cos(h) + dy * math.sin(h)
+        side = -dx * math.sin(h) + dy * math.cos(h)
+        if 0 < ahead <= LOST_CAN_AHEAD and abs(side) < LOST_CAN_CLEAR:
+            print("lost can at (%.2f, %.2f) is %.2f m ahead; backing up %.2f m"
+                  % (c[0], c[1], ahead, LOST_CAN_BACKUP))
+            _nudge_base(sdp, 0.0, -LOST_CAN_BACKUP)
+            pose = sdp.pose()
+            break
+
+    px, py = pose.x, pose.y
+    vx, vy = x - px, y - py
+    length = math.hypot(vx, vy)
+    if length < 1e-6:
+        return None
+    ux, uy = vx / length, vy / length
+    blocking = []
+    for c in _lost_floor_cans:
+        t = (c[0] - px) * ux + (c[1] - py) * uy
+        if 0 < t < length:
+            off = -(c[0] - px) * uy + (c[1] - py) * ux  # + left of the line
+            if abs(off) < LOST_CAN_CLEAR:
+                blocking.append((t, off, c))
+    if not blocking:
+        return None
+    t, off, c = min(blocking)
+    # Pass on the side of the can away from the line, by a clear margin.
+    sign = -1.0 if off > 0 else 1.0
+    d = LOST_CAN_CLEAR + 0.1
+    wx, wy = c[0] - sign * uy * d, c[1] + sign * ux * d
+    print("lost can at (%.2f, %.2f) is in the way; going around by (%.2f, %.2f)"
+          % (c[0], c[1], wx, wy))
+    result = _go_to_coords(sdp, wx, wy, math.degrees(math.atan2(y - wy, x - wx)))
+    if isinstance(result, ToolFailure):
+        return ToolFailure(f"I could not get around a soda can left on the floor: {result}")
+    return None
+
+
+# How many of each object are on the floor: a floor search stops turning once
+# it has seen that many, and each pick leaves one fewer. 3 cans to start.
+_floor_objects_left = {"soda can": 3}
+
+
+class _FloorSightings:
+    """Every sighting of a floor object in one search, in map coordinates,
+    merged into one entry per object.
+
+    A sighting taken while turning combines a box from an older frame with
+    the pose and depth of a later one, so it says roughly where to look, not
+    where the object is. Once an entry has sightings taken standing still,
+    its position is theirs alone.
+    """
+
+    def __init__(self, sdp):
+        self._sdp = sdp
+        self.entries = []
+
+    def add(self, s, still):
+        theta, rng = objBearingRange(s)
+        pose = self._sdp.pose()
+        a = math.radians(pose.yaw + theta)
+        x, y = pose.x + rng * math.cos(a), pose.y + rng * math.sin(a)
+        for e in self.entries:
+            if math.hypot(e["x"] - x, e["y"] - y) <= SEARCH_MERGE:
+                break
+        else:
+            e = dict(moving=[], still=[], tried=False)
+            self.entries.append(e)
+        (e["still"] if still else e["moving"]).append((x, y))
+        pts = e["still"] or e["moving"]
+        e["x"] = sum(p[0] for p in pts) / len(pts)
+        e["y"] = sum(p[1] for p in pts) / len(pts)
+
+    @staticmethod
+    def confirmed(e):
+        return len(e["still"]) >= SEARCH_MIN_HITS
+
+    def distance(self, e):
+        pose = self._sdp.pose()
+        return math.hypot(e["x"] - pose.x, e["y"] - pose.y)
+
+    def candidates(self):
+        """Entries seen often enough to count, nearest first."""
+        return sorted((e for e in self.entries
+                       if len(e["still"]) >= SEARCH_MIN_HITS
+                       or len(e["moving"]) >= SEARCH_MIN_HITS),
+                      key=self.distance)
+
+    def count(self):
+        """How many entries have been seen often enough to count."""
+        return sum(1 for e in self.entries
+                   if len(e["still"]) >= SEARCH_MIN_HITS
+                   or len(e["moving"]) >= SEARCH_MIN_HITS)
+
+    def nearest(self):
+        """The nearest entry, however few frames saw it, or None."""
+        return min(self.entries, key=self.distance, default=None)
+
+    def goal(self, e, offset):
+        """(x, y, heading_deg) `offset` short of `e`, facing it, on the line
+        from where the robot stands."""
+        pose = self._sdp.pose()
+        h = math.atan2(e["y"] - pose.y, e["x"] - pose.x)
+        d = max(0.0, self.distance(e) - offset)
+        return (pose.x + d * math.cos(h), pose.y + d * math.sin(h), math.degrees(h))
+
+
+def _face_point(sdp, x, y):
+    """Turn the base in place to face map point (x, y)."""
+    global _action_flag
+    pose = sdp.pose()
+    turn = (math.degrees(math.atan2(y - pose.y, x - pose.x)) - pose.yaw + 180) % 360 - 180
+    _action_flag = True  # so a spoken stop cancels the turn
+    try:
+        sdp.rotate(math.radians(turn))
+        sdp.waitUntilMoveActionDone()
+        _settle_heading(sdp)
+    finally:
+        _action_flag = False
+
+
+def _look_still(sightings, obj, pitches):
+    """Watch for `obj` on the floor for PICK_DWELL at each head tilt in
+    `pitches`, base stopped, and add what is seen to `sightings`."""
+    for pitch in pitches:
+        if _interrupt_action or not _owl_alive():
+            return
+        aim_oakd(pitch=pitch)
+        time.sleep(PICK_SETTLE)
+        _nano_owl_mgr.push_fresh_frame()
+        samples, _, _ = _sample_floor_object(obj)
+        for s in samples:
+            sightings.add(s, still=True)
+
+
+def _nearest_floor_object(sdp, sightings, obj, pitches):
+    """The entry in `sightings` for the nearest `obj` on the floor, or None.
+
+    Looks from where the search stopped at each tilt in `pitches`, then, while
+    the nearest entry is one only seen while turning -- one the base turned
+    or coasted past before stopping on a farther one -- turns to face it and
+    looks again. One that look does not confirm is dropped for the next
+    nearest. A farther object is never the answer while a nearer one is
+    confirmed, even when it is the one now in view.
+    """
+    _look_still(sightings, obj, pitches)
+    for _ in range(SEARCH_MAX_CONFIRMS):
+        e = next((e for e in sightings.candidates()
+                  if sightings.confirmed(e) or not e["tried"]), None)
+        if e is None or sightings.confirmed(e) or _interrupt_action or not _owl_alive():
+            break
+        e["tried"] = True
+        print("search: %s seen nearer at %.2f m while turning; turning back to check"
+              % (obj, sightings.distance(e)))
+        _face_point(sdp, e["x"], e["y"])
+        _look_still(sightings, obj, (FLOOR_SEARCH_PITCH, PICK_ACQUIRE_PITCH))
+    return next((e for e in sightings.candidates() if sightings.confirmed(e)), None)
+
+
 def search_for_object_tool_helper(sdp, obj: str, height: str,
                                   rot_clockwise: Optional[bool] = None):
     """Search for object by rotating in place, starting in a random direction
     unless rot_clockwise says which."""
-    global _interrupt_action, _keep_camera_orientation
+    global _interrupt_action, _keep_camera_orientation, _floor_target
 
     if rot_clockwise is None:
         rot_clockwise = random.choice((True, False))
@@ -5068,6 +5358,16 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
         if _nano_owl_mgr is None:
             return ToolFailure(f"Error: NanoOWL not available to search for {obj}.")
 
+        # Cans the first scan saw are remembered: go for the nearest of them
+        # rather than scanning again.
+        if height == "floor" and _floor_cans_seen:
+            pose = sdp.pose()
+            x, y = min(_floor_cans_seen,
+                       key=lambda c: math.hypot(c[0] - pose.x, c[1] - pose.y))
+            obj_loc = _FloorSightings(sdp).goal(dict(x=x, y=y), _search_offset(obj, height))
+            _floor_target = (x, y)
+            return f"{obj} was found at {obj_loc}."
+
         print("processing with nano owl")
         _nano_owl_mgr.set_prompt(f"[{obj}]")
         _nano_owl_mgr.start_streaming(fps=16)
@@ -5075,6 +5375,7 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
         _nano_owl_mgr.get_detections_nms()  # wakeup call
 
         last_spatial = [None]  # mutable container for closure access
+        sightings = _FloorSightings(sdp)
 
         def is_object_found(obj_name):
             global _interrupt_action
@@ -5082,11 +5383,26 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
                 _interrupt_action = True  # end the search rather than spin blind
                 return False, None
             try:
-                found, spatial = _nano_owl_mgr.check_for_object(obj_name)
-                if (found and height == "floor" and spatial.z > 0
-                        and not _floor_detections([spatial])):
-                    print(f"OWL {obj_name} too high for floor: {objBearingRangeStr(spatial)}")
-                    return False, None
+                if height == "floor":
+                    # Of several on the floor, the nearest: that is the one
+                    # to collect first. One with no depth counts only when
+                    # none has any.
+                    found, spatials = _nano_owl_mgr.check_for_all_objects(obj_name)
+                    on_floor = _floor_detections(spatials)
+                    no_depth = [s for s in spatials if s.z <= 0]
+                    for s in on_floor:
+                        sightings.add(s, still=False)
+                    if found and not on_floor and not no_depth:
+                        print(f"OWL {obj_name} too high for floor: "
+                              f"{objBearingRangeStr(spatials[0])}")
+                        return False, None
+                    spatial = (min(on_floor, key=lambda s: s.z) if on_floor
+                               else no_depth[0] if no_depth else None)
+                    if spatial is not None and len(spatials) > 1:
+                        print(f"OWL sees {len(spatials)} {obj_name}; taking the nearest")
+                else:
+                    found, spatial = _nano_owl_mgr.check_for_object(obj_name)
+                found = found and spatial is not None
                 if found:
                     last_spatial[0] = spatial
                     _mdai.drawText(obj_name, 1, 14)
@@ -5098,29 +5414,49 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
 
         try:
             _keep_camera_orientation = True
+            # On the floor, turn the whole way so the nearest of several is found,
+            # not just the first one the turn comes to.
+            floor = height == "floor"
+            # A can a previous search left close by is under the room-sweep
+            # tilt: sweep with pick_up's near view instead.
+            pose = sdp.pose()
+            near_view = floor and any(
+                math.hypot(x - pose.x, y - pose.y) <= FLOOR_NEAR_RANGE
+                for x, y in _floor_cans_scanned)
+            near = dict(floor_pitch=PICK_ACQUIRE_PITCH) if near_view else {}
+            left = _floor_objects_left.get(_normalize_place_name(obj)) if floor else None
+            if left:
+                near["seen_all"] = lambda: sightings.count() >= left
 
-            p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+            p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, sweep_all=floor, **near)
             if p is None and not _interrupt_action:
-                p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr)
+                p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, sweep_all=floor, **near)
 
-            if p is None and not _interrupt_action and last_spatial[0] is not None and last_spatial[0].z > 0:
-                # Recheck failed but we saw it earlier — move halfway toward last known location and retry
+            # On the floor, the nearest one remembered on the map; otherwise
+            # the last one seen, from where the robot stands now.
+            seen = sightings.nearest() if height == "floor" else None
+            if seen is None and last_spatial[0] is not None and last_spatial[0].z > 0:
                 theta, rng = objBearingRange(last_spatial[0])
-                half_dist = rng * 0.5
                 pose = sdp.pose()
                 angle = math.radians(pose.yaw + theta)
-                xt = pose.x + half_dist * math.cos(angle)
-                yt = pose.y + half_dist * math.sin(angle)
+                seen = dict(x=pose.x + rng * math.cos(angle), y=pose.y + rng * math.sin(angle))
+            if p is None and not _interrupt_action and seen is not None:
+                # Recheck failed but we saw it earlier — move halfway toward it and retry
+                pose = sdp.pose()
+                half_dist = 0.5 * math.hypot(seen["x"] - pose.x, seen["y"] - pose.y)
+                xt = (pose.x + seen["x"]) / 2
+                yt = (pose.y + seen["y"]) / 2
                 print(f"recheck failed, moving halfway ({half_dist:.2f}m) toward last known {obj} location")
                 sdp.moveToFloat(xt, yt)
                 sdp.waitUntilMoveActionDone()
                 # Search again from new position. Half the distance puts a
                 # floor object inside the near view pick_up looks with, which
                 # the room-sweep tilt overshoots.
-                near = dict(floor_pitch=PICK_ACQUIRE_PITCH)
-                p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, **near)
+                near["floor_pitch"] = PICK_ACQUIRE_PITCH
+                near_view = True
+                p = searchForObject(sdp, obj, height, rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, sweep_all=floor, **near)
                 if p is None and not _interrupt_action:
-                    p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, **near)
+                    p = searchForObject(sdp, obj, height, not rot_clockwise, is_object_found, rot_speed=0.05, min_recheck=True, stream_mgr=_nano_owl_mgr, sweep_all=floor, **near)
 
             if _interrupt_action:
                 _interrupt_action = False
@@ -5128,7 +5464,26 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
                 return _OWL_DOWN
 
             obj_loc = None
-            if p is not None and p.z > 0:
+            if p is not None and height == "floor":
+                # Several may be on the floor: head for the nearest, or the
+                # drive to a farther one runs into it.
+                pitches = ((PICK_ACQUIRE_PITCH,) if near_view
+                           else (FLOOR_SEARCH_PITCH, PICK_ACQUIRE_PITCH))
+                target = _nearest_floor_object(sdp, sightings, obj, pitches)
+                if _normalize_place_name(obj) in _floor_objects_left:
+                    _floor_cans_scanned[:] = [(e["x"], e["y"]) for e in sightings.candidates()]
+                    _floor_cans_seen[:] = _floor_cans_scanned
+                if target is None:
+                    # Nothing confirmed standing still: the nearest seen at all.
+                    target = next(iter(sightings.candidates()), None) or sightings.nearest()
+                if target is not None:
+                    obj_loc = sightings.goal(target, _search_offset(obj, height))
+                    _floor_target = (target["x"], target["y"])
+                if _interrupt_action:
+                    _interrupt_action = False
+                if not _owl_alive():
+                    return _OWL_DOWN
+            elif p is not None and p.z > 0:
                 obj_loc = getLocationOfObj(sdp, obj, p, offset_dist=_search_offset(obj, height),
                                            radians=False)
 
@@ -5458,7 +5813,8 @@ def _ensure_arm_enabled(timeout: int = _ARM_ENABLE_TIMEOUT) -> str:
 # 4 (EXIT_NOT_THERE, a NotThereError) is no can there on approach, before the
 # grasp; only an approach check raises it, and pick_up leaves that off.
 # pick_up resets to init after every failure regardless.
-_ARM_RESET_CODES = (1, 3)
+_ARM_JAWS_EMPTY = 3
+_ARM_RESET_CODES = (1, _ARM_JAWS_EMPTY)
 _ARM_NOT_THERE = 4
 
 # A forced reset is not collision checked, so it waits on the user.
@@ -5586,9 +5942,14 @@ PICK_MIN_SAMPLES = 3
 # How many times pick_up will move the base itself and look again when the
 # object is out of reach, and the longest single drive it makes. A longer gap
 # is closed in several drives with a look between each, so one bad reading
-# cannot drive the robot into the object.
+# cannot drive the robot into the object; and longer drives coast further
+# than _nudge_base allows for.
 PICK_APPROACH_TRIES = 4
-PICK_MAX_NUDGE = 0.3
+PICK_MAX_NUDGE = 0.2
+
+# Grasps pick_up makes at one object: when the wrist camera finds the jaws
+# empty and the object is still where it was, it looks and reaches again.
+PICK_GRASP_TRIES = 3
 
 # Arm range, metres, pick_up's nudge aims the object at. Past the grasp
 # standoff because _nudge_base runs some 20 mm beyond the drive it is given,
@@ -5600,6 +5961,14 @@ PICK_NUDGE_STANDOFF = 0.32
 # an error that lands too far is one pick_up can recover from by driving.
 PICK_SEARCH_MARGIN = 0.10
 
+# Metres from that stopping point pick_up is content to start its look from
+# rather than navigate there first.
+PICK_NAV_MIN = 0.15
+
+# Seconds pick_up spends looking and nudging at one can before giving up on it
+# for the next nearest -- a can that will not register, in bad light say.
+PICK_GIVE_UP = 30.0
+
 # When pick_up sees nothing in front of it, or glimpses the object within
 # reach in too few frames to grasp on, the object may be under the camera's
 # view or hidden by the gripper: back up this far and look again, at most
@@ -5607,17 +5976,64 @@ PICK_SEARCH_MARGIN = 0.10
 PICK_BACKOFF = 0.10
 PICK_MAX_BACKOFFS = 2
 
+# When a nudge loses the object from view, pick_up logs whether the sonar
+# still ranges it before backing up to look. Only picks aimed by the camera
+# are ever made. Beyond
+# SONAR_MAX_RANGE, from the sonar face, a can is not reliably in the beam.
+# SONAR_PINGS readings are taken, and at least SONAR_MIN_ECHOES must answer.
+SONAR_MAX_RANGE = 0.30
+SONAR_PINGS = 5
+SONAR_MIN_ECHOES = 3
+
+# A forward nudge stops once this many consecutive pings put a can at or
+# inside the nudge standoff -- the one aimed for, or a nearer one missed.
+NUDGE_SONAR_HITS = 2
+
+# Once pick_up has seen the object, each later look takes only a detection
+# within this many metres of where the base move should have put it, so it
+# never swaps to another one when the first slips out of view. Covers a
+# nudge's overrun and the reading's own scatter, and is less than the gap
+# between two cans worth telling apart.
+PICK_SAME_OBJECT = 0.15
+
 # _nudge_base: move_imm has to be repeated every NUDGE_STEP seconds to keep
-# the base rolling, and fewer than NUDGE_MIN_STEPS in a row do not move it at
-# all. Drives shorter than NUDGE_MIN_DRIVE are skipped; the base coasts about
-# NUDGE_COAST after the last step, so it stops stepping that much early; and
-# it gives up when the pose has not advanced for NUDGE_STALL seconds -- an
-# obstacle, or the base refusing to move.
+# the base rolling, and fewer than NUDGE_MIN_STEPS in a row do not move it.
+# The base answers about a second late, so it coasts about NUDGE_COAST after
+# the last step and stops stepping that much early; drives shorter than that
+# never reach full speed and land less exactly. Drives shorter than
+# NUDGE_MIN_DRIVE are skipped, and it gives up if the pose has not advanced
+# for NUDGE_STALL seconds -- an obstacle, or the base refusing to move.
 NUDGE_STEP = 0.1
-NUDGE_MIN_STEPS = 2
+NUDGE_MIN_STEPS = 4
 NUDGE_MIN_DRIVE = 0.02
-NUDGE_COAST = 0.035
-NUDGE_STALL = 1.5
+NUDGE_COAST = 0.09
+NUDGE_STALL = 3.0
+
+# The lidar sleeps after a minute without base motion, and takes
+# LIDAR_SPIN_UP seconds after sdp.wakeup() to give valid distances. Asleep,
+# getLaserScan repeats one stale scan; spinning, no two scans match.
+# Navigator moves wake it themselves; move_imm does not.
+LIDAR_SPIN_UP = 6.0
+_lidar_woken_at = -1e9  # when _wake_lidar last woke a sleeping lidar
+
+
+def _lidar_spinning(sdp) -> bool:
+    """True if two laser scans a moment apart differ."""
+    def scan():
+        l = sdp.getLaserScan()
+        return list(l.distance[:l.size])
+    first = scan()
+    time.sleep(0.3)
+    return scan() != first
+
+
+def _wake_lidar(sdp) -> float:
+    """Wake the lidar if asleep; returns seconds until it gives valid distances."""
+    global _lidar_woken_at
+    if not _lidar_spinning(sdp):
+        sdp.wakeup()
+        _lidar_woken_at = time.time()
+    return max(0.0, _lidar_woken_at + LIDAR_SPIN_UP - time.time())
 
 # Metres above the floor a detection's depth point may sit and still count as
 # on the floor. A soda can's face spans 0-0.12 m; the rest is depth noise at a
@@ -5655,14 +6071,21 @@ def _floor_detections(spatials):
             <= FLOOR_MAX_HEIGHT]
 
 
-def _sample_floor_object(obj: str):
+def _sample_floor_object(obj: str, near=None, within=PICK_SAME_OBJECT):
     """Watch for `obj` at the head's current aim for PICK_SAMPLES frames.
 
-    Returns (samples, cam_yaw, cam_pitch): the nearest valid spatial from
-    each frame that had one, sorted by range, and the head angles they were
-    taken at. Streaming and the prompt are the caller's to set up.
+    Returns (samples, cam_yaw, cam_pitch): one valid spatial from each frame
+    that had one, sorted by range, and the head angles they were taken at.
+    That one is the nearest, or with `near` (an arm-frame point) the one
+    whose arm-frame centre is closest to it, and only within `within`
+    metres. Streaming and the prompt are the caller's to set up.
     """
     cam_yaw, cam_pitch = _move_oak_d.getYaw(), _move_oak_d.getPitch()
+
+    def off(s):
+        p = robot_frames.floor_object_to_arm(
+            s.x, s.y, s.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
+        return math.hypot(p[0] - near[0], p[1] - near[1])
 
     samples = []
     for _ in range(PICK_SAMPLES):
@@ -5670,20 +6093,25 @@ def _sample_floor_object(obj: str):
             break
         found, spatials = _nano_owl_mgr.check_for_all_objects(obj)
         valid = _floor_detections(spatials)
-        if found and valid:
+        if found and valid and near is None:
             # Nearest first: collecting cans means collecting this one.
             samples.append(min(valid, key=lambda s: s.z))
+        elif found and valid:
+            s = min(valid, key=off)
+            if off(s) <= within:
+                samples.append(s)
         time.sleep(1.0 / PICK_FPS)
 
     samples.sort(key=lambda s: s.z)
     return samples, cam_yaw, cam_pitch
 
 
-def _look_for_floor_object(obj: str):
+def _look_for_floor_object(obj: str, near=None, within=PICK_SAME_OBJECT):
     """Find `obj` on the floor from where the robot stands, without moving.
 
     Returns (detection, cam_yaw, cam_pitch, frames) for the NEAREST instance,
-    or (None, 0, 0, 0). The angles are the ones that detection was seen at,
+    or with `near` for the one at that arm-frame point (see
+    _sample_floor_object), or (None, 0, 0, 0). The angles are the ones that detection was seen at,
     which is not necessarily the tilt the head ends up at; the caller homes it
     either way. `frames` is how many frames at that tilt saw the object.
 
@@ -5722,7 +6150,7 @@ def _look_for_floor_object(obj: str):
             aim_oakd(yaw=head_servos.YAW_HOME_DEG + offset,
                      pitch=PICK_ACQUIRE_PITCH)
             time.sleep(PICK_SETTLE)
-            wide = _sample_floor_object(obj)
+            wide = _sample_floor_object(obj, near, within)
             if _interrupt_action:
                 break
             if len(wide[0]) >= PICK_MIN_SAMPLES:
@@ -5733,7 +6161,7 @@ def _look_for_floor_object(obj: str):
                 break
             aim_oakd(pitch=PICK_SAMPLE_PITCH)
             time.sleep(PICK_SETTLE)
-            tight = _sample_floor_object(obj)
+            tight = _sample_floor_object(obj, near, within)
 
             use_tight = len(tight[0]) >= PICK_MIN_SAMPLES or not wide[0]
             print("pick_up: %s at yaw %+d: in %d of %d frames at tilt %d, "
@@ -5797,13 +6225,35 @@ def _gripper_sees(obj: str):
     return held, why
 
 
-def _nudge_base(sdp, turn_deg: float, drive_m: float) -> float:
+def _held_color(obj: str):
+    """Ask the wrist camera whether the can is held and its colour.
+
+    Returns (color, held, why): color 'red', 'green', 'blue' or None; held
+    True / False / None as is_holding gives it. Only at `stow`, where a
+    completed pick leaves the arm."""
+    if _arm_client is None or not _arm_client.is_connected():
+        return None, None, "the arm is not reachable"
+    try:
+        result = _arm_client.held_color(_arm_object(obj))
+    except Exception as e:
+        return None, None, "the look failed: %s" % e
+    color, held = result.get("color"), result.get("held")
+    why = result.get("reason") or _arm_problem(result)
+    if color is None:
+        print("held_color: no colour (held=%s): %s" % (held, why))
+    return color, held, why
+
+
+def _nudge_base(sdp, turn_deg: float, drive_m: float, sonar_stop: float = None) -> float:
     """Turn in place, then drive straight, by a measured amount.
 
     For the last few tens of centimetres before a pick. Given a map goal that
     close, the navigator turns on the spot and reports done without driving;
     this steps the base with move_imm instead and watches the pose until it
     has covered drive_m along its heading.
+
+    Driving forward with `sonar_stop` given, it also stops early once the
+    sonar ranges something at or inside that many metres from its face.
 
     Returns the distance actually driven along the heading, metres, signed
     like drive_m.
@@ -5815,6 +6265,7 @@ def _nudge_base(sdp, turn_deg: float, drive_m: float) -> float:
         return (p.x - start.x) * math.cos(h) + (p.y - start.y) * math.sin(h)
 
     _action_flag = True  # so a spoken stop cancels the move
+    spin_up, woke = _wake_lidar(sdp), time.time()
     sdp.setSpeed(1)  # slowest: it is driving up to the object
     try:
         if turn_deg:
@@ -5822,31 +6273,99 @@ def _nudge_base(sdp, turn_deg: float, drive_m: float) -> float:
             sdp.waitUntilMoveActionDone()
         if _interrupt_action or abs(drive_m) < NUDGE_MIN_DRIVE:
             return 0.0
+        time.sleep(max(0.0, spin_up - (time.time() - woke)))
 
         start = sdp.pose()
         h = math.radians(start.yaw)
         sign = 1 if drive_m > 0 else -1
-        goal = abs(drive_m) - NUDGE_COAST
+        target = abs(drive_m)
         steps = 0
         best, best_t = 0.0, time.time()
+        watch = sonar_stop is not None and sign > 0
+        hits = 0
         while not _interrupt_action:
             moved = sign * along(start, h)
-            if moved >= goal and steps >= NUDGE_MIN_STEPS:
+            if moved >= target - NUDGE_COAST and steps >= NUDGE_MIN_STEPS:
                 break
             now = time.time()
             if moved > best + 0.005:
                 best, best_t = moved, now
             elif now - best_t > NUDGE_STALL:
-                print("nudge: stalled at %.3f of %.3f m" % (moved, abs(drive_m)))
+                print("nudge: stalled at %.3f of %.3f m" % (moved, target))
                 break
+            if watch:
+                d = _sonar_ping()
+                hits = hits + 1 if d is not None and d <= sonar_stop else 0
+                if hits >= NUDGE_SONAR_HITS:
+                    print("nudge: sonar echo at %.3f m; stopping at %.3f of %.3f m"
+                          % (d, moved, target))
+                    break
             move_imm(sdp, sign)
             steps += 1
-            time.sleep(NUDGE_STEP)
+            time.sleep(max(0.0, NUDGE_STEP - (time.time() - now)))
         _settle_pose(sdp)  # coasted to a stop before the pose is final
         return along(start, h)
     finally:
         sdp.setSpeed(_user_set_speed)
         _action_flag = False
+
+
+def _sonar_range():
+    """Median sonar range, metres from its face, of something within
+    SONAR_MAX_RANGE straight ahead, or None. Only a can close to the beam
+    axis echoes."""
+    echoes = []
+    for _ in range(SONAR_PINGS):
+        d = _sonar_ping()
+        if d is not None:
+            echoes.append(d)
+        time.sleep(0.05)
+    if len(echoes) < SONAR_MIN_ECHOES:
+        return None
+    d = sorted(echoes)[(len(echoes) - 1) // 2]
+    return None if d > SONAR_MAX_RANGE else d
+
+
+def _forget_floor_can(p):
+    """Strike the remembered can nearest map point `p` off _floor_cans_seen,
+    if within PICKED_MATCH: the scan placed it only roughly."""
+    c = min(_floor_cans_seen, default=None,
+            key=lambda c: math.hypot(c[0] - p[0], c[1] - p[1]))
+    if c is not None and math.hypot(c[0] - p[0], c[1] - p[1]) <= PICKED_MATCH:
+        _floor_cans_seen.remove(c)
+
+
+def _drive_to_floor_target(sdp, obj: str):
+    """Navigate to where a floor search stops for _floor_target: facing it,
+    just beyond the arm's reach. Nothing when already within PICK_NAV_MIN of
+    that. Closer than that, it turns to face the object and backs up instead,
+    so the object is not under the camera's view.
+    Returns a ToolFailure if the drive failed, else None."""
+    global _keep_camera_orientation
+    tx, ty = _floor_target
+    offset = _search_offset(obj, "floor")
+    pose = sdp.pose()
+    short = offset - math.hypot(tx - pose.x, ty - pose.y)
+    if short > PICK_NAV_MIN:
+        turn = (math.degrees(math.atan2(ty - pose.y, tx - pose.x)) - pose.yaw + 180) % 360 - 180
+        print("pick_up: %.2f m too close to the %s at (%.2f, %.2f); turning %+.0f deg "
+              "and backing up" % (short, obj, tx, ty, turn))
+        driven = _nudge_base(sdp, turn, -short)
+        print("pick_up: backed up %.3f m" % -driven)
+        return None
+    x, y, yaw = _FloorSightings(sdp).goal(dict(x=tx, y=ty), offset)
+    if math.hypot(x - pose.x, y - pose.y) < PICK_NAV_MIN:
+        return None
+    print("pick_up: driving to (%.2f, %.2f, %.0f) for the %s at (%.2f, %.2f)"
+          % (x, y, yaw, obj, tx, ty))
+    _keep_camera_orientation = True
+    try:
+        result = go_to_location_by_coords_tool_helper(sdp, x, y, yaw)
+    finally:
+        _keep_camera_orientation = False
+    if isinstance(result, ToolFailure):
+        return ToolFailure(f"I could not drive to the {obj}: {result}")
+    return None
 
 
 def _arm_refuses(target, obj: str) -> str:
@@ -5879,7 +6398,7 @@ def back_up_tool_helper(sdp, distance: float):
 def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
     """Look at the floor, and if the object is within reach, grasp and hold it.
     `vision` False skips the arm's wrist-camera held check."""
-    global _held_object, _interrupt_action
+    global _held_object, _interrupt_action, _floor_target
 
     obj = _normalize_place_name(object_name)
     if obj not in PICKABLE_OBJECTS:
@@ -5901,100 +6420,216 @@ def pick_up_tool_helper(sdp, object_name: str, vision: bool = True):
     if problem:
         return ToolFailure(f"Error: the arm could not be enabled to pick up the {obj}: {problem}")
 
+    _wake_lidar(sdp)  # spun up for a nudge by the time the look is done
     try:
-        # Out of reach by a little, the base closes the gap itself and looks
-        # again: the planner cannot judge a drive that short, and the
-        # navigator will not make one.
-        backoffs = 0
-        # The grasp is aimed only at a sighting confirmed in PICK_MIN_SAMPLES
-        # frames or more, taken in this pass with the base stopped and not
-        # moved since -- never one carried across a nudge.
-        for attempt in range(PICK_APPROACH_TRIES + 1):
-            pose = sdp.pose()
-            det, cam_yaw, cam_pitch, frames = _look_for_floor_object(obj)
-
+        # A can the floor search placed on the map is driven to first, then
+        # confirmed by the look below.
+        if _floor_target is not None:
+            failed = _drive_to_floor_target(sdp, obj)
             if _interrupt_action:
                 _interrupt_action = False
                 return f"Stopped before picking up the {obj}."
-            if not _owl_alive():
-                return _OWL_DOWN
-            if det is None:
-                if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
-                    backoffs += 1
-                    print("pick_up: no %s in view; backing up %.2f m to look again"
-                          % (obj, PICK_BACKOFF))
-                    driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
-                    print("pick_up: backed up %.3f m" % -driven)
-                    continue
-                where = "after moving the base" if attempt else "on the floor in front of me"
-                return ToolFailure(f"I do not see a {obj} {where}.")
-            weak = frames < PICK_MIN_SAMPLES
+            if failed:
+                return failed
 
-            # The depth point is on the near face of the can partway up it; the
-            # centre the arm wants comes from the can's own size and the floor.
-            target = robot_frames.floor_object_to_arm(
-                det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
-            rng, arm_yaw, height = robot_frames.arm_reach(target)
-            print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg, "
-                  "%d frames" % (obj, target[0], target[1], target[2], rng,
-                                 arm_yaw, frames))
+        # Out of reach by a little, the base closes the gap itself and looks
+        # again: the planner cannot judge a drive that short, and the
+        # navigator will not make one.
+        # The grasp is aimed only at a sighting confirmed in PICK_MIN_SAMPLES
+        # frames or more, taken in this pass with the base stopped and not
+        # moved since -- never one carried across a nudge. What IS carried
+        # is which one: `locked` is where on the map the first look saw it,
+        # and later looks take only a detection there, so the approach never
+        # switches to another one when this one slips out of view.
+        # It starts as the one the floor search sent the robot to, when that
+        # is close by: the search placed it only roughly, so the first look
+        # takes a detection within SEARCH_MERGE of it.
+        pose = sdp.pose()
+        locked, within = None, PICK_SAME_OBJECT
+        if _floor_target is not None and math.hypot(
+                _floor_target[0] - pose.x, _floor_target[1] - pose.y) <= FLOOR_TARGET_RANGE:
+            locked, within = (_floor_target[0], _floor_target[1], 0.0), SEARCH_MERGE
 
-            ok, reason = robot_frames.arm_can_reach(target)
-            standoff = PICK_NUDGE_STANDOFF
-            if ok and weak:
-                # In reach but only glimpsed -- inside the reach band the
-                # gripper hides much of the floor. Back up to see it whole.
-                if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
-                    backoffs += 1
-                    print("pick_up: %s in only %d frames; backing up %.2f m to "
-                          "confirm it" % (obj, frames, PICK_BACKOFF))
-                    driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
-                    print("pick_up: backed up %.3f m" % -driven)
-                    continue
-                return ToolFailure(f"I only glimpsed the {obj} in {frames} frames, too few "
+        def give_up(msg):
+            """Fail, and strike the searched-for can off the list so the next
+            floor search goes for the next nearest. It is still on the
+            floor, so drives go around it."""
+            global _floor_target
+            if misses:
+                msg = (f"My grasp missed the {obj} {misses} time{'s' if misses > 1 else ''}, "
+                       f"and then: {msg}")
+            _mark_floor_can_lost(locked)
+            if _floor_target is not None:
+                _forget_floor_can(_floor_target)
+                _floor_target = None
+                msg += (f" I gave up on that {obj}; search the floor again to go for "
+                        f"the next nearest one.")
+            return ToolFailure(msg)
+
+        # A grasp that comes up empty is made again from a fresh look, while
+        # the look still finds the object where it was.
+        misses = 0
+        for grasp in range(1, PICK_GRASP_TRIES + 1):
+            backoffs = 0
+            deadline = time.time() + PICK_GIVE_UP
+            for attempt in range(PICK_APPROACH_TRIES + 1):
+                if time.time() > deadline:
+                    return give_up(f"I could not get a clear enough view of the {obj} to "
+                                   f"pick it up within {PICK_GIVE_UP:.0f} seconds.")
+                pose = sdp.pose()
+                near = (None if locked is None else robot_frames.robot_to_arm(
+                    robot_frames.world_to_robot(locked, pose)))
+                det, cam_yaw, cam_pitch, frames = _look_for_floor_object(obj, near, within)
+                if det is not None:
+                    within = PICK_SAME_OBJECT
+
+                if _interrupt_action:
+                    _interrupt_action = False
+                    return f"Stopped before picking up the {obj}."
+                if not _owl_alive():
+                    return _OWL_DOWN
+                if det is None:
+                    if near is not None and _sonar is not None:
+                        echo = _sonar_range()
+                        print("pick_up: lost from view; sonar %s" % (
+                            "finds nothing ahead" if echo is None else
+                            "ranges something at %.3f m" % echo))
+                    if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
+                        backoffs += 1
+                        print("pick_up: %s %s; backing up %.2f m to look again"
+                              % (obj, "not in view" if near is None else
+                                 "no longer where it was", PICK_BACKOFF))
+                        driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
+                        print("pick_up: backed up %.3f m" % -driven)
+                        continue
+                    if near is not None:
+                        return give_up(f"I lost sight of the {obj} I was going for after "
+                                       f"moving the base; it may be too close to see.")
+                    where = "after moving the base" if attempt else "on the floor in front of me"
+                    return give_up(f"I do not see a {obj} {where}.")
+                weak = frames < PICK_MIN_SAMPLES
+
+                # The depth point is on the near face of the can partway up it; the
+                # centre the arm wants comes from the can's own size and the floor.
+                target = robot_frames.floor_object_to_arm(
+                    det.x, det.y, det.z, yaw_deg=cam_yaw, pitch_deg=cam_pitch, obj=obj)
+                locked = robot_frames.robot_to_world(robot_frames.arm_to_robot(target), pose)
+                rng, arm_yaw, height = robot_frames.arm_reach(target)
+                print("pick_up: %s at arm (%.3f, %.3f, %.3f), range %.3f m, yaw %.1f deg, "
+                      "%d frames" % (obj, target[0], target[1], target[2], rng,
+                                     arm_yaw, frames))
+
+                ok, reason = robot_frames.arm_can_reach(target)
+                standoff = PICK_NUDGE_STANDOFF
+                plannable = False  # in reach and the arm says it plans
+                if ok and weak:
+                    # In reach but only glimpsed -- inside the reach band the
+                    # gripper hides much of the floor. Back up to see it whole.
+                    if backoffs < PICK_MAX_BACKOFFS and attempt < PICK_APPROACH_TRIES:
+                        backoffs += 1
+                        print("pick_up: %s in only %d frames; backing up %.2f m to "
+                              "confirm it" % (obj, frames, PICK_BACKOFF))
+                        driven = _nudge_base(sdp, 0.0, -PICK_BACKOFF)
+                        print("pick_up: backed up %.3f m" % -driven)
+                        continue
+                    return give_up(f"I only glimpsed the {obj} in {frames} frames, too few "
                                    f"to be sure where it is for a grasp.")
-            if ok:
-                refused = _arm_refuses(target, obj)
-                if not refused:
-                    break
-                # In the band but no plan: aim for the middle of it.
-                reason = "the arm cannot plan it there: %s" % refused
-                standoff = robot_frames.GRASP_STANDOFF
+                if ok:
+                    refused = _arm_refuses(target, obj)
+                    plannable = not refused
+                    # Planning is not gripping: outside the sweet spot the grip is
+                    # weak and the sag correction unmeasured, so drive into it.
+                    sweet = robot_frames.ARM_SWEET_MIN <= rng <= robot_frames.ARM_SWEET_MAX
+                    if plannable and sweet:
+                        break
+                    # In the band, but off the sweet spot or with no plan: aim for
+                    # the middle of it. PICK_NUDGE_STANDOFF sits on the sweet
+                    # spot's far edge, which leaves a can just past it too small
+                    # a drive to make.
+                    standoff = robot_frames.GRASP_STANDOFF
+                    if plannable:
+                        reason = ("%.3f m out, outside the %.2f-%.2f m grip sweet spot"
+                                  % (rng, robot_frames.ARM_SWEET_MIN, robot_frames.ARM_SWEET_MAX))
+                    else:
+                        reason = "the arm cannot plan it there: %s" % refused
 
-            move = robot_frames.approach_move(target, standoff=standoff)
-            if move is not None and not move[0] and abs(move[1]) < NUDGE_MIN_DRIVE:
-                move = None  # already where a nudge would put it
-            if move is None or attempt == PICK_APPROACH_TRIES:
-                gx, gy, gyaw = robot_frames.approach_pose(
-                    robot_frames.arm_to_robot(target), pose)
-                tried = (f" after moving the base {attempt} times" if attempt else "")
-                return ToolFailure(f"The {obj} is out of reach{tried}: {reason}. Squared up "
+                move = robot_frames.approach_move(target, standoff=standoff)
+                if move is not None and not move[0] and abs(move[1]) < NUDGE_MIN_DRIVE:
+                    move = None  # already where a nudge would put it
+                if plannable and (move is None or attempt == PICK_APPROACH_TRIES):
+                    why = ("the drive it needs is under the base's %.0f mm minimum"
+                           % (NUDGE_MIN_DRIVE * 1000) if move is None else
+                           "it has made all %d of its approach moves" % PICK_APPROACH_TRIES)
+                    print("pick_up: %s, but %s; reaching anyway" % (reason, why))
+                    break  # the held check catches a miss
+                if move is None or attempt == PICK_APPROACH_TRIES:
+                    gx, gy, gyaw = robot_frames.approach_pose(
+                        robot_frames.arm_to_robot(target), pose)
+                    tried = (f" after moving the base {attempt} times" if attempt else "")
+                    return give_up(f"The {obj} is out of reach{tried}: {reason}. Squared up "
                                    f"on it at a comfortable distance, I would be standing at "
                                    f"map x={gx:.2f}, y={gy:.2f}, yaw={gyaw:.0f}.")
 
-            turn_deg, drive_m = move
-            drive_m = max(-PICK_MAX_NUDGE, min(PICK_MAX_NUDGE, drive_m))
-            print("pick_up: out of reach (%s); turning %+.1f deg, driving %+.3f m"
-                  % (reason, turn_deg, drive_m))
-            driven = _nudge_base(sdp, turn_deg, drive_m)
-            print("pick_up: drove %+.3f m" % driven)
+                turn_deg, drive_m = move
+                drive_m = max(-PICK_MAX_NUDGE, min(PICK_MAX_NUDGE, drive_m))
+                print("pick_up: out of reach (%s); turning %+.1f deg, driving %+.3f m"
+                      % (reason, turn_deg, drive_m))
+                driven = _nudge_base(sdp, turn_deg, drive_m, sonar_stop=(
+                    PICK_NUDGE_STANDOFF - robot_frames.SONAR_FACE_X
+                    - robot_frames.OBJECT_SIZES[obj][1]))
+                print("pick_up: drove %+.3f m" % driven)
 
-        # No is_holding() here: with `vision` pick_can asks it itself at stow
-        # (its held check; the approach check is off by default) and aborts on
-        # a definite no. So an ok result has already been confirmed through
-        # the same camera.
-        result = _arm_client.pick_can(target[0], target[1], target[2],
-                                      _arm_object(obj), vision=vision)
-        if result.get("ok"):
-            _held_object = obj
-            return f"I picked up the {obj} and am holding it."
-        # Any failure can leave the arm out over the floor, and the base must
-        # never move with it there. Every one ends at init: folded, and the
-        # pose the floor looks and nudges of a retried pick expect.
-        _, note = _recover_arm(result, state="init", always=True)
-        if result.get("returncode") == _ARM_NOT_THERE:
-            return ToolFailure(f"The {obj} was not detected where the arm reached for it.{note}")
-        return ToolFailure(f"The arm failed to pick up the {obj}: {_arm_problem(result)}.{note}")
+            result = _arm_client.pick_can(target[0], target[1], target[2],
+                                          _arm_object(obj), vision=vision)
+            if not result.get("ok") and _arm_stuck(result):
+                # A wedged stack failed before the arm moved: revive it and make
+                # the same pick again, the base and the can both where they were.
+                _, note = _recover_arm(result, state="init", always=True)
+                if note:
+                    _mark_floor_can_lost(locked)
+                    return ToolFailure(f"The arm failed to pick up the {obj}: "
+                                       f"{_arm_problem(result)}.{note}")
+                print("pick_up: arm stack revived; making the pick again")
+                result = _arm_client.pick_can(target[0], target[1], target[2],
+                                              _arm_object(obj), vision=vision)
+            if result.get("ok"):
+                # With `vision`, a grasp the wrist camera cannot confirm counts
+                # as a miss: "may have failed" is acted on as failed.
+                color, held, why = _held_color(obj) if vision else (None, True, "")
+                if held is True:
+                    _held_object = obj
+                    _floor_target = None
+                    _forget_floor_can(locked)
+                    _clear_lost_can(locked)
+                    if _floor_objects_left.get(obj, 0) > 1:
+                        _floor_objects_left[obj] -= 1
+                    if color:
+                        speak(f"It's a {color} can.")
+                        return f"I picked up the {obj} and am holding it. It is {color}."
+                    return f"I picked up the {obj} and am holding it."
+                _held_object = obj  # so the reset below clears it
+                missed = True
+                problem = (f"The pick failed: I could not confirm the {obj} is "
+                           f"in my gripper ({why}).")
+            elif result.get("returncode") == _ARM_NOT_THERE:
+                missed = False
+                problem = f"The {obj} was not detected where the arm reached for it."
+            else:
+                missed = result.get("returncode") == _ARM_JAWS_EMPTY
+                problem = f"The arm failed to pick up the {obj}: {_arm_problem(result)}."
+            # Any failure can leave the arm out over the floor, and the base must
+            # never move with it there. Every one ends at init: folded, and the
+            # pose the floor looks and nudges of a retried pick expect.
+            _, note = _recover_arm(result, state="init", always=True)
+            if missed and not note and grasp < PICK_GRASP_TRIES:
+                misses += 1
+                print("pick_up: grasp %d of %d came up empty; looking for the %s again"
+                      % (grasp, PICK_GRASP_TRIES, obj))
+                continue
+            _mark_floor_can_lost(locked)  # still on the floor, maybe knocked over
+            if grasp > 1:
+                problem += f" That was grasp {grasp} at it."
+            return ToolFailure(problem + note)
     except Exception as e:
         return ToolFailure(f"Error picking up the {object_name}: {str(e)}")
     finally:
@@ -6034,6 +6669,150 @@ def put_down_tool_helper(sdp, destination: str):
                            f"{PLACE_ARRIVAL_DIST:.1f} m of it.")
 
     return _place_held(f"in the {dest}", f"on the way to the {dest}")
+
+
+# The "clean the room" contest: CLEAN_ROOM_CANS soda cans on the floor go into
+# CLEAN_ROOM_BIN, then the robot says so and stops.
+CLEAN_ROOM_OBJECT = "soda can"
+CLEAN_ROOM_CANS = 3
+CLEAN_ROOM_BIN = "recycle bin"
+# Failed attempts at one can before it is given up as lost.
+CLEAN_ROOM_TRIES = 3
+# The contest's time limit, seconds. Past it no new can is started; one
+# already being picked or carried to the bin is finished.
+CLEAN_ROOM_LIMIT = 300.0
+
+
+def clean_the_room_tool_helper(sdp):
+    """Collect every soda can on the floor into the recycle bin, nearest
+    remembered one first, then announce the room is clean.
+
+    The first floor search remembers each can it sees. A can that a pick or
+    the drive to it fails on is tried again after the others; one dropped on
+    the way to the bin is lost. Once the remembered ones are used up, one
+    final search looks for whatever is left. Ends when all are in the bin, when that final
+    search finds nothing, on a stop, or at the CLEAN_ROOM_LIMIT time limit."""
+    global _floor_target
+
+    obj = CLEAN_ROOM_OBJECT
+    if _held_object is not None:
+        return ToolFailure(f"I am already holding a {_held_object}; put it down first.")
+    if _find_location_key(CLEAN_ROOM_BIN) is None:
+        return ToolFailure(f"I have no saved location called '{CLEAN_ROOM_BIN}'.")
+    guard = _require_camera_ai("owl")
+    if guard:
+        return guard
+
+    stops = _stop_count
+    _floor_objects_left[obj] = CLEAN_ROOM_CANS
+    _floor_cans_scanned.clear()
+    _floor_cans_seen.clear()
+    _floor_target = None
+
+    deadline = time.time() + CLEAN_ROOM_LIMIT
+
+    def halted():
+        return _stop_count != stops
+
+    def time_up():
+        return time.time() >= deadline
+
+    collected = 0
+    lost = 0  # given up on: dropped on the way to the bin, the last can left
+              # failing, or one failed CLEAN_ROOM_TRIES times
+    deferred = []  # failed, tried again after the others
+    fails = {}
+    scans = 0
+    notes = []
+    while collected + lost < CLEAN_ROOM_CANS and not halted() and not time_up():
+        if not _floor_cans_seen and deferred:
+            _floor_cans_seen.extend(deferred)
+            deferred.clear()
+        if not _floor_cans_seen:
+            if scans >= 2:
+                break  # the first scan and the final one are used up
+            scans += 1
+        print(f"clean the room: {collected} of {CLEAN_ROOM_CANS} in the bin; "
+              f"{len(_floor_cans_seen)} remembered; scan {scans}")
+
+        _floor_target = None
+        result = search_for_object_tool_helper(sdp, obj, "floor")
+        if halted() or time_up():
+            break
+        if isinstance(result, ToolFailure) or _floor_target is None:
+            notes.append(f"search: {result}")
+            if _floor_cans_seen or deferred or scans < 2:
+                continue
+            break
+        target = _floor_target
+
+        def skip(why):
+            """Leave this can for now and come back to it after the others;
+            the last one left, or one failed too often, is lost."""
+            nonlocal lost
+            notes.append(why)
+            if target in _floor_cans_seen:  # pick_up may have struck it already
+                _floor_cans_seen.remove(target)
+            fails[target] = fails.get(target, 0) + 1
+            last = CLEAN_ROOM_CANS - collected - lost == 1
+            if last or fails[target] >= CLEAN_ROOM_TRIES:
+                lost += 1
+                _mark_floor_can_lost(target)
+                print(f"clean the room: lost the {obj} at ({target[0]:.2f}, "
+                      f"{target[1]:.2f}): {why}")
+            else:
+                deferred.append(target)
+                print(f"clean the room: skipping the {obj} at ({target[0]:.2f}, "
+                      f"{target[1]:.2f}) for now: {why}")
+
+        x, y, yaw = _FloorSightings(sdp).goal(dict(x=target[0], y=target[1]),
+                                              _search_offset(obj, "floor"))
+        result = go_to_location_by_coords_tool_helper(sdp, x, y, yaw)
+        if halted():
+            break
+        if isinstance(result, ToolFailure):
+            skip(f"drive to it: {result}")
+            continue
+
+        result = pick_up_tool_helper(sdp, obj)
+        if halted():
+            break
+        if _held_object is None:
+            skip(f"pick: {result}")
+            continue
+
+        result = go_to_location_tool_helper(sdp, CLEAN_ROOM_BIN)
+        if halted():
+            break
+        result = put_down_tool_helper(sdp, CLEAN_ROOM_BIN)
+        if halted():
+            break
+        if isinstance(result, ToolFailure):
+            if _held_object is not None:
+                return ToolFailure(f"I collected {collected} of {CLEAN_ROOM_CANS} cans, then "
+                                   f"could not put the next one in the {CLEAN_ROOM_BIN}: "
+                                   f"{result}")
+            # Dropped on the way: lying on its side, it cannot be picked.
+            # Lost, and never gone back for.
+            notes.append(f"put down: {result}")
+            lost += 1
+            continue
+        collected += 1
+
+    if _stop_count != stops:
+        return f"Stopped cleaning the room with {collected} of {CLEAN_ROOM_CANS} cans in the {CLEAN_ROOM_BIN}."
+    if collected == CLEAN_ROOM_CANS:
+        speak("The room has been cleaned.")
+        return "The room has been cleaned: all the cans are in the recycle bin. I announced it."
+    if time_up():
+        speak("Time is up.")
+        return (f"Time is up: the {CLEAN_ROOM_LIMIT / 60:.0f} minute limit ended cleaning the "
+                f"room with {collected} of {CLEAN_ROOM_CANS} cans in the {CLEAN_ROOM_BIN}. "
+                f"I announced it.")
+    gave_up = f" I gave up on {lost} I could not pick up." if lost else ""
+    return ToolFailure(f"I put {collected} of {CLEAN_ROOM_CANS} cans in the {CLEAN_ROOM_BIN} "
+                       f"and could not find or pick up the rest.{gave_up} "
+                       + " ".join(notes[-3:]))
 
 
 def place_tool_helper():
@@ -6689,6 +7468,7 @@ langgraph_tool_funcs = {
     "place": place_tool_helper,
     "drop": drop_tool_helper,
     "hand_over": hand_over_tool_helper,
+    "clean_the_room": clean_the_room_tool_helper,
     "enable_arm": enable_arm_tool_helper,
     "disable_arm": disable_arm_tool_helper,
     "move_arm_to_position": move_arm_to_position_tool_helper,
