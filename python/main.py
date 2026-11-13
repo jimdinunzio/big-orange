@@ -344,10 +344,45 @@ def is_close_to(loc, max_dist=1.0, max_heading_diff=math.radians(15)):
     except:
         print("is_close_to: error getting pose.")
         return -1
-    dist = distance_A_to_B(pose.x, pose.y, _locations[loc][0], _locations[loc][1])
-    heading_diff = 0 if len(_locations[loc]) < 3 else _locations[loc][2] - math.radians(pose.yaw)
-
+    dist, heading_diff = _offset_from(loc, pose)
     return dist <= max_dist and heading_diff <= max_heading_diff
+
+def _offset_from(loc, pose):
+    """(metres, radians) between `pose` and saved location `loc`; the heading
+    difference is unsigned, and 0 for a location saved without a heading."""
+    dist = distance_A_to_B(pose.x, pose.y, _locations[loc][0], _locations[loc][1])
+    if len(_locations[loc]) < 3:
+        return dist, 0.0
+    diff = _locations[loc][2] - math.radians(pose.yaw)
+    return dist, abs((diff + math.pi) % (2 * math.pi) - math.pi)
+
+# How far from a saved location, and from its heading, a finished move may end
+# and still have arrived at it. Inside ARRIVE_NEAR_* but not these, it is
+# reported as arriving near it, with how far off.
+ARRIVE_DIST = 0.10
+ARRIVE_HEADING = math.radians(5)
+ARRIVE_NEAR_DIST = 1.0
+ARRIVE_NEAR_HEADING = math.radians(15)
+
+def arrival_report(location_name):
+    """How a finished move to a named location ended up: (reached, text),
+    text finishing "move finished" -- ": arrived at the bin"."""
+    if _locations.get(location_name) is None:
+        print("arrival_report: location not found: ", location_name)
+        return True, ": arrived at " + location_name
+    try:
+        pose = manager.reader().pose()
+    except:
+        print("arrival_report: error getting pose.")
+        return True, ": arrived at " + location_name
+    dist, heading = _offset_from(location_name, pose)
+    if dist <= ARRIVE_DIST and heading <= ARRIVE_HEADING:
+        return True, ": arrived at " + location_name
+    if dist <= ARRIVE_NEAR_DIST and heading <= ARRIVE_NEAR_HEADING:
+        return True, (": arrived within %.2f meters of %s, heading off by %.0f degrees"
+                      % (dist, location_name, math.degrees(heading)))
+    return False, (": did not arrive at %s; %.2f meters from it, heading off by %.0f degrees"
+                   % (location_name, dist, math.degrees(heading)))
 
 ################################################################
 # This cancels an ongoing action - which may be a goto or something else.
@@ -934,12 +969,6 @@ def handleGotoLocation():
                 setNextGoal()
                 continue
             if _goal != "custom" and _goal != "deliver" and _goal != "person" and _goal != "find_face":
-                if is_close_to(_goal, 0.5) and _goal != sub_goal_cleanup:
-                    if not _langgraph_initiated_move:
-                        speak("I'm already at the " + _goal)
-                    setNextGoal()
-                    _move_oak_d.allHome()
-                    continue
                 if _goal != sub_goal_cleanup and len(_goal_queue) == 0 or len(_goal_queue) > 0 and _goal_queue[0] != "deliver":
                     if not _langgraph_initiated_move:
                         speak("I'm going to " + _goal)
@@ -1265,10 +1294,9 @@ def moveActionMonitor(sdp=None, location_name=None):
     # check if robot actually made it to the destination
     # if way is blocked the Finished status may be returned.
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
-        reached_goal = is_close_to(location_name)
+        reached_goal, where = arrival_report(location_name)
         failed = failed or not reached_goal
-        message += ": arrived at " if reached_goal else ": did not arrive at "
-        message += location_name
+        message += where
 
     return ToolFailure(message) if failed else message
 
@@ -1380,10 +1408,9 @@ def moveActionMonitorWithOwl(sdp, location_name, obj_name, poll_interval=0.5):
 
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
         if not obj_confirmed:
-            reached_goal = is_close_to(location_name)
+            reached_goal, where = arrival_report(location_name)
             failed = failed or not reached_goal
-            message += ": arrived at " if reached_goal else ": did not arrive at "
-            message += location_name
+            message += where
 
     return (ToolFailure(message) if failed else message), spatial_det
 
@@ -1465,10 +1492,9 @@ def moveActionMonitorWithPrompt(sdp=None, location_name=None, prompt="Describe t
 
     # Check if robot actually made it to the destination
     if location_name is not None and location_name != "custom" and location_name != "find_face" and location_name != "find_obj":
-        reached_goal = is_close_to(location_name)
+        reached_goal, where = arrival_report(location_name)
         failed = failed or not reached_goal
-        message += ": arrived at " if reached_goal else ": did not arrive at "
-        message += location_name
+        message += where
 
     return ToolFailure(message) if failed else message
 
