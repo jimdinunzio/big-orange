@@ -130,6 +130,7 @@ _enable_movement_sensing = False
 _grasper : RoboGripper = None
 _enable_grasper = True
 _enable_arm = True # enable the arm's ROS stack at startup rather than on first use
+_enable_stop_wake_word = False # listen for the "stop now" wake word as well as "hey orange"
 _blazepose_thread = None
 _mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
@@ -4229,17 +4230,20 @@ def listen():
     models_dir = os.path.join(os.path.dirname(__file__), "models")
     wake_path = os.path.join(models_dir, "hey_orange.onnx")
     stop_path = os.path.join(models_dir, "stop_now.onnx")
-    for p in (wake_path, stop_path):
+    # The stop wake word fires on its own now and then, so it is off unless
+    # _enable_stop_wake_word; the Xbox red button cancels instead.
+    n_words = 2 if _enable_stop_wake_word else 1
+    for p in (wake_path, stop_path)[:n_words]:
         if not os.path.isfile(p):
             speak("I cannot find one of my wake word model files. Shutting down.")
             _run_flag = False
             break
     oww_config = r.OpenWakeWordListener.Config(
-        model_paths=[wake_path, stop_path],
+        model_paths=[wake_path, stop_path][:n_words],
         keyword_types=[r.OpenWakeWordListener.KeywordType.LISTEN,
-                       r.OpenWakeWordListener.KeywordType.IMMEDIATE],
-        thresholds=[0.5, 0.75],
-        min_hold_seconds=[0.0, 0.15],  # stop must hold over threshold ~2 model frames
+                       r.OpenWakeWordListener.KeywordType.IMMEDIATE][:n_words],
+        thresholds=[0.5, 0.75][:n_words],
+        min_hold_seconds=[0.0, 0.15][:n_words],  # stop must hold over threshold ~2 model frames
         on_detection=on_detection,
         on_det_timeout=on_listen_timeout)
 
