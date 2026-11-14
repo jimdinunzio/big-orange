@@ -5240,6 +5240,26 @@ def _steer_clear_of_floor_cans(sdp, x, y):
 _floor_objects_left = {"soda can": 3}
 
 
+# A bin stands BIN_AHEAD metres in front of the pose saved for it, and a
+# sighting within BIN_CLEAR metres of that point is a can already in the bin,
+# not one on the floor.
+BIN_AHEAD = 0.45
+BIN_CLEAR = 0.4
+
+
+def _in_a_bin(x, y):
+    """Whether map point (x, y) is inside a bin at a saved location."""
+    for dest in PLACE_DESTINATIONS:
+        key = _find_location_key(dest)
+        if key is None:
+            continue
+        bx, by, byaw = _locations[key][:3]
+        if math.hypot(x - (bx + BIN_AHEAD * math.cos(byaw)),
+                      y - (by + BIN_AHEAD * math.sin(byaw))) <= BIN_CLEAR:
+            return True
+    return False
+
+
 class _FloorSightings:
     """Every sighting of a floor object in one search, in map coordinates,
     merged into one entry per object.
@@ -5255,10 +5275,13 @@ class _FloorSightings:
         self.entries = []
 
     def add(self, s, still):
+        """Record sighting `s`. False, and not recorded, if it is in a bin."""
         theta, rng = objBearingRange(s)
         pose = self._sdp.pose()
         a = math.radians(pose.yaw + theta)
         x, y = pose.x + rng * math.cos(a), pose.y + rng * math.sin(a)
+        if _in_a_bin(x, y):
+            return False
         for e in self.entries:
             if math.hypot(e["x"] - x, e["y"] - y) <= SEARCH_MERGE:
                 break
@@ -5269,6 +5292,7 @@ class _FloorSightings:
         pts = e["still"] or e["moving"]
         e["x"] = sum(p[0] for p in pts) / len(pts)
         e["y"] = sum(p[1] for p in pts) / len(pts)
+        return True
 
     @staticmethod
     def confirmed(e):
@@ -5444,13 +5468,12 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
                     # to collect first. One with no depth counts only when
                     # none has any.
                     found, spatials = _nano_owl_mgr.check_for_all_objects(obj_name)
-                    on_floor = _floor_detections(spatials)
+                    low = _floor_detections(spatials)
+                    on_floor = [s for s in low if sightings.add(s, still=False)]
                     no_depth = [s for s in spatials if s.z <= 0]
-                    for s in on_floor:
-                        sightings.add(s, still=False)
                     if found and not on_floor and not no_depth:
-                        print(f"OWL {obj_name} too high for floor: "
-                              f"{objBearingRangeStr(spatials[0])}")
+                        print(f"OWL {obj_name} %s: {objBearingRangeStr(spatials[0])}"
+                              % ("in a bin" if low else "too high for floor"))
                         return False, None
                     spatial = (min(on_floor, key=lambda s: s.z) if on_floor
                                else no_depth[0] if no_depth else None)
