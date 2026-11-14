@@ -294,6 +294,10 @@ close pictures
 close pictures
 close pictures
 close pictures
+go home
+go home
+go home
+go home
 capybara
 jetson
 orin

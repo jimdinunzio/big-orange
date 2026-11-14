@@ -964,6 +964,7 @@ def handleGotoLocation():
                 speak("I'm going to the recharge station")
             coords = _locations.get(_goal)
             sdp.home()
+            _action_flag = True # so cancelAction can stop the drive to the dock
         elif _goal == "deliver" and _locations.get(_goal) is None:
             mult_people = "," in _deliveree
             # For multiple person delivery, do not bother looking for a person
@@ -4801,6 +4802,12 @@ def initiate_shutdown_tool_helper():
 def go_recharge_tool_helper(sdp):
     """Go to the recharge location."""
     global _goal
+    # "home" is a map location, never the dock: refuse when the user said home
+    # without naming the charger.
+    heard = _last_speech_heard.lower()
+    if "home" in heard and not any(w in heard for w in ("charg", "dock")):
+        return ToolFailure("Not docking: the user said home, which is the map location "
+                           "\"home\", not the recharge dock.")
     cancelAction(True, sdp)
     _goal = "recharge"
     return "Going to recharge dock."
