@@ -4813,8 +4813,8 @@ def go_recharge_tool_helper(sdp):
     return "Going to recharge dock."
 
 def go_to_location_by_coords_tool_helper(sdp, x: float, y: float, yaw: float = 0.0):
-    """Go to a location given coordinates, clear of any lost floor can."""
-    failed = _steer_clear_of_lost_cans(sdp, x, y)
+    """Go to a location given coordinates, clear of any known floor can."""
+    failed = _steer_clear_of_floor_cans(sdp, x, y)
     if failed:
         return failed
     return _go_to_coords(sdp, x, y, yaw)
@@ -4846,7 +4846,7 @@ def go_to_location_tool_helper(sdp, location_name: str):
     global _langgraph_initiated_move
     key = _find_location_key(location_name)
     if key is not None:
-        failed = _steer_clear_of_lost_cans(sdp, _locations[key][0], _locations[key][1])
+        failed = _steer_clear_of_floor_cans(sdp, _locations[key][0], _locations[key][1])
         if failed:
             return failed
     try:
@@ -5134,10 +5134,11 @@ FLOOR_TARGET_RANGE = 1.5
 # pick there succeeds.
 _lost_floor_cans = []
 
-# Metres between the robot's centre and a lost can's centre that a drive must
-# keep: half the base's width plus the can's radius plus a margin.
+# Metres between the robot's centre and the centre of a can on the floor,
+# lost or remembered, that a drive must keep: half the base's width plus the
+# can's radius plus a margin.
 LOST_CAN_CLEAR = 0.35
-# A lost can this far ahead of the robot's centre or nearer, inside
+# Such a can this far ahead of the robot's centre or nearer, inside
 # LOST_CAN_CLEAR of its centre line, gets backed away from before a drive.
 LOST_CAN_AHEAD = 0.7
 LOST_CAN_BACKUP = 0.3
@@ -5158,51 +5159,72 @@ def _clear_lost_can(p):
                            if math.hypot(c[0] - p[0], c[1] - p[1]) > SEARCH_MERGE]
 
 
-def _steer_clear_of_lost_cans(sdp, x, y):
-    """Before a drive to map (x, y): back away from a lost can just ahead,
-    then, if the straight line there passes within LOST_CAN_CLEAR of one,
+def _floor_cans_to_avoid():
+    """Map (x, y) of every can known to be on the floor other than the one
+    being driven to: the lost ones and the remembered ones."""
+    cans = list(_lost_floor_cans)
+    for c in _floor_cans_seen:
+        if _floor_target is not None and math.hypot(
+                c[0] - _floor_target[0], c[1] - _floor_target[1]) <= SEARCH_MERGE:
+            continue
+        if all(math.hypot(c[0] - o[0], c[1] - o[1]) > SEARCH_MERGE for o in cans):
+            cans.append((c[0], c[1]))
+    return cans
+
+
+def _steer_clear_of_floor_cans(sdp, x, y):
+    """Before a drive to map (x, y): back away from a floor can just ahead,
+    then, while the straight line there passes within LOST_CAN_CLEAR of one,
     go by a point beside it first. Returns a ToolFailure if a move failed,
     else None."""
-    if not _lost_floor_cans:
+    cans = _floor_cans_to_avoid()
+    if not cans:
         return None
     pose = sdp.pose()
     h = math.radians(pose.yaw)
-    for c in _lost_floor_cans:
+    for c in cans:
         dx, dy = c[0] - pose.x, c[1] - pose.y
         ahead = dx * math.cos(h) + dy * math.sin(h)
         side = -dx * math.sin(h) + dy * math.cos(h)
         if 0 < ahead <= LOST_CAN_AHEAD and abs(side) < LOST_CAN_CLEAR:
-            print("lost can at (%.2f, %.2f) is %.2f m ahead; backing up %.2f m"
+            print("floor can at (%.2f, %.2f) is %.2f m ahead; backing up %.2f m"
                   % (c[0], c[1], ahead, LOST_CAN_BACKUP))
             _nudge_base(sdp, 0.0, -LOST_CAN_BACKUP)
-            pose = sdp.pose()
             break
 
-    px, py = pose.x, pose.y
-    vx, vy = x - px, y - py
-    length = math.hypot(vx, vy)
-    if length < 1e-6:
-        return None
-    ux, uy = vx / length, vy / length
-    blocking = []
-    for c in _lost_floor_cans:
-        t = (c[0] - px) * ux + (c[1] - py) * uy
-        if 0 < t < length:
-            off = -(c[0] - px) * uy + (c[1] - py) * ux  # + left of the line
-            if abs(off) < LOST_CAN_CLEAR:
-                blocking.append((t, off, c))
-    if not blocking:
-        return None
-    t, off, c = min(blocking)
-    # Pass on the side of the can away from the line, by a clear margin.
-    sign = -1.0 if off > 0 else 1.0
-    d = LOST_CAN_CLEAR + 0.1
-    wx, wy = c[0] - sign * uy * d, c[1] + sign * ux * d
-    print("lost can at (%.2f, %.2f) is in the way; going around by (%.2f, %.2f)"
-          % (c[0], c[1], wx, wy))
-    result = _go_to_coords(sdp, wx, wy, math.degrees(math.atan2(y - wy, x - wx)))
-    if isinstance(result, ToolFailure):
-        return ToolFailure(f"I could not get around a soda can left on the floor: {result}")
+    passed = []  # each can is gone around once
+    for _ in range(len(cans)):
+        pose = sdp.pose()
+        px, py = pose.x, pose.y
+        vx, vy = x - px, y - py
+        length = math.hypot(vx, vy)
+        if length < 1e-6:
+            return None
+        ux, uy = vx / length, vy / length
+        blocking = []
+        for c in cans:
+            if c in passed:
+                continue
+            t = (c[0] - px) * ux + (c[1] - py) * uy
+            if 0 < t < length:
+                off = -(c[0] - px) * uy + (c[1] - py) * ux  # + left of the line
+                if abs(off) < LOST_CAN_CLEAR:
+                    blocking.append((t, off, c))
+        if not blocking:
+            return None
+        t, off, c = min(blocking)
+        passed.append(c)
+        # Pass on the side of the can away from the line, by a clear margin.
+        sign = -1.0 if off > 0 else 1.0
+        d = LOST_CAN_CLEAR + 0.1
+        wx, wy = c[0] - sign * uy * d, c[1] + sign * ux * d
+        print("floor can at (%.2f, %.2f) is in the way; going around by (%.2f, %.2f)"
+              % (c[0], c[1], wx, wy))
+        result = _go_to_coords(sdp, wx, wy, math.degrees(math.atan2(y - wy, x - wx)))
+        if isinstance(result, ToolFailure):
+            return ToolFailure(f"I could not get around a soda can on the floor: {result}")
+        if _interrupt_action:
+            return None
     return None
 
 
