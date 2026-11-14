@@ -62,6 +62,10 @@ class RobotPlannerGraph:
         # terse: say "OK" once a request starts acting, then stay quiet unless
         # a tool errored; a reply that called no tools is still spoken.
         self.speech_mode = "verbose"
+        # A run that calls one of these tools is terse from then until it ends,
+        # whatever speech_mode says.
+        self.terse_tools = ("clean_the_room",)
+        self._run_terse = False
         self._acknowledged = False
         self._run_had_error = False
 
@@ -221,7 +225,10 @@ class RobotPlannerGraph:
         def speech_node(state: State):
             print("*** Speech Node ***")
             last_msg = state["messages"][-1]
-            if self.speech_mode == "terse":
+            if any(call["name"] in self.terse_tools
+                   for call in getattr(last_msg, "tool_calls", None) or []):
+                self._run_terse = True
+            if self.speech_mode == "terse" or self._run_terse:
                 if not self._acknowledged:
                     self._acknowledged = True
                     self._speak("OK", add_to_memory=False)
@@ -281,7 +288,7 @@ class RobotPlannerGraph:
         def reporter_node(state: State):
             print("*** Reporter Node ***")
             last_msg = state["messages"][-1]
-            quiet = (self.speech_mode == "terse" and self._acknowledged
+            quiet = ((self.speech_mode == "terse" or self._run_terse) and self._acknowledged
                      and not self._run_had_error)
             if not quiet and isinstance(last_msg, AIMessage) and last_msg.content:
                 self._speak(
@@ -501,6 +508,7 @@ class RobotPlannerGraph:
         self._is_processing = True
         self._acknowledged = False
         self._run_had_error = False
+        self._run_terse = False
         self._run_gen += 1
         gen = self._run_gen
         config = self.config
