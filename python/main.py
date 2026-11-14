@@ -129,6 +129,7 @@ _radar = None
 _enable_movement_sensing = False
 _grasper : RoboGripper = None
 _enable_grasper = True
+_enable_arm = True # enable the arm's ROS stack at startup rather than on first use
 _blazepose_thread = None
 _mqtt_listener = AwsMqttListener()
 _aws_mqtt_listener_thread = None
@@ -5791,8 +5792,9 @@ def _ensure_arm_enabled(timeout: int = _ARM_ENABLE_TIMEOUT) -> str:
     arm is ready, otherwise the reason it is not.
 
     Motion commands deliberately do not auto-enable, so every path that moves
-    the arm comes through here. Normally a no-op: initialize_robot enables the
-    stack at startup and this only does work if it went away since.
+    the arm comes through here. Normally a no-op: with _enable_arm set,
+    initialize_robot enables the stack at startup and this only does work if
+    it went away since.
 
     The stack gets `timeout` seconds to come up; if it does not, the arm
     service is restarted and the enable tried once more.
@@ -7499,6 +7501,9 @@ def initialize_robot():
                 # Reaching the server does not mean the arm can move: the ROS
                 # stack is started explicitly. Do it now so the first wave is
                 # not also paying for the launch.
+                if not _enable_arm:
+                    print("Arm stack left for first use to enable (_enable_arm is off).")
+                    break
                 problem = _ensure_arm_enabled(_ARM_FIRST_ENABLE_TIMEOUT)
                 if problem:
                     print(f"WARNING: arm reachable but its ROS stack would not start: {problem}")
