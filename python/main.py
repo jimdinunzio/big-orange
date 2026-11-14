@@ -1922,6 +1922,8 @@ def searchForObject(sdp, obj, height="eye level", is_clockwise=True, checkForObj
         sdp.cancelMoveAction()
         _settle_heading(sdp)
         p = seen
+        print("search: sweep ended after %.0f deg; first sighting at %s"
+              % (sweep, "none" if seen_at is None else "%.0f deg" % seen_at))
 
     if recheck_obj:
         # The hit came from a frame taken while turning, and its depth from a
@@ -5103,6 +5105,11 @@ def _search_offset(obj: str, height: str) -> float:
 # Under the 1 ft (0.30 m) the contest cans stand apart.
 SEARCH_MERGE = 0.2
 
+# Metres from a confirmed object within which a sighting taken while turning
+# is taken for that same object rather than turned back to and checked. Under
+# the 1 ft the contest cans stand apart, so a can beside another gets checked.
+SEARCH_BESIDE = 0.25
+
 # Frames a floor sighting needs to count: a remembered one before the search
 # turns back to it, a still one before it is the goal.
 SEARCH_MIN_HITS = 2
@@ -5313,36 +5320,52 @@ def _face_point(sdp, x, y):
 
 def _look_still(sightings, obj, pitches):
     """Watch for `obj` on the floor for PICK_DWELL at each head tilt in
-    `pitches`, base stopped, and add what is seen to `sightings`."""
+    `pitches`, base stopped, and add every one seen to `sightings`."""
     for pitch in pitches:
         if _interrupt_action or not _owl_alive():
             return
         aim_oakd(pitch=pitch)
         time.sleep(PICK_SETTLE)
         _nano_owl_mgr.push_fresh_frame()
-        samples, _, _ = _sample_floor_object(obj)
-        for s in samples:
-            sightings.add(s, still=True)
+        for _ in range(PICK_SAMPLES):
+            if _interrupt_action or not _owl_alive():
+                return
+            _, spatials = _nano_owl_mgr.check_for_all_objects(obj)
+            for s in _floor_detections(spatials):
+                sightings.add(s, still=True)
+            time.sleep(1.0 / PICK_FPS)
 
 
-def _nearest_floor_object(sdp, sightings, obj, pitches):
+def _nearest_floor_object(sdp, sightings, obj, pitches, want=None):
     """The entry in `sightings` for the nearest `obj` on the floor, or None.
 
-    Looks from where the search stopped at each tilt in `pitches`, then, while
-    the nearest entry is one only seen while turning -- one the base turned
-    or coasted past before stopping on a farther one -- turns to face it and
-    looks again. One that look does not confirm is dropped for the next
-    nearest. A farther object is never the answer while a nearer one is
-    confirmed, even when it is the one now in view.
+    Looks from where the search stopped at each tilt in `pitches`, then turns
+    to face an entry only seen while turning and looks again. Without `want`
+    that is one nearer than any confirmed -- one the base turned or coasted
+    past before stopping on a farther one. With `want`, how many are on the
+    floor, it is each of them, nearest first, until that many are confirmed.
+    A sighting taken while turning only says where to look: one that look
+    does not confirm is dropped. A farther object is never the answer while
+    a nearer one is confirmed, even when it is the one now in view.
     """
     _look_still(sightings, obj, pitches)
     for _ in range(SEARCH_MAX_CONFIRMS):
+        if _interrupt_action or not _owl_alive():
+            break
+        confirmed = [e for e in sightings.candidates() if sightings.confirmed(e)]
+        if want and len(confirmed) >= want:
+            break
+        # One beside a confirmed entry is that object, misplaced by the turn.
         e = next((e for e in sightings.candidates()
-                  if sightings.confirmed(e) or not e["tried"]), None)
-        if e is None or sightings.confirmed(e) or _interrupt_action or not _owl_alive():
+                  if not sightings.confirmed(e) and not e["tried"]
+                  and (want or not confirmed
+                       or sightings.distance(e) < sightings.distance(confirmed[0]))
+                  and all(math.hypot(e["x"] - c["x"], e["y"] - c["y"]) > SEARCH_BESIDE
+                          for c in confirmed)), None)
+        if e is None:
             break
         e["tried"] = True
-        print("search: %s seen nearer at %.2f m while turning; turning back to check"
+        print("search: %s seen at %.2f m while turning; turning to check"
               % (obj, sightings.distance(e)))
         _face_point(sdp, e["x"], e["y"])
         _look_still(sightings, obj, (FLOOR_SEARCH_PITCH, PICK_ACQUIRE_PITCH))
@@ -5396,6 +5419,9 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
                        key=lambda c: math.hypot(c[0] - pose.x, c[1] - pose.y))
             obj_loc = _FloorSightings(sdp).goal(dict(x=x, y=y), _search_offset(obj, height))
             _floor_target = (x, y)
+            print("search: going for the remembered %s at (%.2f, %.2f), %.2f m away; all: %s"
+                  % (obj, x, y, math.hypot(x - pose.x, y - pose.y),
+                     ", ".join("(%.2f, %.2f)" % (c[0], c[1]) for c in _floor_cans_seen)))
             return f"{obj} was found at {obj_loc}."
 
         print("processing with nano owl")
@@ -5499,10 +5525,23 @@ def search_for_object_tool_helper(sdp, obj: str, height: str,
                 # drive to a farther one runs into it.
                 pitches = ((PICK_ACQUIRE_PITCH,) if near_view
                            else (FLOOR_SEARCH_PITCH, PICK_ACQUIRE_PITCH))
-                target = _nearest_floor_object(sdp, sightings, obj, pitches)
+                target = _nearest_floor_object(sdp, sightings, obj, pitches, want=left)
                 if _normalize_place_name(obj) in _floor_objects_left:
-                    _floor_cans_scanned[:] = [(e["x"], e["y"]) for e in sightings.candidates()]
+                    # Only ones seen with the base stopped are remembered,
+                    # and no more than are left on the floor: the best seen,
+                    # the one being gone for first.
+                    kept = sorted((e for e in sightings.candidates()
+                                   if sightings.confirmed(e)),
+                                  key=lambda e: (e is not target, -len(e["still"])))
+                    if left and len(kept) > left:
+                        for e in kept[left:]:
+                            print("search: dropping the extra %s sighting at (%.2f, %.2f)"
+                                  % (obj, e["x"], e["y"]))
+                        kept = kept[:left]
+                    _floor_cans_scanned[:] = [(e["x"], e["y"]) for e in kept]
                     _floor_cans_seen[:] = _floor_cans_scanned
+                    print("search: remembering %s at %s" % (obj, ", ".join(
+                        "(%.2f, %.2f)" % c for c in _floor_cans_scanned)))
                 if target is None:
                     # Nothing confirmed standing still: the nearest seen at all.
                     target = next(iter(sightings.candidates()), None) or sightings.nearest()
