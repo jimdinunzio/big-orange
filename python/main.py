@@ -6771,9 +6771,23 @@ CLEAN_ROOM_CANS = 3
 CLEAN_ROOM_BIN = "recycle bin"
 # Failed attempts at one can before it is given up as lost.
 CLEAN_ROOM_TRIES = 3
-# The contest's time limit, seconds. Past it no new can is started; one
-# already being picked or carried to the bin is finished.
-CLEAN_ROOM_LIMIT = 300.0
+# Most floor scans one run makes: a scan can miss a can beside the ones it saw.
+CLEAN_ROOM_SCANS = 4
+
+
+def _face_the_room(sdp):
+    """Standing at CLEAN_ROOM_BIN, turn the base to face where the last scan
+    saw cans, and say whether it did. The bin stands in a corner of the arena
+    with the cans out toward the middle, so the ones left are over there."""
+    bx, by = _locations[_find_location_key(CLEAN_ROOM_BIN)][:2]
+    pose = sdp.pose()
+    if not _floor_cans_scanned or math.hypot(pose.x - bx, pose.y - by) > PLACE_ARRIVAL_DIST:
+        return False
+    x = sum(c[0] for c in _floor_cans_scanned) / len(_floor_cans_scanned)
+    y = sum(c[1] for c in _floor_cans_scanned) / len(_floor_cans_scanned)
+    print("clean the room: at the bin; turning to face the room at (%.2f, %.2f)" % (x, y))
+    _face_point(sdp, x, y)
+    return True
 
 
 def clean_the_room_tool_helper(sdp):
@@ -6782,9 +6796,9 @@ def clean_the_room_tool_helper(sdp):
 
     The first floor search remembers each can it sees. A can that a pick or
     the drive to it fails on is tried again after the others; one dropped on
-    the way to the bin is lost. Once the remembered ones are used up, one
-    final search looks for whatever is left. Ends when all are in the bin, when that final
-    search finds nothing, on a stop, or at the CLEAN_ROOM_LIMIT time limit."""
+    the way to the bin is lost. Once the remembered ones are used up, another
+    search looks for whatever is left, up to CLEAN_ROOM_SCANS in all. Ends
+    when all are in the bin, when the searches are used up, or on a stop."""
     global _floor_target
 
     obj = CLEAN_ROOM_OBJECT
@@ -6802,13 +6816,8 @@ def clean_the_room_tool_helper(sdp):
     _floor_cans_seen.clear()
     _floor_target = None
 
-    deadline = time.time() + CLEAN_ROOM_LIMIT
-
     def halted():
         return _stop_count != stops
-
-    def time_up():
-        return time.time() >= deadline
 
     collected = 0
     lost = 0  # given up on: dropped on the way to the bin, the last can left
@@ -6817,24 +6826,30 @@ def clean_the_room_tool_helper(sdp):
     fails = {}
     scans = 0
     notes = []
-    while collected + lost < CLEAN_ROOM_CANS and not halted() and not time_up():
+    while collected + lost < CLEAN_ROOM_CANS and not halted():
         if not _floor_cans_seen and deferred:
             _floor_cans_seen.extend(deferred)
             deferred.clear()
         if not _floor_cans_seen:
-            if scans >= 2:
-                break  # the first scan and the final one are used up
+            if scans >= CLEAN_ROOM_SCANS:
+                break
             scans += 1
         print(f"clean the room: {collected} of {CLEAN_ROOM_CANS} in the bin; "
               f"{len(_floor_cans_seen)} remembered; scan {scans}")
+        if collected and not _floor_cans_seen and _face_the_room(sdp):
+            if halted():
+                break
+            # The cans that scan saw are gone, so none is close by: sweep at
+            # the room tilt.
+            _floor_cans_scanned.clear()
 
         _floor_target = None
         result = search_for_object_tool_helper(sdp, obj, "floor")
-        if halted() or time_up():
+        if halted():
             break
         if isinstance(result, ToolFailure) or _floor_target is None:
             notes.append(f"search: {result}")
-            if _floor_cans_seen or deferred or scans < 2:
+            if _floor_cans_seen or deferred or scans < CLEAN_ROOM_SCANS:
                 continue
             break
         target = _floor_target
@@ -6897,11 +6912,6 @@ def clean_the_room_tool_helper(sdp):
     if collected == CLEAN_ROOM_CANS:
         speak("The room has been cleaned.")
         return "The room has been cleaned: all the cans are in the recycle bin. I announced it."
-    if time_up():
-        speak("Time is up.")
-        return (f"Time is up: the {CLEAN_ROOM_LIMIT / 60:.0f} minute limit ended cleaning the "
-                f"room with {collected} of {CLEAN_ROOM_CANS} cans in the {CLEAN_ROOM_BIN}. "
-                f"I announced it.")
     gave_up = f" I gave up on {lost} I could not pick up." if lost else ""
     return ToolFailure(f"I put {collected} of {CLEAN_ROOM_CANS} cans in the {CLEAN_ROOM_BIN} "
                        f"and could not find or pick up the rest.{gave_up} "
